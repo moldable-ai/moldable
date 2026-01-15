@@ -96,13 +96,13 @@ describe('system-prompt', () => {
       expect(result).toContain('Operating system')
     })
 
-    it('includes workspace path when provided', async () => {
+    it('includes development workspace when provided', async () => {
       const result = await buildSystemPrompt({
-        workspacePath: '/home/user/project',
+        developmentWorkspace: '/home/user/moldable',
       })
 
-      expect(result).toContain('/home/user/project')
-      expect(result).toContain('Workspace')
+      expect(result).toContain('/home/user/moldable')
+      expect(result).toContain('Development workspace')
     })
 
     it('includes tool instructions for available tools', async () => {
@@ -115,11 +115,11 @@ describe('system-prompt', () => {
       expect(result).toContain('### grep')
     })
 
-    it('includes agents file content from workspace', async () => {
+    it('includes agents file content from development workspace', async () => {
       const agentsContent = '# My Project Rules\n\nAlways use TypeScript.'
       await fs.writeFile(path.join(tempDir, 'AGENTS.md'), agentsContent)
 
-      const result = await buildSystemPrompt({ workspacePath: tempDir })
+      const result = await buildSystemPrompt({ developmentWorkspace: tempDir })
 
       expect(result).toContain('Workspace Guidelines')
       expect(result).toContain('My Project Rules')
@@ -131,7 +131,7 @@ describe('system-prompt', () => {
       await fs.writeFile(path.join(tempDir, 'AGENTS.md'), agentsContent)
 
       const result = await buildSystemPrompt({
-        workspacePath: tempDir,
+        developmentWorkspace: tempDir,
         includeAgentsFile: false,
       })
 

@@ -11,6 +11,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(__dirname, '..')
 const AI_SERVER_DIR = join(ROOT, 'packages/ai-server')
 const BINARIES_DIR = join(ROOT, 'desktop/src-tauri/binaries')
+const DEBUG_DIR = join(ROOT, 'desktop/src-tauri/target/debug')
 
 // Detect current platform
 const platform = process.platform
@@ -75,6 +76,16 @@ async function main() {
     // Make executable
     if (platform !== 'win32') {
       execSync(`chmod +x "${outputPath}"`)
+    }
+
+    // Also copy to debug directory for dev mode (pnpm desktop / tauri dev)
+    if (existsSync(DEBUG_DIR)) {
+      const debugPath = join(DEBUG_DIR, 'moldable-ai-server')
+      cpSync(outputPath, debugPath)
+      if (platform !== 'win32') {
+        execSync(`chmod +x "${debugPath}"`)
+      }
+      console.log(`✅ Copied to debug: ${debugPath}`)
     }
   } catch (error) {
     console.error('❌ Build failed:', error.message)

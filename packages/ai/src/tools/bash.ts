@@ -4,9 +4,79 @@ import {
 } from '@anthropic-ai/sandbox-runtime'
 import { tool, zodSchema } from 'ai'
 import { spawn } from 'child_process'
+import { existsSync, readdirSync } from 'fs'
 import os from 'os'
 import path from 'path'
 import { z } from 'zod/v4'
+
+/**
+ * Get a PATH string that includes common executable locations.
+ * This is critical for GUI apps (Tauri/Electron) that don't inherit shell PATH.
+ * @internal Exported for testing
+ */
+export function getAugmentedPath(): string {
+  const home = os.homedir()
+  const paths: string[] = []
+
+  // NVM paths (most common for Node.js developers)
+  const nvmDir = path.join(home, '.nvm', 'versions', 'node')
+  if (existsSync(nvmDir)) {
+    try {
+      const versions = readdirSync(nvmDir)
+        .filter((v) => v.startsWith('v'))
+        .sort()
+        .reverse()
+      const latestVersion = versions[0]
+      if (latestVersion) {
+        paths.push(path.join(nvmDir, latestVersion, 'bin'))
+      }
+    } catch {
+      // Ignore
+    }
+  }
+
+  // fnm (Fast Node Manager)
+  const fnmPath = path.join(
+    home,
+    '.local',
+    'share',
+    'fnm',
+    'aliases',
+    'default',
+    'bin',
+  )
+  if (existsSync(fnmPath)) {
+    paths.push(fnmPath)
+  }
+
+  // Homebrew paths
+  paths.push('/opt/homebrew/bin') // macOS ARM
+  paths.push('/usr/local/bin') // macOS Intel / Linux
+
+  // System paths
+  paths.push('/usr/bin')
+  paths.push('/bin')
+
+  // Linux Homebrew
+  paths.push('/home/linuxbrew/.linuxbrew/bin')
+
+  // User local bin
+  paths.push(path.join(home, '.local', 'bin'))
+
+  // pnpm global
+  const pnpmPath = path.join(home, 'Library', 'pnpm')
+  if (existsSync(pnpmPath)) {
+    paths.push(pnpmPath)
+  }
+
+  // Add existing PATH at the end
+  const existingPath = process.env.PATH || ''
+  if (existingPath) {
+    paths.push(existingPath)
+  }
+
+  return paths.join(':')
+}
 
 // Default sandbox configuration for Moldable
 // Philosophy: Network is the moat (prevents exfiltration), filesystem writes are the walls.
@@ -323,8 +393,9 @@ async function executeCommand(
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
         ...process.env,
-        // Ensure sandbox proxies are used
-        ...(isSandboxed ? {} : {}),
+        // Augment PATH with common executable locations (nvm, homebrew, etc.)
+        // This is critical for GUI apps that don't inherit shell PATH
+        PATH: getAugmentedPath(),
       },
     })
 

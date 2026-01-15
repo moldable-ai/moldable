@@ -1,5 +1,11 @@
 import { ArrowUp, Square } from 'lucide-react'
-import type { ChangeEvent, FormEvent, KeyboardEvent, RefObject } from 'react'
+import type {
+  ChangeEvent,
+  FormEvent,
+  KeyboardEvent,
+  MouseEvent,
+  RefObject,
+} from 'react'
 import { cn } from '../../lib/utils'
 import { Button } from '../ui/button'
 import { Textarea } from '../ui/textarea'
@@ -46,16 +52,18 @@ export function ChatInput({
     }
   }
 
-  const handleButtonClick = () => {
-    if (isResponding && !hasInput) {
-      // Stop button behavior: no input, just stop streaming
-      onStop?.()
-    }
-    // If there's input, the button acts as submit (handled by form)
-  }
-
   // Show stop button only when streaming AND no input
   const showStopButton = isResponding && !hasInput
+
+  const handleButtonClick = (e: MouseEvent<HTMLButtonElement>) => {
+    // When rendered as stop button (type="button"), always call onStop
+    // Don't re-check conditions - trust the render decision to avoid race conditions
+    if (e.currentTarget.type === 'button') {
+      e.preventDefault()
+      onStop?.()
+    }
+    // If type="submit", form handles submission
+  }
 
   return (
     <div className={cn('isolate w-full p-2')} data-chat-input-wrapper>

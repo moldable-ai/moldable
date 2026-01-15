@@ -21,7 +21,7 @@ See `prds/moldable.prd.md` for the complete product specification.
 Moldable uses a **workspace-based** structure where data is isolated per workspace:
 
 ```
-~/.moldable/                         # User data directory
+~/.moldable/                         # User data directory (MOLDABLE_HOME)
 ├── workspaces.json                  # Workspace list + active workspace
 │
 ├── shared/                          # Shared across ALL workspaces
@@ -32,11 +32,16 @@ Moldable uses a **workspace-based** structure where data is isolated per workspa
 │   │   │   ├── package.json
 │   │   │   └── src/
 │   │   └── meetings/
+│   ├── scripts/                     # Shared scripts (lint-moldable-app.js, etc.)
 │   ├── skills/                      # Skills library (instruction & executable)
 │   │   └── {repo-name}/             # Skills grouped by source repo
 │   │       └── {skill-name}/        # Individual skill (SKILL.md or bin/)
+│   ├── mcps/                        # Custom MCP server code
+│   │   └── {mcp-name}/              # e.g., "my-api-gateway"
+│   │       ├── server.js            # MCP server (stdio)
+│   │       └── package.json
 │   └── config/
-│       └── mcp.json                 # Shared MCP servers
+│       └── mcp.json                 # Shared MCP server connections
 │
 └── workspaces/                      # Per-workspace isolated data
     └── {workspace-id}/              # e.g., "personal", "work"
@@ -125,6 +130,19 @@ Run these proactively to catch issues before the user does. Don't wait for error
 - **NEVER start apps manually** - Moldable desktop handles app lifecycle (starting/stopping servers). The agent should only write code, not run dev servers.
 - **NEVER use browser tools to test UI** - The user will test in Moldable's webviews. Don't use browser MCP tools to navigate or take screenshots.
 - **NEVER run `pnpm dev` or similar** - Let the user start apps through Moldable's interface.
+- **NEVER create apps in the current working directory** - Apps MUST be created in `~/.moldable/shared/apps/`, regardless of what directory you're currently in.
+- **NEVER create apps in the development monorepo** - The path `/Users/*/moldable/` is the Moldable source code, not where user apps go.
+
+### Where to Create Apps (CRITICAL)
+
+When creating a new app, you MUST:
+
+1. **Create it in**: `~/.moldable/shared/apps/{app-id}/` (expand `~` to the user's home directory, e.g., `/Users/rob/.moldable/shared/apps/my-app/`)
+2. **NOT** in the current working directory
+3. **NOT** in the development workspace/monorepo
+4. **NOT** in `/apps/` or any relative path
+
+The `MOLDABLE_HOME` environment context tells you the exact path. Use it.
 
 ### Server/Client Code Separation
 
@@ -380,15 +398,14 @@ Per-workspace app registry and settings:
 
 ```json
 {
-  "workspace": "/Users/rob/moldable",
   "apps": [
     {
       "id": "scribo",
       "name": "Scribo Languages",
       "icon": "✍️",
       "port": 3001,
-      "path": "/Users/rob/moldable/apps/scribo",
-      "command": "/opt/homebrew/bin/pnpm",
+      "path": "/Users/rob/.moldable/shared/apps/scribo",
+      "command": "pnpm",
       "args": ["dev"],
       "widget_size": "medium",
       "requires_port": false
@@ -396,6 +413,8 @@ Per-workspace app registry and settings:
   ]
 }
 ```
+
+**CRITICAL**: The `path` field MUST point to `~/.moldable/shared/apps/{app-id}` (expanded to absolute path like `/Users/rob/.moldable/shared/apps/scribo`). Do NOT use paths in the development monorepo.
 
 **Note**: The `port` field is a _preferred_ starting port. At runtime, Moldable will:
 
@@ -435,7 +454,7 @@ Configure in `~/.moldable/shared/config/mcp.json` (shared) or `~/.moldable/works
     },
     "custom-api": {
       "command": "node",
-      "args": ["~/.moldable/mcps/custom-api/index.js"]
+      "args": ["~/.moldable/shared/mcps/custom-api/index.js"]
     }
   }
 }

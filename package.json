@@ -6,7 +6,7 @@
   "description": "Moldable - Personal software. Built for change.",
   "scripts": {
     "build": "turbo build",
-    "build:packages": "turbo build --filter=@moldable-ai/*",
+    "build:packages": "turbo build --filter=@moldable-ai/* && pnpm build:ai-server",
     "dev": "turbo dev --concurrency=20",
     "lint": "turbo lint",
     "format": "prettier --write . --ignore-path .prettierignore --cache --cache-location .prettiercache",

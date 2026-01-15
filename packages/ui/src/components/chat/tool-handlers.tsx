@@ -4,10 +4,8 @@ import {
   BookOpen,
   Check,
   CheckCheck,
-  ChevronDown,
   Copy,
   Download,
-  ExternalLink,
   FileCode,
   FileText,
   FolderOpen,
@@ -21,11 +19,6 @@ import {
 } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { cn } from '../../lib/utils'
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from '../ui/collapsible'
 import { ThinkingTimelineMarker } from './thinking-timeline'
 
 /**
@@ -206,6 +199,7 @@ function FileOperation({
     edit: 'Edited',
   }
   const Icon = icons[operation]
+  const fileName = getFileName(path)
 
   return (
     <div className="my-1 min-w-0">
@@ -219,8 +213,11 @@ function FileOperation({
       >
         <Icon className="size-3.5 shrink-0" />
         <span className="shrink-0 font-medium">{labels[operation]}</span>
-        <code className="bg-background/50 min-w-0 truncate rounded px-1 font-mono">
-          {path}
+        <code
+          className="bg-background/50 min-w-0 truncate rounded px-1 font-mono"
+          title={path}
+        >
+          {fileName}
         </code>
         {success ? (
           <Check className="size-3 shrink-0 text-green-600" />
@@ -234,24 +231,11 @@ function FileOperation({
 }
 
 /**
- * Truncate a file path for display, keeping the filename visible
+ * Extract just the filename from a path
  */
-function truncatePath(path: string, maxLength = 50): string {
-  if (path.length <= maxLength) return path
+function getFileName(path: string): string {
   const parts = path.split('/')
-  const filename = parts.pop() || ''
-  if (filename.length >= maxLength - 3) {
-    return '...' + filename.slice(-(maxLength - 3))
-  }
-  let result = filename
-  for (let i = parts.length - 1; i >= 0; i--) {
-    const next = parts[i] + '/' + result
-    if (next.length > maxLength - 3) {
-      return '.../' + result
-    }
-    result = next
-  }
-  return result
+  return parts[parts.length - 1] || path
 }
 
 /**
@@ -287,25 +271,14 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
         )
       }
 
-      // For successful reads, show collapsible with content preview
+      // Show simple indicator for successful reads
       return (
-        <Collapsible key={toolCallId} className="my-1 min-w-0">
-          <CollapsibleTrigger className="bg-muted text-muted-foreground hover:bg-accent group inline-flex max-w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-xs">
-            <FileText className="size-3.5 shrink-0" />
-            <span className="shrink-0 font-medium">Read</span>
-            <code className="bg-background/50 min-w-0 truncate rounded px-1 font-mono">
-              {result.path || 'file'}
-            </code>
-            <Check className="size-3 shrink-0 text-green-600" />
-            <ChevronDown className="size-3 shrink-0 transition-transform group-data-[state=open]:rotate-180" />
-          </CollapsibleTrigger>
-          <CollapsibleContent className="mt-2">
-            <CodeBlock maxHeight={200}>
-              {result.content?.slice(0, 2000)}
-              {(result.content?.length || 0) > 2000 && '\n... (truncated)'}
-            </CodeBlock>
-          </CollapsibleContent>
-        </Collapsible>
+        <FileOperation
+          key={toolCallId}
+          operation="read"
+          path={result.path || 'file'}
+          success={true}
+        />
       )
     },
   },
@@ -333,7 +306,7 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
               <FileText className="size-3.5 shrink-0 animate-pulse" />
               <span className="shrink-0 font-medium">Writing</span>
               <code className="bg-background/50 min-w-0 truncate rounded px-1 font-mono">
-                {path ? truncatePath(path) : 'file'}
+                {path ? getFileName(path) : 'file'}
               </code>
               <span className="text-muted-foreground/70 shrink-0">
                 ({lineCount} line{lineCount !== 1 ? 's' : ''})
@@ -351,7 +324,7 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
         <div className="bg-muted text-muted-foreground inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs">
           <FileText className="size-3.5 shrink-0 animate-pulse" />
           <span className="truncate">
-            Writing {path ? truncatePath(path) : 'file'}...
+            Writing {path ? getFileName(path) : 'file'}...
           </span>
         </div>
       )
@@ -377,30 +350,14 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
         )
       }
 
-      // Show collapsible with content preview
+      // Show simple indicator for successful writes
       return (
-        <Collapsible key={toolCallId} className="my-1 min-w-0">
-          <CollapsibleTrigger className="bg-muted text-muted-foreground hover:bg-accent group inline-flex max-w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-xs">
-            <FileText className="size-3.5 shrink-0" />
-            <span className="shrink-0 font-medium">Wrote</span>
-            <code className="bg-background/50 min-w-0 truncate rounded px-1 font-mono">
-              {truncatePath(result.path || 'file')}
-            </code>
-            {result.lineCount && (
-              <span className="text-muted-foreground/70 shrink-0">
-                ({result.lineCount} line{result.lineCount !== 1 ? 's' : ''})
-              </span>
-            )}
-            <Check className="size-3 shrink-0 text-green-600" />
-            <ChevronDown className="size-3 shrink-0 transition-transform group-data-[state=open]:rotate-180" />
-          </CollapsibleTrigger>
-          <CollapsibleContent className="mt-2">
-            <CodeBlock maxHeight={200}>
-              {result.preview}
-              {result.truncated && '\n... (truncated)'}
-            </CodeBlock>
-          </CollapsibleContent>
-        </Collapsible>
+        <FileOperation
+          key={toolCallId}
+          operation="write"
+          path={result.path || 'file'}
+          success={true}
+        />
       )
     },
   },
@@ -443,22 +400,26 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
         : result.entries || []
 
       return (
-        <Collapsible key={toolCallId} className="my-1 min-w-0">
-          <CollapsibleTrigger className="bg-muted text-muted-foreground hover:bg-accent group inline-flex max-w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-xs">
-            <FolderOpen className="size-3.5 shrink-0" />
-            <span className="shrink-0 font-medium">Listed</span>
-            <code className="bg-background/50 min-w-0 truncate rounded px-1 font-mono">
-              {result.path || 'directory'}
-            </code>
-            <span className="text-muted-foreground/70 shrink-0">
-              ({entries.length} items)
-            </span>
-            <ChevronDown className="size-3 shrink-0 transition-transform group-data-[state=open]:rotate-180" />
-          </CollapsibleTrigger>
-          <CollapsibleContent className="mt-2">
-            <CodeBlock maxHeight={200}>{entries.join('\n')}</CodeBlock>
-          </CollapsibleContent>
-        </Collapsible>
+        <div
+          key={toolCallId}
+          className={cn(
+            'my-1 inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs',
+            'bg-muted text-muted-foreground',
+          )}
+        >
+          <FolderOpen className="size-3.5 shrink-0" />
+          <span className="shrink-0 font-medium">Listed</span>
+          <code
+            className="bg-background/50 min-w-0 truncate rounded px-1 font-mono"
+            title={result.path}
+          >
+            {getFileName(result.path || 'directory')}
+          </code>
+          <span className="text-muted-foreground/70 shrink-0">
+            ({entries.length} items)
+          </span>
+          <Check className="size-3 shrink-0 text-green-600" />
+        </div>
       )
     },
   },
@@ -639,7 +600,7 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
         <div className="bg-muted text-muted-foreground inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs">
           <Trash2 className="size-3.5 shrink-0 animate-pulse" />
           <span className="truncate">
-            Deleting {path ? truncatePath(path) : 'file'}...
+            Deleting {path ? getFileName(path) : 'file'}...
           </span>
         </div>
       )
@@ -672,7 +633,7 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
         <div className="bg-muted text-muted-foreground inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs">
           <FileCode className="size-3.5 shrink-0 animate-pulse" />
           <span className="truncate">
-            Editing {path ? truncatePath(path) : 'file'}...
+            Editing {path ? getFileName(path) : 'file'}...
           </span>
         </div>
       )
@@ -737,19 +698,17 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
       if (result.content && !result.matches) {
         const lines = result.content.split('\n').filter(Boolean)
         return (
-          <Collapsible key={toolCallId} className="my-1 min-w-0">
-            <CollapsibleTrigger className="bg-muted text-muted-foreground hover:bg-accent group inline-flex max-w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-xs">
-              <Search className="size-3.5 shrink-0" />
-              <span className="shrink-0 font-medium">Search results</span>
-              <span className="text-muted-foreground/70 shrink-0">
-                ({lines.length} lines)
-              </span>
-              <ChevronDown className="size-3 shrink-0 transition-transform group-data-[state=open]:rotate-180" />
-            </CollapsibleTrigger>
-            <CollapsibleContent className="mt-2">
-              <CodeBlock maxHeight={300}>{result.content}</CodeBlock>
-            </CollapsibleContent>
-          </Collapsible>
+          <div
+            key={toolCallId}
+            className="bg-muted text-muted-foreground my-1 inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs"
+          >
+            <Search className="size-3.5 shrink-0" />
+            <span className="shrink-0 font-medium">Search results</span>
+            <span className="text-muted-foreground/70 shrink-0">
+              ({lines.length} lines)
+            </span>
+            <Check className="size-3 shrink-0 text-green-600" />
+          </div>
         )
       }
 
@@ -779,46 +738,21 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
       const matchCount = result.totalMatches || result.matches.length
 
       return (
-        <Collapsible key={toolCallId} className="my-1 min-w-0">
-          <CollapsibleTrigger className="bg-muted text-muted-foreground hover:bg-accent group inline-flex max-w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-xs">
-            <Search className="size-3.5 shrink-0" />
-            <span className="shrink-0 font-medium">Found</span>
-            <span className="shrink-0">
-              {matchCount} match{matchCount !== 1 ? 'es' : ''} in {fileCount}{' '}
-              file{fileCount !== 1 ? 's' : ''}
-            </span>
-            {result.truncated && (
-              <span className="shrink-0 text-amber-500">(truncated)</span>
-            )}
-            <ChevronDown className="size-3 shrink-0 transition-transform group-data-[state=open]:rotate-180" />
-          </CollapsibleTrigger>
-          <CollapsibleContent className="mt-2">
-            <div className="space-y-2">
-              {Object.entries(byFile)
-                .slice(0, 10)
-                .map(([file, matches]) => (
-                  <div key={file}>
-                    <div className="text-muted-foreground mb-1 font-mono text-xs">
-                      {truncatePath(file, 60)}
-                    </div>
-                    <CodeBlock maxHeight={150}>
-                      {matches
-                        .slice(0, 5)
-                        .map((m) => `${m.line}: ${m.content}`)
-                        .join('\n')}
-                      {matches.length > 5 &&
-                        `\n... and ${matches.length - 5} more`}
-                    </CodeBlock>
-                  </div>
-                ))}
-              {Object.keys(byFile).length > 10 && (
-                <div className="text-muted-foreground text-xs">
-                  ... and {Object.keys(byFile).length - 10} more files
-                </div>
-              )}
-            </div>
-          </CollapsibleContent>
-        </Collapsible>
+        <div
+          key={toolCallId}
+          className="bg-muted text-muted-foreground my-1 inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs"
+        >
+          <Search className="size-3.5 shrink-0" />
+          <span className="shrink-0 font-medium">Found</span>
+          <span className="shrink-0">
+            {matchCount} match{matchCount !== 1 ? 'es' : ''} in {fileCount} file
+            {fileCount !== 1 ? 's' : ''}
+          </span>
+          {result.truncated && (
+            <span className="shrink-0 text-amber-500">(truncated)</span>
+          )}
+          <Check className="size-3 shrink-0 text-green-600" />
+        </div>
       )
     },
   },
@@ -858,26 +792,17 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
       }
 
       return (
-        <Collapsible key={toolCallId} className="my-1 min-w-0">
-          <CollapsibleTrigger className="bg-muted text-muted-foreground hover:bg-accent group inline-flex max-w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-xs">
-            <Search className="size-3.5 shrink-0" />
-            <span className="shrink-0 font-medium">Found</span>
-            <span className="shrink-0">
-              {result.files.length} file{result.files.length !== 1 ? 's' : ''}
-            </span>
-            <ChevronDown className="size-3 shrink-0 transition-transform group-data-[state=open]:rotate-180" />
-          </CollapsibleTrigger>
-          <CollapsibleContent className="mt-2">
-            <CodeBlock maxHeight={200}>
-              {result.files
-                .slice(0, 50)
-                .map((f) => `📄 ${f}`)
-                .join('\n')}
-              {result.files.length > 50 &&
-                `\n... and ${result.files.length - 50} more files`}
-            </CodeBlock>
-          </CollapsibleContent>
-        </Collapsible>
+        <div
+          key={toolCallId}
+          className="bg-muted text-muted-foreground my-1 inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs"
+        >
+          <Search className="size-3.5 shrink-0" />
+          <span className="shrink-0 font-medium">Found</span>
+          <span className="shrink-0">
+            {result.files.length} file{result.files.length !== 1 ? 's' : ''}
+          </span>
+          <Check className="size-3 shrink-0 text-green-600" />
+        </div>
       )
     },
   },
@@ -929,45 +854,18 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
       }
 
       return (
-        <Collapsible key={toolCallId} className="my-1 min-w-0">
-          <CollapsibleTrigger className="bg-muted text-muted-foreground hover:bg-accent group inline-flex max-w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-xs">
-            <Globe className="size-3.5 shrink-0" />
-            <span className="shrink-0 font-medium">Web search</span>
-            <span className="shrink-0">
-              {result.results.length} result
-              {result.results.length !== 1 ? 's' : ''}
-            </span>
-            <ChevronDown className="size-3 shrink-0 transition-transform group-data-[state=open]:rotate-180" />
-          </CollapsibleTrigger>
-          <CollapsibleContent className="mt-2">
-            <div className="space-y-3">
-              {result.results.slice(0, 5).map((r, idx) => (
-                <div key={idx} className="bg-muted/50 rounded-md p-2 text-xs">
-                  <a
-                    href={r.link}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-primary inline-flex items-center gap-1 font-medium hover:underline"
-                  >
-                    {r.title}
-                    <ExternalLink className="size-3" />
-                  </a>
-                  <div className="text-muted-foreground mt-1 line-clamp-2">
-                    {r.snippet}
-                  </div>
-                  <div className="text-muted-foreground/60 mt-1 truncate font-mono text-[10px]">
-                    {r.link}
-                  </div>
-                </div>
-              ))}
-              {result.results.length > 5 && (
-                <div className="text-muted-foreground text-xs">
-                  ... and {result.results.length - 5} more results
-                </div>
-              )}
-            </div>
-          </CollapsibleContent>
-        </Collapsible>
+        <div
+          key={toolCallId}
+          className="bg-muted text-muted-foreground my-1 inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs"
+        >
+          <Globe className="size-3.5 shrink-0" />
+          <span className="shrink-0 font-medium">Web search</span>
+          <span className="shrink-0">
+            {result.results.length} result
+            {result.results.length !== 1 ? 's' : ''}
+          </span>
+          <Check className="size-3 shrink-0 text-green-600" />
+        </div>
       )
     },
   },
@@ -1015,60 +913,18 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
       }
 
       return (
-        <Collapsible key={toolCallId} defaultOpen className="my-1 min-w-0">
-          <CollapsibleTrigger className="bg-muted text-muted-foreground hover:bg-accent group inline-flex max-w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-xs">
-            <BookOpen className="size-3.5 shrink-0" />
-            <span className="shrink-0 font-medium">Skill Repositories</span>
-            <span className="shrink-0">
-              ({result.repositories.length} repo
-              {result.repositories.length !== 1 ? 's' : ''})
-            </span>
-            <ChevronDown className="size-3 shrink-0 transition-transform group-data-[state=open]:rotate-180" />
-          </CollapsibleTrigger>
-          <CollapsibleContent className="mt-2">
-            <div className="space-y-2">
-              {result.repositories.map((repo, idx) => (
-                <div key={idx} className="bg-muted/50 rounded-md p-2.5 text-xs">
-                  <div className="flex items-center gap-2">
-                    {repo.enabled ? (
-                      <Check className="size-3.5 shrink-0 text-green-600" />
-                    ) : (
-                      <X className="text-muted-foreground size-3.5 shrink-0" />
-                    )}
-                    <span className="font-medium">{repo.name}</span>
-                    <code className="bg-background/50 text-muted-foreground rounded px-1 font-mono text-[10px]">
-                      {repo.url}
-                    </code>
-                  </div>
-                  <div className="text-muted-foreground mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px]">
-                    <span>
-                      Mode:{' '}
-                      <span className="text-foreground font-medium">
-                        {repo.mode}
-                      </span>
-                    </span>
-                    {repo.mode !== 'all' && repo.skills.length > 0 && (
-                      <span>
-                        Skills:{' '}
-                        <span className="text-foreground font-medium">
-                          {repo.skills.slice(0, 5).join(', ')}
-                          {repo.skills.length > 5 &&
-                            ` +${repo.skills.length - 5} more`}
-                        </span>
-                      </span>
-                    )}
-                    {repo.lastSync && (
-                      <span>
-                        Last sync:{' '}
-                        {new Date(repo.lastSync).toLocaleDateString()}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </CollapsibleContent>
-        </Collapsible>
+        <div
+          key={toolCallId}
+          className="bg-muted text-muted-foreground my-1 inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs"
+        >
+          <BookOpen className="size-3.5 shrink-0" />
+          <span className="shrink-0 font-medium">Skill Repositories</span>
+          <span className="shrink-0">
+            ({result.repositories.length} repo
+            {result.repositories.length !== 1 ? 's' : ''})
+          </span>
+          <Check className="size-3 shrink-0 text-green-600" />
+        </div>
       )
     },
   },
@@ -1116,47 +972,19 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
       const selected = result.selected || []
 
       return (
-        <Collapsible key={toolCallId} defaultOpen className="my-1 min-w-0">
-          <CollapsibleTrigger className="bg-muted text-muted-foreground hover:bg-accent group inline-flex max-w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-xs">
-            <Sparkles className="size-3.5 shrink-0" />
-            <span className="shrink-0 font-medium">
-              {result.repoName || 'Available Skills'}
-            </span>
-            <span className="shrink-0">
-              ({selected.length}/{available.length} selected)
-            </span>
-            <ChevronDown className="size-3 shrink-0 transition-transform group-data-[state=open]:rotate-180" />
-          </CollapsibleTrigger>
-          <CollapsibleContent className="mt-2">
-            <div className="bg-muted/50 rounded-md p-2">
-              <div className="mb-2 flex flex-wrap gap-1.5">
-                {available.map((skill) => {
-                  const isSelected = selected.includes(skill)
-                  return (
-                    <span
-                      key={skill}
-                      className={cn(
-                        'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium',
-                        isSelected
-                          ? 'bg-primary/10 text-primary'
-                          : 'bg-muted text-muted-foreground',
-                      )}
-                    >
-                      {isSelected && <Check className="size-2.5" />}
-                      {skill}
-                    </span>
-                  )
-                })}
-              </div>
-              {result.mode && (
-                <div className="text-muted-foreground text-[10px]">
-                  Selection mode:{' '}
-                  <span className="font-medium">{result.mode}</span>
-                </div>
-              )}
-            </div>
-          </CollapsibleContent>
-        </Collapsible>
+        <div
+          key={toolCallId}
+          className="bg-muted text-muted-foreground my-1 inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs"
+        >
+          <Sparkles className="size-3.5 shrink-0" />
+          <span className="shrink-0 font-medium">
+            {result.repoName || 'Available Skills'}
+          </span>
+          <span className="shrink-0">
+            ({selected.length}/{available.length} selected)
+          </span>
+          <Check className="size-3 shrink-0 text-green-600" />
+        </div>
       )
     },
   },

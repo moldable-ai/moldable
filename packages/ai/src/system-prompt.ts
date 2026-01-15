@@ -29,10 +29,16 @@ export interface ActiveAppContext extends RegisteredAppInfo {
 export interface SystemPromptOptions {
   /** Current date for context */
   currentDate?: Date
-  /** Workspace directory path */
-  workspacePath?: string
+  /**
+   * Path to the Moldable development monorepo (e.g., /Users/rob/moldable).
+   * Only relevant when the user is developing Moldable itself using Moldable.
+   * NOT where apps are created - apps go in moldableHome/shared/apps/.
+   */
+  developmentWorkspace?: string
   /** Active workspace ID (e.g., "personal", "work") */
   activeWorkspaceId?: string
+  /** Moldable home directory path (e.g., /Users/rob/.moldable) - where all user apps/data live */
+  moldableHome?: string
   /** Operating system info */
   osInfo?: string
   /** List of available tool names */
@@ -146,16 +152,38 @@ When building user interfaces for Moldable apps:
 
 ## Moldable Apps
 
+### CRITICAL: Directory Paths
+
+**Do NOT confuse the development workspace with the user data directory:**
+
+| Directory | Path | Purpose |
+|-----------|------|---------|
+| **User data directory** | \`~/.moldable/\` (e.g., \`/Users/rob/.moldable/\`) | Where ALL user apps, data, configs, and scripts live. **Create apps here.** |
+| **Development workspace** | The path shown in "Workspace:" context (e.g., \`/Users/rob/moldable\`) | The Moldable monorepo source code. **Do NOT create apps here.** |
+
+**Always expand \`~\` to the user's home directory** (use \`$HOME\` environment variable if needed).
+
+When creating or finding apps:
+- ✅ \`~/.moldable/shared/apps/my-app/\` — Correct location for app source code
+- ✅ \`~/.moldable/workspaces/{workspace-id}/apps/my-app/data/\` — Correct location for app runtime data
+- ❌ \`/Users/rob/moldable/apps/\` — Wrong! This is the monorepo, not user data
+- ❌ Creating apps in the current working directory — Wrong! Always use \`~/.moldable/shared/apps/\`
+
 ### Use Existing Apps as Reference
 
-**IMPORTANT**: Before creating a new app, **always examine any existing installed apps** in \`~/.moldable/shared/apps/\` as reference implementations:
+Before creating a new app, **list and examine existing installed apps** in \`~/.moldable/shared/apps/\`:
 
-- \`~/.moldable/shared/apps/notes\` — Simple CRUD app with markdown editing
-- \`~/.moldable/shared/apps/todo\` — Basic list management with checkboxes
-- \`~/.moldable/shared/apps/scribo\` — Translation journal with language selection
-- \`~/.moldable/shared/apps/meetings\` — Audio recording with real-time transcription
-- \`~/.moldable/shared/apps/calendar\` — Google Calendar integration with OAuth
-- \`~/.moldable/shared/apps/git-flow\` — Git operations with diff viewing
+\`\`\`bash
+ls ~/.moldable/shared/apps/
+\`\`\`
+
+Common reference apps (if installed):
+- \`notes\` — Simple CRUD app with markdown editing
+- \`todo\` — Basic list management with checkboxes
+- \`scribo\` — Translation journal with language selection
+- \`meetings\` — Audio recording with real-time transcription
+- \`calendar\` — Google Calendar integration with OAuth
+- \`git-flow\` — Git operations with diff viewing
 
 **Study these apps for:**
 - **File structure** — How to organize components, hooks, API routes, and libs
@@ -179,10 +207,10 @@ node ~/.moldable/shared/scripts/lint-moldable-app.js ~/.moldable/shared/apps/*  
 This checks:
 - \`moldable.json\` exists with required fields (name, icon, description, widgetSize)
 - \`next.config.ts\` has \`devIndicators: false\`
-- \`scripts/moldable-dev.mjs\` exists and uses direct execution: \`spawn('next', ['dev', '-p', port])\`
+- \`scripts/moldable-dev.mjs\` exists and uses direct execution: \`spawn('next', ['dev', '--turbopack', ...])\`
 - \`src/app/widget/\` exists with \`layout.tsx\` and \`page.tsx\`
 - Widget layout uses \`<WidgetLayout>\` from \`@moldable-ai/ui\`
-- \`src/app/_moldable/health/route.ts\` exists
+- \`src/app/api/moldable/health/route.ts\` exists
 
 **Do not consider an app complete until it passes lint checks and is registered in the workspace config.**
 
@@ -205,13 +233,15 @@ App registration object structure:
   "name": "App Name",
   "icon": "🚀",
   "port": 3005, // pick next available port (starting from 3001)
-  "path": "/absolute/path/to/app", // e.g. ~/.moldable/shared/apps/{app-id}
+  "path": "/Users/{username}/.moldable/shared/apps/{app-id}", // MUST be absolute path, expand ~ to $HOME
   "command": "pnpm",
   "args": ["dev"],
   "widget_size": "medium", // small, medium, large
   "requires_port": false
 }
 \`\`\`
+
+**Note**: The \`path\` field MUST be an absolute path with \`~\` expanded (e.g., \`/Users/rob/.moldable/shared/apps/my-app\`, not \`~/.moldable/shared/apps/my-app\`).
 
 ## Moldable Storage
 
@@ -226,17 +256,27 @@ Moldable is **local-first** and **workspace-based**—all data lives on the user
 │
 ├── shared/                                 # Shared across ALL workspaces
 │   ├── .env                                # API keys (ANTHROPIC_API_KEY, etc.)
+│   ├── apps/                               # ⭐ APP SOURCE CODE lives here
+│   │   └── {app-id}/                       # e.g., "todo", "meetings"
+│   │       ├── moldable.json               # App manifest
+│   │       ├── package.json
+│   │       └── src/                        # App source code
+│   ├── scripts/                            # Shared scripts (lint-moldable-app.js)
 │   ├── skills/                             # Skills library (instruction & executable)
 │   │   └── {repo-name}/                    # Skills grouped by source repo
 │   │       └── {skill-name}/               # Individual skill (SKILL.md or bin/)
+│   ├── mcps/                               # Custom MCP server code
+│   │   └── {mcp-name}/                     # e.g., "my-api-gateway"
+│   │       ├── server.js                   # MCP server (stdio)
+│   │       └── package.json
 │   └── config/
-│       └── mcp.json                        # Shared MCP servers
+│       └── mcp.json                        # Shared MCP server connections
 │
 └── workspaces/                             # Per-workspace isolated data
     └── {workspace-id}/                     # e.g., "personal", "work"
-        ├── config.json                     # Apps, preferences, installed skills
+        ├── config.json                     # Apps enabled, preferences
         ├── .env                            # Workspace-specific env overrides
-        ├── apps/                           # App data directories
+        ├── apps/                           # ⭐ APP RUNTIME DATA lives here
         │   └── {app-id}/
         │       └── data/                   # App runtime data (SQLite, files)
         ├── conversations/                  # Chat history
@@ -245,10 +285,15 @@ Moldable is **local-first** and **workspace-based**—all data lives on the user
             └── skills.json                 # Which shared skills are enabled
 \`\`\`
 
-**Key paths** (relative to MOLDABLE_HOME):
-- **App data**: \`workspaces/{workspace-id}/apps/{app-id}/data/\` — where apps store JSON files, SQLite databases, etc.
+**Key paths** (relative to MOLDABLE_HOME = \`~/.moldable/\`):
+- **App source code**: \`shared/apps/{app-id}/\` — where app code lives (shared across workspaces)
+- **App runtime data**: \`workspaces/{workspace-id}/apps/{app-id}/data/\` — where apps store JSON files, SQLite databases, etc.
+- **Skills**: \`shared/skills/{repo-name}/{skill-name}/\` — instruction-based (SKILL.md) or executable skills
+- **Custom MCPs**: \`shared/mcps/{mcp-name}/\` — custom MCP server code (server.js, package.json)
+- **MCP config**: \`shared/config/mcp.json\` — shared MCP server connections
 - **Secrets**: \`shared/.env\` — API keys (DEEPL_API_KEY, OPENAI_API_KEY, etc.)
 - **Workspace config**: \`workspaces/{workspace-id}/config.json\` — registered apps for this workspace
+- **Lint script**: \`shared/scripts/lint-moldable-app.js\` — validates app structure
 
 **App data persistence:**
 - Apps should persist data to their data directory, NOT browser localStorage
@@ -428,8 +473,9 @@ export async function buildSystemPrompt(
 ): Promise<string> {
   const {
     currentDate = new Date(),
-    workspacePath,
+    developmentWorkspace,
     activeWorkspaceId,
+    moldableHome,
     osInfo,
     availableTools = [],
     additionalContext,
@@ -455,14 +501,29 @@ export async function buildSystemPrompt(
   if (osInfo) {
     contextParts.push(`Operating system: ${osInfo}`)
   }
-  if (workspacePath) {
-    contextParts.push(`Workspace: ${workspacePath}`)
+  if (moldableHome) {
+    contextParts.push(`MOLDABLE_HOME: ${moldableHome}`)
+    contextParts.push(`App source code directory: ${moldableHome}/shared/apps/`)
+  }
+  if (developmentWorkspace) {
+    contextParts.push(
+      `Development workspace (monorepo): ${developmentWorkspace}`,
+    )
   }
   if (activeWorkspaceId) {
     contextParts.push(`Active workspace ID: ${activeWorkspaceId}`)
-    contextParts.push(
-      `Workspace config path: ~/.moldable/workspaces/${activeWorkspaceId}/config.json`,
-    )
+    if (moldableHome) {
+      contextParts.push(
+        `Workspace config path: ${moldableHome}/workspaces/${activeWorkspaceId}/config.json`,
+      )
+      contextParts.push(
+        `App data directory: ${moldableHome}/workspaces/${activeWorkspaceId}/apps/`,
+      )
+    } else {
+      contextParts.push(
+        `Workspace config path: ~/.moldable/workspaces/${activeWorkspaceId}/config.json`,
+      )
+    }
   }
 
   if (contextParts.length > 0) {
@@ -513,9 +574,9 @@ ${toolInstructions}`)
     }
   }
 
-  // Try to read AGENTS.md from workspace
-  if (includeAgentsFile && workspacePath) {
-    const agentsContent = await readAgentsFile(workspacePath)
+  // Try to read AGENTS.md from development workspace (only relevant when developing Moldable)
+  if (includeAgentsFile && developmentWorkspace) {
+    const agentsContent = await readAgentsFile(developmentWorkspace)
     if (agentsContent) {
       sections.push(`
 ## Workspace Guidelines

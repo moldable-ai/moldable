@@ -37,9 +37,13 @@ import { fileURLToPath } from 'url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
-// Calculate workspace root (3 levels up from packages/ai-server/src)
-const WORKSPACE_ROOT =
-  process.env.MOLDABLE_WORKSPACE || join(__dirname, '..', '..', '..')
+// Development workspace - only relevant when developing Moldable itself
+// This is NOT where user apps go (that's MOLDABLE_HOME/shared/apps/)
+// Only set if explicitly provided via env var or request body
+const WORKSPACE_ROOT = process.env.MOLDABLE_WORKSPACE || null
+
+// Moldable home directory - where all user data, apps, and configs live
+const MOLDABLE_HOME = join(homedir(), '.moldable')
 
 // Try multiple locations for .env file
 // Priority: shared/.env (user home) > dev workspace shared/.env > dev .env
@@ -328,13 +332,21 @@ async function handleChat(
       return
     }
 
-    // Create tools - use provided basePath or default to workspace root
-    const workspacePath = body.basePath || WORKSPACE_ROOT
-    console.log('   Workspace:', workspacePath)
+    // toolsBasePath: Where bash commands run and the default working directory for tools.
+    // - body.basePath: Sent by desktop when user is viewing a specific app (the app's working dir)
+    // - WORKSPACE_ROOT: Fallback for Moldable development (the monorepo path)
+    // - undefined: No specific working dir, tools resolve paths from root
+    //
+    // NOTE: Even with a basePath set, tools can always access ~/.moldable/*
+    // (home dir is allowlisted) so apps are created in MOLDABLE_HOME/shared/apps/
+    const toolsBasePath = body.basePath || WORKSPACE_ROOT || undefined
+    if (toolsBasePath) {
+      console.log('   Tools base path:', toolsBasePath)
+    }
 
     // Create Moldable built-in tools
     const moldableTools = createMoldableTools({
-      basePath: workspacePath,
+      basePath: toolsBasePath,
     })
 
     // Create MCP tools from connected servers
@@ -351,10 +363,12 @@ async function handleChat(
     }
     const toolNames = Object.keys(tools)
 
-    // Build system message (async to load AGENTS.md from workspace)
+    // Build system message (async to load AGENTS.md from development workspace)
+    // developmentWorkspace is ONLY for reading AGENTS.md when developing Moldable itself
     const systemMessage = await buildSystemPrompt({
-      workspacePath,
+      developmentWorkspace: WORKSPACE_ROOT || undefined,
       activeWorkspaceId: body.activeWorkspaceId,
+      moldableHome: MOLDABLE_HOME,
       currentDate: new Date(),
       availableTools: toolNames,
       registeredApps: body.registeredApps,
@@ -1050,7 +1064,10 @@ const server = createServer(async (req, res) => {
 // Start server
 server.listen(Number(PORT), HOST, async () => {
   console.log(`🤖 Moldable AI server running at http://${HOST}:${PORT}`)
-  console.log(`   Workspace root: ${WORKSPACE_ROOT}`)
+  console.log(`   MOLDABLE_HOME: ${MOLDABLE_HOME}`)
+  console.log(
+    `   Development workspace: ${WORKSPACE_ROOT || '(not configured)'}`,
+  )
   console.log(
     `   Anthropic API key: ${process.env.ANTHROPIC_API_KEY ? '✓' : '✗'}`,
   )

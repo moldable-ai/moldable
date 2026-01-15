@@ -3,9 +3,11 @@
  * Stash/restore script for testing Moldable fresh installs
  *
  * Commands:
- *   pnpm data:stash   - Move ~/.moldable to ~/.moldable-bak (simulate fresh install)
- *   pnpm data:restore - Move ~/.moldable-bak back to ~/.moldable
+ *   pnpm data:stash              - Move ~/.moldable to ~/.moldable-bak (simulate fresh install)
+ *   pnpm data:restore            - Copy ~/.moldable-bak back to ~/.moldable (keeps backup)
+ *   pnpm data:restore -- --force - Same, but overwrites existing ~/.moldable if it exists
  */
+import { execSync } from 'child_process'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -45,7 +47,9 @@ function printStatus() {
   } else if (moldableExists && backupExists) {
     console.log('  ⚠️  State: Both directories exist!')
     console.log('  You may have existing data in both locations.')
-    console.log('  Please manually resolve before using this script.')
+    console.log(
+      '  Action: Run "pnpm data:restore -- --force" to overwrite with backup',
+    )
   } else {
     console.log('  State: No Moldable data found')
     console.log('  Both directories are empty - ready for fresh install.')
@@ -83,7 +87,7 @@ function stash() {
   }
 }
 
-function restore() {
+function restore(force = false) {
   console.log('\n🔄 Restoring Moldable data...\n')
 
   const { moldableExists, backupExists } = getStatus()
@@ -93,27 +97,41 @@ function restore() {
     process.exit(1)
   }
 
-  if (moldableExists) {
+  if (moldableExists && !force) {
     console.log('  ✗ Cannot restore - ~/.moldable already exists!')
     console.log('  This might contain data from your fresh install test.')
     console.log('  Please remove or rename it first to avoid data loss.')
+    console.log('  Or use --force to overwrite: pnpm data:restore -- --force')
     process.exit(1)
   }
 
   try {
-    fs.renameSync(BACKUP_DIR, MOLDABLE_DIR)
-    console.log('  ✓ Moved ~/.moldable-bak → ~/.moldable')
+    if (moldableExists && force) {
+      console.log('  ⚠️  Force mode: replacing ~/.moldable with backup...')
+      fs.rmSync(MOLDABLE_DIR, { recursive: true, force: true })
+      console.log('  ✓ Removed existing ~/.moldable')
+    }
+
+    // Copy backup to moldable (keeps backup in case something goes wrong)
+    console.log(
+      '  ⏳ Copying ~/.moldable-bak → ~/.moldable (this may take a while)...',
+    )
+    execSync(`rsync -a "${BACKUP_DIR}/" "${MOLDABLE_DIR}/"`)
+    console.log('  ✓ Copied ~/.moldable-bak → ~/.moldable')
     console.log('')
     console.log('  Your original Moldable data has been restored.')
+    console.log('  Backup kept at ~/.moldable-bak (remove manually when ready)')
     console.log('')
   } catch (error) {
-    console.log(`  ✗ Failed to move directory: ${error.message}`)
+    console.log(`  ✗ Failed to restore: ${error.message}`)
     process.exit(1)
   }
 }
 
 function main() {
   const command = process.argv[2]
+  const args = process.argv.slice(3)
+  const force = args.includes('--force') || args.includes('-f')
 
   console.log('─'.repeat(50))
 
@@ -122,7 +140,7 @@ function main() {
       stash()
       break
     case 'restore':
-      restore()
+      restore(force)
       break
     case 'status':
       printStatus()
@@ -130,8 +148,15 @@ function main() {
     default:
       console.log('\n📦 Moldable Data Stash Tool\n')
       console.log('Commands:')
-      console.log('  pnpm data:stash    Move ~/.moldable → ~/.moldable-bak')
-      console.log('  pnpm data:restore  Move ~/.moldable-bak → ~/.moldable')
+      console.log(
+        '  pnpm data:stash              Move ~/.moldable → ~/.moldable-bak',
+      )
+      console.log(
+        '  pnpm data:restore            Copy ~/.moldable-bak → ~/.moldable (keeps backup)',
+      )
+      console.log(
+        '  pnpm data:restore -- --force Same, but overwrites existing ~/.moldable',
+      )
       console.log('')
       printStatus()
       process.exit(command ? 1 : 0)

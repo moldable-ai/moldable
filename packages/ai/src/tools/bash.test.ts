@@ -1,4 +1,9 @@
-import { createBashTools, getSandboxStatus, resetSandbox } from './bash'
+import {
+  createBashTools,
+  getAugmentedPath,
+  getSandboxStatus,
+  resetSandbox,
+} from './bash'
 import { promises as fs } from 'fs'
 import os from 'os'
 import path from 'path'
@@ -385,5 +390,97 @@ describe('createBashTools with sandbox', () => {
     await execCommand(tools, {
       command: `rm -f "${workspaceFile}" "${moldableFile}"`,
     })
+  })
+})
+
+describe('getAugmentedPath', () => {
+  it('returns a colon-separated PATH string', () => {
+    const augmentedPath = getAugmentedPath()
+
+    expect(typeof augmentedPath).toBe('string')
+    expect(augmentedPath).toContain(':')
+  })
+
+  it('includes standard system paths', () => {
+    const augmentedPath = getAugmentedPath()
+
+    // Should always include these standard paths
+    expect(augmentedPath).toContain('/usr/bin')
+    expect(augmentedPath).toContain('/bin')
+  })
+
+  it('includes homebrew paths', () => {
+    const augmentedPath = getAugmentedPath()
+
+    // Should include homebrew paths (even if they don't exist on the system)
+    expect(augmentedPath).toContain('/opt/homebrew/bin')
+    expect(augmentedPath).toContain('/usr/local/bin')
+  })
+
+  it('includes existing PATH at the end', () => {
+    const originalPath = process.env.PATH
+    const augmentedPath = getAugmentedPath()
+
+    // The original PATH should be included
+    if (originalPath) {
+      expect(augmentedPath).toContain(originalPath)
+      // And it should be at the end (after the colon-joined augmented paths)
+      expect(augmentedPath.endsWith(originalPath)).toBe(true)
+    }
+  })
+
+  it('includes user local bin path', () => {
+    const augmentedPath = getAugmentedPath()
+    const homeDir = os.homedir()
+
+    expect(augmentedPath).toContain(path.join(homeDir, '.local', 'bin'))
+  })
+
+  it('includes nvm path if nvm directory exists', async () => {
+    const homeDir = os.homedir()
+    const nvmDir = path.join(homeDir, '.nvm', 'versions', 'node')
+
+    // Check if nvm is installed on this system
+    let nvmExists = false
+    try {
+      await fs.access(nvmDir)
+      nvmExists = true
+    } catch {
+      nvmExists = false
+    }
+
+    const augmentedPath = getAugmentedPath()
+
+    if (nvmExists) {
+      // If nvm exists, the path should include an nvm node bin directory
+      expect(augmentedPath).toMatch(/\.nvm\/versions\/node\/v[^:]+\/bin/)
+    }
+    // If nvm doesn't exist, we just verify the function doesn't crash
+  })
+
+  it('commands can find node/pnpm with augmented PATH', async () => {
+    // This test verifies the fix actually works - that commands
+    // executed through bash tools can find executables like node/pnpm
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'path-test-'))
+
+    try {
+      const tools = createBashTools({
+        cwd: tempDir,
+        timeout: 10000,
+        disableSandbox: true,
+      })
+
+      // Try to find node - this should work with the augmented PATH
+      const result = await execCommand(tools, { command: 'which node' })
+
+      // On a system with node installed (via nvm, homebrew, etc.),
+      // this should succeed. If node isn't installed at all, this test
+      // just verifies we don't crash.
+      if (result.success) {
+        expect(result.stdout).toMatch(/node/)
+      }
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true })
+    }
   })
 })
