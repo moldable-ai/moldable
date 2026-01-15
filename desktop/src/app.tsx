@@ -16,6 +16,7 @@ import { useHotReloadNotification } from './hooks/use-hot-reload-notification'
 import { useWorkspaces } from './hooks/use-workspaces'
 import { ApiKeyDialog } from './components/api-key-dialog'
 import { AppLogs } from './components/app-logs'
+import { AppUpdateDialog } from './components/app-update-dialog'
 import { AppView } from './components/app-view'
 import { Canvas } from './components/canvas'
 import { ChatContainer } from './components/chat-container'
@@ -488,12 +489,15 @@ export function App() {
         onAddApiKey={() => setShowApiKeySetup(true)}
       />
 
-      {/* Update available notification */}
+      {/* Hot reload notification (development) */}
       <UpdateNotification
         visible={updateAvailable}
         onReload={reloadApp}
         onDismiss={dismissUpdate}
       />
+
+      {/* App update notification (production auto-updates) */}
+      <AppUpdateDialog />
 
       {/* API key setup dialog */}
       <ApiKeyDialog

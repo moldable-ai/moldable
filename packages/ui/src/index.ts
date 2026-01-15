@@ -26,6 +26,9 @@ export {
 // Export UI components
 export * from './components/ui'
 
+// Export hooks
+export { useIsMobile } from './hooks/use-mobile'
+
 // Export Markdown
 export { Markdown } from './components/markdown'
 

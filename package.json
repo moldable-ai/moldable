@@ -32,7 +32,8 @@
     "postinstall": "node scripts/setup-cli-tools.js || true",
     "changeset": "changeset",
     "version-packages": "changeset version",
-    "release": "pnpm build:packages && changeset publish",
+    "release": "pnpm build:packages && changeset publish --no-git-tag",
+    "publish:ui": "pnpm build:packages && cd packages/ui && npm publish --access public --auth-type=web",
     "release:desktop": "node scripts/release-desktop.js"
   },
   "devDependencies": {

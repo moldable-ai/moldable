@@ -42,15 +42,30 @@ jobs:
             echo "version=${GITHUB_REF_NAME#desktop-v}" >> $GITHUB_OUTPUT
           fi
 
+      - name: Extract release notes from changelog
+        id: release_notes
+        run: |
+          VERSION="${{ steps.get_version.outputs.version }}"
+          # Extract notes for this version from CHANGELOG.md
+          # Looks for ## [X.Y.Z] and captures until next ## [ or end
+          NOTES=$(sed -n "/^## \[$VERSION\]/,/^## \[/p" desktop/CHANGELOG.md | sed '1d;$d' | sed '/^$/d')
+          if [ -z "$NOTES" ]; then
+            NOTES="Release v$VERSION"
+          fi
+          # Use heredoc for multiline output
+          echo "notes<<EOF" >> $GITHUB_OUTPUT
+          echo "$NOTES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
       - name: Create Release
         id: create_release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: desktop-v${{ steps.get_version.outputs.version }}
           name: Moldable v${{ steps.get_version.outputs.version }}
+          body: ${{ steps.release_notes.outputs.notes }}
           draft: ${{ github.event_name == 'workflow_dispatch' && inputs.draft || false }}
           prerelease: false
-          generate_release_notes: true
 
   build:
     needs: create-release
@@ -88,8 +103,11 @@ jobs:
           node-version: 22
           cache: 'pnpm'
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
       - name: Install Rust stable
-        uses: dtolnay/rust-action@stable
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
@@ -102,24 +120,62 @@ jobs:
       - name: Install pnpm dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build packages
-        run: pnpm build:packages
+      - name: Build packages (excluding ai-server binary)
+        run: pnpm turbo build --filter=@moldable-ai/*
+
+      - name: Build AI server for target architecture
+        run: |
+          cd packages/ai-server
+          if [ "${{ matrix.target }}" = "aarch64-apple-darwin" ]; then
+            BUN_TARGET="bun-darwin-arm64"
+          else
+            BUN_TARGET="bun-darwin-x64"
+          fi
+          mkdir -p ../../desktop/src-tauri/binaries
+          bun build src/index.ts --compile --target=$BUN_TARGET --outfile "../../desktop/src-tauri/binaries/moldable-ai-server-${{ matrix.target }}"
+          chmod +x "../../desktop/src-tauri/binaries/moldable-ai-server-${{ matrix.target }}"
+
+      - name: Build audio capture sidecar (macOS)
+        if: matrix.platform == 'macos-latest'
+        run: |
+          cd desktop/src-tauri/audio-capture
+          if [ "${{ matrix.target }}" = "aarch64-apple-darwin" ]; then
+            swift build -c release --arch arm64
+          else
+            swift build -c release --arch x86_64
+          fi
+          mkdir -p ../binaries
+          cp .build/release/moldable-audio-capture ../binaries/moldable-audio-capture-${{ matrix.target }}
 
       - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v0.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Uncomment for code signing:
-          # APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          # APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          # APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          # APPLE_ID: ${{ secrets.APPLE_ID }}
-          # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Updater signing keys
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Apple code signing (macOS)
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           projectPath: desktop
           releaseId: ${{ needs.create-release.outputs.release_id }}
-          args: --target ${{ matrix.target }}
+          args: --target ${{ matrix.target }} --bundles dmg,app --verbose
+          includeUpdaterJson: true
+
+      - name: List build outputs (debug)
+        if: always()
+        run: |
+          echo "=== Bundle directory ==="
+          ls -la desktop/src-tauri/target/${{ matrix.target }}/release/bundle/ || echo "Bundle dir not found"
+          echo "=== macOS bundle ==="
+          ls -la desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/ || echo "macos dir not found"
+          echo "=== DMG bundle ==="
+          ls -la desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/ || echo "dmg dir not found"
 
   publish-release:
     needs: [create-release, build]

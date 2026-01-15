@@ -22,7 +22,21 @@ Select affected packages, bump type (patch/minor/major), and describe the change
 
 ## Desktop App
 
-Uses git tags to trigger GitHub Actions builds.
+Uses git tags to trigger GitHub Actions builds. Release notes are maintained manually in `desktop/CHANGELOG.md`.
+
+### Writing Release Notes
+
+Before releasing, update `desktop/CHANGELOG.md`:
+
+```markdown
+## [Unreleased]
+
+- Added onboarding flow for new users
+- Fixed webview crash when loading apps
+- Improved chat panel performance
+```
+
+The release script will move these notes under the new version heading.
 
 ### Release Commands
 
@@ -45,10 +59,13 @@ pnpm release:desktop minor --dry-run
 
 ### What Happens
 
-1. Script bumps version in `desktop/package.json`, `tauri.conf.json`, and `Cargo.toml`
-2. Commits with message `release: desktop vX.Y.Z`
-3. Creates annotated tag `desktop-vX.Y.Z`
-4. Pushes to trigger the release workflow
+1. Script checks for release notes in `desktop/CHANGELOG.md` under `[Unreleased]`
+2. Moves unreleased notes under the new version heading
+3. Bumps version in `desktop/package.json`, `tauri.conf.json`, and `Cargo.toml`
+4. Commits with message `release: desktop vX.Y.Z`
+5. Creates annotated tag `desktop-vX.Y.Z`
+6. Pushes to trigger the release workflow
+7. GitHub Release is created with notes from the changelog
 
 ### Build Artifacts
 

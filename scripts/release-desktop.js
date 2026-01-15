@@ -26,6 +26,7 @@ const desktopDir = path.join(rootDir, 'desktop')
 const PACKAGE_JSON = path.join(desktopDir, 'package.json')
 const TAURI_CONF = path.join(desktopDir, 'src-tauri', 'tauri.conf.json')
 const CARGO_TOML = path.join(desktopDir, 'src-tauri', 'Cargo.toml')
+const CHANGELOG = path.join(desktopDir, 'CHANGELOG.md')
 
 function getCurrentVersion() {
   const pkg = JSON.parse(fs.readFileSync(PACKAGE_JSON, 'utf8'))
@@ -77,6 +78,48 @@ function updateCargoToml(version) {
   content = content.replace(/^(version\s*=\s*")[^"]+(")/m, `$1${version}$2`)
   fs.writeFileSync(CARGO_TOML, content)
   console.log(`  Updated ${path.relative(rootDir, CARGO_TOML)}`)
+}
+
+function getUnreleasedNotes() {
+  if (!fs.existsSync(CHANGELOG)) {
+    return null
+  }
+  const content = fs.readFileSync(CHANGELOG, 'utf8')
+  // Extract content between [Unreleased] and the next ## heading
+  const match = content.match(/## \[Unreleased\]\s*([\s\S]*?)(?=\n## \[|$)/)
+  if (!match) {
+    return null
+  }
+  const notes = match[1].trim()
+  return notes || null
+}
+
+function updateChangelog(version) {
+  if (!fs.existsSync(CHANGELOG)) {
+    console.log(`  Warning: ${path.relative(rootDir, CHANGELOG)} not found`)
+    return null
+  }
+
+  let content = fs.readFileSync(CHANGELOG, 'utf8')
+  const today = new Date().toISOString().split('T')[0]
+
+  // Replace [Unreleased] section with new version, keeping [Unreleased] for future
+  const unreleasedMatch = content.match(
+    /## \[Unreleased\]\s*([\s\S]*?)(?=\n## \[|$)/,
+  )
+  if (unreleasedMatch) {
+    const notes = unreleasedMatch[1].trim()
+    const newSection = `## [Unreleased]\n\n## [${version}] - ${today}\n\n${notes}`
+    content = content.replace(
+      /## \[Unreleased\]\s*[\s\S]*?(?=\n## \[|$)/,
+      newSection + '\n\n',
+    )
+    fs.writeFileSync(CHANGELOG, content)
+    console.log(`  Updated ${path.relative(rootDir, CHANGELOG)}`)
+    return notes
+  }
+
+  return null
 }
 
 function exec(cmd, options = {}) {
@@ -137,23 +180,47 @@ Examples:
   const newVersion = bumpVersion(currentVersion, versionArg)
   const tagName = `desktop-v${newVersion}`
 
+  // Check for release notes
+  const unreleasedNotes = getUnreleasedNotes()
+
   console.log(`\nReleasing Moldable Desktop`)
   console.log(`  Current version: ${currentVersion}`)
   console.log(`  New version: ${newVersion}`)
   console.log(`  Tag: ${tagName}`)
 
+  if (unreleasedNotes) {
+    console.log(`  Release notes: Found`)
+  } else {
+    console.log(
+      `  Release notes: None (add to desktop/CHANGELOG.md under [Unreleased])`,
+    )
+  }
+
   if (dryRun) {
     console.log(`\n[DRY RUN] Would perform the following:`)
+    console.log(`  1. Update CHANGELOG.md with new version heading`)
     console.log(
-      `  1. Update version in package.json, tauri.conf.json, Cargo.toml`,
+      `  2. Update version in package.json, tauri.conf.json, Cargo.toml`,
     )
-    console.log(`  2. Commit: "release: desktop v${newVersion}"`)
-    console.log(`  3. Create tag: ${tagName}`)
+    console.log(`  3. Commit: "release: desktop v${newVersion}"`)
+    console.log(`  4. Create tag: ${tagName}`)
     if (!noPush) {
-      console.log(`  4. Push to origin (triggers release workflow)`)
+      console.log(`  5. Push to origin (triggers release workflow)`)
+    }
+    if (unreleasedNotes) {
+      console.log(`\nRelease notes preview:`)
+      console.log(
+        unreleasedNotes
+          .split('\n')
+          .map((l) => `  ${l}`)
+          .join('\n'),
+      )
     }
     process.exit(0)
   }
+
+  console.log(`\nUpdating changelog...`)
+  updateChangelog(newVersion)
 
   console.log(`\nUpdating version files...`)
   updatePackageJson(newVersion)
@@ -161,7 +228,7 @@ Examples:
   updateCargoToml(newVersion)
 
   console.log(`\nCommitting changes...`)
-  exec(`git add ${PACKAGE_JSON} ${TAURI_CONF} ${CARGO_TOML}`)
+  exec(`git add ${PACKAGE_JSON} ${TAURI_CONF} ${CARGO_TOML} ${CHANGELOG}`)
   exec(`git commit -m "release: desktop v${newVersion}"`)
 
   console.log(`\nCreating tag...`)
