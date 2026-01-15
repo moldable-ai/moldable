@@ -1,0 +1,10 @@
+{
+  "name": "@moldable-ai/prettier-config",
+  "version": "0.0.0",
+  "private": true,
+  "main": "index.js",
+  "dependencies": {
+    "@trivago/prettier-plugin-sort-imports": "5.2.2",
+    "prettier-plugin-tailwindcss": "0.6.12"
+  }
+}

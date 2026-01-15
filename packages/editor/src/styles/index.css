@@ -1,0 +1,71 @@
+/**
+ * Lexical Editor Styles
+ * Include this in your app's global CSS: @import '@moldable-ai/editor/styles';
+ */
+
+/* Checklist styles */
+.lexical-listitem-checked,
+.lexical-listitem-unchecked {
+  position: relative;
+  margin-left: 8px;
+  margin-right: 8px;
+  padding-left: 24px;
+  padding-right: 24px;
+  list-style-type: none;
+  outline: none;
+}
+
+.lexical-listitem-checked {
+  text-decoration: line-through;
+}
+
+.lexical-listitem-unchecked::before,
+.lexical-listitem-checked::before {
+  content: '';
+  width: 16px;
+  height: 16px;
+  top: 2px;
+  left: 0;
+  cursor: pointer;
+  display: block;
+  background-size: cover;
+  position: absolute;
+}
+
+.lexical-listitem-unchecked::before {
+  border: 1px solid hsl(var(--border));
+  border-radius: 4px;
+  background-color: transparent;
+}
+
+.lexical-listitem-checked::before {
+  border: 1px solid hsl(var(--primary));
+  border-radius: 4px;
+  background-color: hsl(var(--primary));
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'%3E%3C/polyline%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 12px;
+}
+
+/* Nested list item styles */
+.lexical-nested-listitem {
+  list-style-type: none;
+}
+
+.lexical-nested-listitem::before {
+  display: none;
+}
+
+.lexical-nested-listitem::after {
+  display: none;
+}
+
+/* Mention styles */
+.mention {
+  color: hsl(var(--primary));
+  font-weight: 600;
+  background-color: hsl(var(--primary) / 0.1);
+  padding: 0 4px;
+  border-radius: 4px;
+}

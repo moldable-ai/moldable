@@ -1,0 +1,45 @@
+@import 'tailwindcss';
+@import '@moldable-ai/ui/styles';
+
+/* Ensure Tailwind scans the UI package for classes */
+@source "../node_modules/@moldable-ai/ui/src/**/*.{ts,tsx}";
+
+@layer base {
+  body {
+    @apply antialiased;
+    font-family:
+      'Inter',
+      -apple-system,
+      BlinkMacSystemFont,
+      'Segoe UI',
+      Roboto,
+      sans-serif;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: oklch(0.5 0 0 / 20%);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: oklch(0.5 0 0 / 40%);
+}
+
+@layer base {
+  /* Prevent text selection during drag */
+  .no-select {
+    user-select: none;
+    -webkit-user-select: none;
+  }
+}

@@ -1,0 +1,26 @@
+# Dependencies
+node_modules
+
+# Build outputs
+.moldable/
+.turbo
+dist
+.next
+out
+
+# Tauri build artifacts
+desktop/src-tauri/target
+desktop/src-tauri/gen
+desktop/src-tauri/audio-capture/.build
+agent/src-tauri/target
+agent/src-tauri/gen
+
+# Lock files
+pnpm-lock.yaml
+
+# Coverage
+coverage
+
+# Generated types
+*.d.ts
+!src/**/*.d.ts

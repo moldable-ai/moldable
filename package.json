@@ -1,0 +1,52 @@
+{
+  "name": "moldable-monorepo",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Moldable - Personal software. Built for change.",
+  "scripts": {
+    "build": "turbo build",
+    "build:packages": "turbo build --filter=@moldable-ai/*",
+    "dev": "turbo dev --concurrency=20",
+    "lint": "turbo lint",
+    "format": "prettier --write . --ignore-path .prettierignore --cache --cache-location .prettiercache",
+    "format:check": "prettier --check . --ignore-path .prettierignore --cache --cache-location .prettiercache",
+    "check-types": "turbo check-types",
+    "clean": "turbo clean && rm -rf .turbo node_modules/.cache",
+    "desktop": "pnpm --filter moldable-desktop tauri dev",
+    "ai-server": "pnpm --filter @moldable-ai/ai-server dev",
+    "test": "turbo test",
+    "build:ai-server": "node scripts/build-ai-server.js",
+    "build:desktop": "pnpm build:packages && pnpm build:ai-server && pnpm --filter moldable-desktop tauri build --bundles app",
+    "build:desktop:install": "pnpm build:desktop && cp -r desktop/src-tauri/target/release/bundle/macos/Moldable.app /Applications/",
+    "pre-commit": "pnpm format && git add -u && pnpm lint && pnpm check-types && pnpm test",
+    "prepare": "husky",
+    "setup:tools": "node scripts/setup-cli-tools.js",
+    "sync:skills": "node scripts/sync-agent-skills.js",
+    "data:stash": "node scripts/stash-moldable-data.js stash",
+    "data:restore": "node scripts/stash-moldable-data.js restore",
+    "postinstall": "node scripts/setup-cli-tools.js || true",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "release": "pnpm build:packages && changeset publish"
+  },
+  "devDependencies": {
+    "@changesets/changelog-github": "^0.5.2",
+    "@changesets/cli": "^2.29.8",
+    "@trivago/prettier-plugin-sort-imports": "5.2.2",
+    "husky": "^9.1.7",
+    "prettier": "3.6.2",
+    "prettier-plugin-tailwindcss": "0.6.12",
+    "turbo": "^2.5.4"
+  },
+  "pnpm": {
+    "overrides": {
+      "esbuild": "0.25.12"
+    }
+  },
+  "packageManager": "pnpm@9.0.0",
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=9.0.0"
+  }
+}

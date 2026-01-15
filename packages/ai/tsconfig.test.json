@@ -1,0 +1,10 @@
+{
+  "extends": "@moldable-ai/typescript-config/react-library.json",
+  "compilerOptions": {
+    "types": ["node", "vitest/globals"],
+    "noEmit": true,
+    "strict": false
+  },
+  "include": ["src/**/*.test.ts"],
+  "exclude": ["node_modules", "dist"]
+}

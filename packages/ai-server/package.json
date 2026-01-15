@@ -1,0 +1,45 @@
+{
+  "name": "@moldable-ai/ai-server",
+  "version": "0.1.0",
+  "description": "Local AI server for Moldable desktop",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "moldable-ai-server": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "build:binary": "bun build src/index.ts --compile --outfile dist/moldable-ai-server",
+    "build:binary:macos-arm64": "bun build src/index.ts --compile --target=bun-darwin-arm64 --outfile dist/moldable-ai-server-aarch64-apple-darwin",
+    "build:binary:macos-x64": "bun build src/index.ts --compile --target=bun-darwin-x64 --outfile dist/moldable-ai-server-x86_64-apple-darwin",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "lint": "eslint . --ext .ts --max-warnings 0",
+    "format": "prettier --write . --ignore-path ../../.prettierignore",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@moldable-ai/ai": "workspace:*",
+    "@moldable-ai/mcp": "workspace:*",
+    "ai": "^6.0.27",
+    "cors": "^2.8.5",
+    "dotenv": "^16.5.0",
+    "fflate": "^0.8.2"
+  },
+  "devDependencies": {
+    "@moldable-ai/eslint-config": "workspace:*",
+    "@moldable-ai/prettier-config": "workspace:*",
+    "@moldable-ai/typescript-config": "workspace:*",
+    "@types/cors": "^2.8.19",
+    "@types/node": "^24.10.6",
+    "eslint": "^9.39.2",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3",
+    "vitest": "^4.0.17"
+  }
+}

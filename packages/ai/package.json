@@ -1,0 +1,54 @@
+{
+  "name": "@moldable-ai/ai",
+  "version": "0.1.0",
+  "description": "AI utilities for Moldable applications",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "import": "./dist/client.js",
+      "require": "./dist/client.js"
+    },
+    "./tools": {
+      "types": "./dist/tools/index.d.ts",
+      "import": "./dist/tools/index.js",
+      "require": "./dist/tools/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "lint": "eslint . --ext .ts,.tsx --max-warnings 0",
+    "format": "prettier --write . --ignore-path ../../.prettierignore",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.9",
+    "@ai-sdk/openai": "^3.0.7",
+    "@anthropic-ai/sandbox-runtime": "^0.0.26",
+    "@openrouter/ai-sdk-provider": "^1.5.4",
+    "ai": "^6.0.27",
+    "zod": "^4.3.5"
+  },
+  "devDependencies": {
+    "@moldable-ai/eslint-config": "workspace:*",
+    "@moldable-ai/prettier-config": "workspace:*",
+    "@moldable-ai/typescript-config": "workspace:*",
+    "@types/node": "^24.0.3",
+    "eslint": "^9.39.2",
+    "typescript": "^5.8.3",
+    "vitest": "^4.0.16"
+  }
+}

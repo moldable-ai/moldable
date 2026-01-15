@@ -1,0 +1,263 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  type ChatMessage,
+  type ChatMessagePart,
+  ChatPanel,
+} from '@moldable-ai/ui'
+import { useChatConversations } from '../hooks/use-chat-conversations'
+import {
+  type ActiveAppContext,
+  type RegisteredAppInfo,
+  getAvailableModels,
+  getReasoningEffortOptions,
+  useMoldableChat,
+} from '../hooks/use-moldable-chat'
+import { VendorLogo } from './vendor-logo'
+
+const WELCOME_MESSAGE = (
+  <div className="space-y-2">
+    <p className="font-medium">👋 Welcome to Moldable</p>
+    <p>
+      Describe any app and watch it come to life—running locally with full
+      system access, completely private, infinitely moldable.
+    </p>
+  </div>
+)
+
+interface ChatContainerProps {
+  isExpanded: boolean
+  onExpandedChange: (expanded: boolean) => void
+  /** Active workspace ID - conversations are scoped to workspace */
+  workspaceId?: string
+  /** All registered apps in Moldable */
+  registeredApps?: RegisteredAppInfo[]
+  /** Currently active app being viewed (if any) */
+  activeApp?: ActiveAppContext | null
+}
+
+export function ChatContainer({
+  isExpanded,
+  onExpandedChange,
+  workspaceId,
+  registeredApps,
+  activeApp,
+}: ChatContainerProps) {
+  const {
+    messages,
+    status,
+    error,
+    sendMessage,
+    stop,
+    setMessages,
+    clearError,
+    selectedModel,
+    setSelectedModel,
+    selectedReasoningEffort,
+    setSelectedReasoningEffort,
+  } = useMoldableChat({
+    activeWorkspaceId: workspaceId,
+    registeredApps,
+    activeApp,
+  })
+
+  const {
+    conversations,
+    currentConversationId,
+    saveConversation,
+    loadConversation,
+    deleteConversation,
+    newConversation,
+  } = useChatConversations(workspaceId)
+
+  const [inputValue, setInputValue] = useState('')
+
+  // Track previous status to detect when streaming ends
+  const prevStatusRef = useRef(status)
+
+  // Save conversation when streaming finishes
+  useEffect(() => {
+    const wasStreaming =
+      prevStatusRef.current === 'streaming' ||
+      prevStatusRef.current === 'submitted'
+    const isNowReady = status === 'ready'
+
+    if (wasStreaming && isNowReady && messages.length > 0) {
+      // Save the conversation
+      saveConversation(messages, currentConversationId)
+    }
+
+    prevStatusRef.current = status
+  }, [status, messages, saveConversation, currentConversationId])
+
+  // Map available models to include vendor logo icons
+  const models = useMemo(
+    () =>
+      getAvailableModels().map((m) => ({
+        id: m.id,
+        name: m.name,
+        icon: <VendorLogo vendor={m.logoVendor ?? m.vendor} />,
+      })),
+    [],
+  )
+
+  // Get reasoning effort options for current model
+  const reasoningEffortOptions = useMemo(
+    () => getReasoningEffortOptions(selectedModel),
+    [selectedModel],
+  )
+
+  const handleInputChange = useCallback(
+    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+      setInputValue(e.target.value)
+    },
+    [],
+  )
+
+  const handleSubmit = useCallback(
+    async (e?: React.FormEvent<HTMLFormElement>) => {
+      e?.preventDefault()
+      const text = inputValue.trim()
+      if (!text) return
+
+      setInputValue('')
+      await sendMessage({
+        role: 'user',
+        parts: [{ type: 'text', text }],
+      })
+    },
+    [inputValue, sendMessage],
+  )
+
+  const handleNewChat = useCallback(() => {
+    setMessages([])
+    clearError()
+    newConversation()
+  }, [setMessages, clearError, newConversation])
+
+  const handleSelectConversation = useCallback(
+    async (id: string) => {
+      const conversation = await loadConversation(id)
+      if (conversation) {
+        setMessages(conversation.messages)
+        clearError()
+      }
+    },
+    [loadConversation, setMessages, clearError],
+  )
+
+  const handleDeleteConversation = useCallback(
+    async (id: string) => {
+      await deleteConversation(id)
+      // If we deleted the current conversation, clear messages
+      if (id === currentConversationId) {
+        setMessages([])
+        clearError()
+      }
+    },
+    [deleteConversation, currentConversationId, setMessages, clearError],
+  )
+
+  // Convert AI SDK messages to our ChatMessage format
+  const chatMessages: ChatMessage[] = messages.map((m) => {
+    // Convert parts to our format
+    const parts: ChatMessagePart[] = []
+    for (const part of m.parts ?? []) {
+      if (part.type === 'text') {
+        parts.push({ type: 'text', text: part.text })
+      } else if (part.type === 'reasoning') {
+        parts.push({ type: 'reasoning', text: part.text })
+      } else if (part.type === 'dynamic-tool') {
+        // Dynamic tool - has toolName property
+        const toolPart = part as {
+          toolCallId?: string
+          toolName?: string
+          state?: string
+          input?: unknown
+          output?: unknown
+        }
+        parts.push({
+          type: 'tool-invocation',
+          toolCallId: toolPart.toolCallId,
+          toolName: toolPart.toolName || 'unknown',
+          state: toolPart.state || 'pending',
+          args: toolPart.input,
+          output: toolPart.output,
+        })
+      } else if (part.type.startsWith('tool-')) {
+        // Static tool - type is "tool-{toolName}"
+        const toolName = part.type.replace('tool-', '')
+        const toolPart = part as {
+          toolCallId?: string
+          state?: string
+          input?: unknown
+          output?: unknown
+        }
+        parts.push({
+          type: 'tool-invocation',
+          toolCallId: toolPart.toolCallId,
+          toolName: toolName,
+          state: toolPart.state || 'pending',
+          args: toolPart.input,
+          output: toolPart.output,
+        })
+      }
+    }
+
+    // Extract text content for backward compatibility
+    const textContent = parts
+      .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
+      .map((p) => p.text)
+      .join('')
+
+    return {
+      id: m.id,
+      role: m.role as 'user' | 'assistant',
+      content: textContent,
+      parts,
+    }
+  })
+
+  // Map AI SDK status to our status
+  const chatStatus =
+    status === 'streaming' || status === 'submitted'
+      ? status
+      : status === 'error'
+        ? 'error'
+        : 'ready'
+
+  // Map conversations to the UI format
+  const conversationMetas = conversations.map((c) => ({
+    id: c.id,
+    title: c.title,
+    createdAt: c.createdAt,
+    updatedAt: c.updatedAt,
+    messageCount: c.messageCount,
+  }))
+
+  return (
+    <ChatPanel
+      messages={chatMessages}
+      status={chatStatus}
+      error={error}
+      input={inputValue}
+      onInputChange={handleInputChange}
+      onSubmit={handleSubmit}
+      onStop={stop}
+      onNewChat={handleNewChat}
+      models={models}
+      selectedModel={selectedModel}
+      onModelChange={setSelectedModel}
+      reasoningEffortOptions={reasoningEffortOptions}
+      selectedReasoningEffort={selectedReasoningEffort}
+      onReasoningEffortChange={setSelectedReasoningEffort}
+      conversations={conversationMetas}
+      currentConversationId={currentConversationId}
+      onSelectConversation={handleSelectConversation}
+      onDeleteConversation={handleDeleteConversation}
+      placeholder="What should we do today?"
+      welcomeMessage={WELCOME_MESSAGE}
+      isExpanded={isExpanded}
+      onExpandedChange={onExpandedChange}
+    />
+  )
+}

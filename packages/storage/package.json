@@ -1,0 +1,52 @@
+{
+  "name": "@moldable-ai/storage",
+  "version": "0.1.0",
+  "description": "Filesystem-first storage utilities for Moldable applications",
+  "author": "Desiderata LLC",
+  "license": "Elastic-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/moldable-ai/moldable.git",
+    "directory": "packages/storage"
+  },
+  "homepage": "https://moldable.sh",
+  "bugs": {
+    "url": "https://github.com/moldable-ai/moldable/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "lint": "eslint . --ext .ts --max-warnings 0",
+    "format": "prettier --write . --ignore-path ../../.prettierignore",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@moldable-ai/eslint-config": "workspace:*",
+    "@moldable-ai/prettier-config": "workspace:*",
+    "@moldable-ai/typescript-config": "workspace:*",
+    "@types/node": "^24.0.3",
+    "eslint": "^9.39.2",
+    "typescript": "^5.8.3",
+    "vitest": "^4.0.16"
+  }
+}

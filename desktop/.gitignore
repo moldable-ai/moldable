@@ -1,0 +1,12 @@
+# Vite
+dist/
+
+# Tauri
+src-tauri/target/
+
+# Rust
+*.rs.bk
+Cargo.lock
+
+# Generated Tauri schemas (regenerated on build)
+src-tauri/gen/schemas/
