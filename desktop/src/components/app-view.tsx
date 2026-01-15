@@ -34,7 +34,7 @@ export function AppView({ app, workspaceId, reloadKey = 0 }: AppViewProps) {
   const { resolvedTheme } = useTheme()
   // Use actual port if available, otherwise configured port
   const runningPort = actualPort ?? app.port
-  const appUrl = `http://localhost:${runningPort}?theme=${resolvedTheme}&workspace=${workspaceId}`
+  const appUrl = `http://127.0.0.1:${runningPort}?theme=${resolvedTheme}&workspace=${workspaceId}`
   const isRunning = state === 'running'
   const isStarting = state === 'starting'
   const isStopped = state === 'stopped'
@@ -84,7 +84,11 @@ export function AppView({ app, workspaceId, reloadKey = 0 }: AppViewProps) {
   useEffect(() => {
     const handleMessage = async (event: MessageEvent) => {
       // Only handle messages from our app's origin
-      if (!event.origin.startsWith('http://localhost:')) return
+      if (
+        !event.origin.startsWith('http://127.0.0.1:') &&
+        !event.origin.startsWith('http://localhost:')
+      )
+        return
 
       if (event.data?.type === 'moldable:open-url' && event.data?.url) {
         try {

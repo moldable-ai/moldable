@@ -452,7 +452,7 @@ export async function checkPort(port: number): Promise<boolean> {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 1000)
 
-    await fetch(`http://localhost:${port}`, {
+    await fetch(`http://127.0.0.1:${port}`, {
       method: 'HEAD',
       signal: controller.signal,
     })
@@ -553,6 +553,55 @@ async function verifyMoldableHealth(
   } catch {
     return false
   }
+}
+
+/**
+ * Warm up an app by preloading its widget and main pages.
+ * This triggers Next.js (or other dev servers) to compile the pages ahead of time,
+ * so they load instantly when the user views them.
+ *
+ * @param port - The port the app is running on
+ * @param maxWaitMs - Maximum time to wait for the app to be ready (default 30s)
+ */
+export async function warmupApp(
+  port: number,
+  maxWaitMs = 30000,
+): Promise<void> {
+  const startTime = Date.now()
+
+  // Wait for port to be ready
+  while (Date.now() - startTime < maxWaitMs) {
+    const ready = await checkPort(port)
+    if (ready) break
+    await new Promise((r) => setTimeout(r, 500))
+  }
+
+  // Give it a tiny bit more time for the server to fully initialize
+  await new Promise((r) => setTimeout(r, 200))
+
+  // Preload pages in parallel - use GET requests to trigger compilation
+  // We don't care about the response, just that the request triggers compilation
+  const pagesToWarmup = ['/widget', '/']
+
+  await Promise.allSettled(
+    pagesToWarmup.map(async (path) => {
+      try {
+        const controller = new AbortController()
+        // Use a longer timeout since compilation can take time
+        const timeout = setTimeout(() => controller.abort(), 15000)
+
+        await fetch(`http://127.0.0.1:${port}${path}`, {
+          method: 'GET',
+          signal: controller.signal,
+          cache: 'no-store',
+        })
+
+        clearTimeout(timeout)
+      } catch {
+        // Ignore errors - the goal is just to trigger compilation
+      }
+    }),
+  )
 }
 
 // Cache the root directory

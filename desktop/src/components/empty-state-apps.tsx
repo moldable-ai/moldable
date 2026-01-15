@@ -2,6 +2,7 @@ import { Plus } from 'lucide-react'
 import { useState } from 'react'
 import { Button, cn } from '@moldable-ai/ui'
 import { AddAppDialog } from './add-app-dialog'
+import { motion } from 'framer-motion'
 
 interface EmptyStateAppsProps {
   onAddApp: () => void
@@ -60,6 +61,28 @@ function CalendarWidgetContent() {
   )
 }
 
+const containerVariants = {
+  hidden: { opacity: 0 },
+  visible: {
+    opacity: 1,
+    transition: {
+      staggerChildren: 0.1,
+    },
+  },
+}
+
+const itemVariants = {
+  hidden: { opacity: 0, y: 20 },
+  visible: {
+    opacity: 1,
+    y: 0,
+    transition: {
+      duration: 0.4,
+      ease: 'easeOut' as const,
+    },
+  },
+}
+
 export function EmptyStateApps({
   onAddApp,
   onRefreshApps,
@@ -81,14 +104,20 @@ export function EmptyStateApps({
   ]
 
   return (
-    <div
+    <motion.div
       className={cn(
         'flex h-full flex-col items-center justify-center px-6 py-16',
         className,
       )}
+      variants={containerVariants}
+      initial="hidden"
+      animate="visible"
     >
       {/* Ghost widget cards grid */}
-      <div className="mx-auto mb-10 grid w-full max-w-lg auto-rows-auto grid-cols-2 gap-4">
+      <motion.div
+        className="mx-auto mb-10 grid w-full max-w-lg auto-rows-auto grid-cols-2 gap-4"
+        variants={itemVariants}
+      >
         {exampleApps.map((app, idx) => (
           <div
             key={idx}
@@ -114,10 +143,13 @@ export function EmptyStateApps({
             <div className="bg-background/50 flex-1">{app.content}</div>
           </div>
         ))}
-      </div>
+      </motion.div>
 
       {/* Message and CTA */}
-      <div className="flex flex-col items-center gap-4">
+      <motion.div
+        className="flex flex-col items-center gap-4"
+        variants={itemVariants}
+      >
         <div className="text-center">
           <h2 className="text-foreground text-lg font-semibold">
             Your apps will appear here
@@ -133,7 +165,7 @@ export function EmptyStateApps({
           <Plus className="mr-2 size-4" />
           Add App
         </Button>
-      </div>
+      </motion.div>
 
       <AddAppDialog
         open={isAddAppDialogOpen}
@@ -141,6 +173,6 @@ export function EmptyStateApps({
         onAddFromFolder={onAddApp}
         onAppInstalled={() => onRefreshApps?.()}
       />
-    </div>
+    </motion.div>
   )
 }

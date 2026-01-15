@@ -33,6 +33,10 @@ interface ChatContainerProps {
   registeredApps?: RegisteredAppInfo[]
   /** Currently active app being viewed (if any) */
   activeApp?: ActiveAppContext | null
+  /** Whether API keys are missing */
+  missingApiKey?: boolean
+  /** Callback to trigger API key setup */
+  onAddApiKey?: () => void
 }
 
 export function ChatContainer({
@@ -41,6 +45,8 @@ export function ChatContainer({
   workspaceId,
   registeredApps,
   activeApp,
+  missingApiKey,
+  onAddApiKey,
 }: ChatContainerProps) {
   const {
     messages,
@@ -258,6 +264,8 @@ export function ChatContainer({
       welcomeMessage={WELCOME_MESSAGE}
       isExpanded={isExpanded}
       onExpandedChange={onExpandedChange}
+      missingApiKey={missingApiKey}
+      onAddApiKey={onAddApiKey}
     />
   )
 }

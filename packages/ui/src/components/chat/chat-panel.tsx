@@ -82,6 +82,10 @@ export interface ChatPanelProps {
   className?: string
   /** Error from chat request */
   error?: Error | null
+  /** Whether API keys are missing */
+  missingApiKey?: boolean
+  /** Callback to trigger API key setup */
+  onAddApiKey?: () => void
 }
 
 /**
@@ -111,6 +115,8 @@ export function ChatPanel({
   onExpandedChange,
   className,
   error,
+  missingApiKey,
+  onAddApiKey,
 }: ChatPanelProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -345,18 +351,47 @@ export function ChatPanel({
                   </div>
                 )}
                 <Messages messages={messages} status={status} />
-                {/* Error display */}
-                {error && status === 'error' && (
-                  <div className="border-destructive/30 bg-destructive/10 text-destructive mx-2 flex items-start gap-2 rounded-lg border p-3 text-sm">
-                    <AlertCircle className="mt-0.5 size-4 shrink-0" />
-                    <div className="min-w-0">
-                      <p className="font-medium">Request failed</p>
-                      <p className="text-destructive/80 mt-0.5 break-words">
-                        {error.message || 'An unknown error occurred'}
+                {/* Missing API key prompt */}
+                {(missingApiKey ||
+                  (error &&
+                    error.message?.includes('API_KEY not configured'))) && (
+                  <div className="border-primary/30 bg-primary/5 mx-2 flex flex-col items-center gap-3 rounded-lg border p-4 text-center">
+                    <div className="bg-primary/10 flex size-10 items-center justify-center rounded-full">
+                      <AlertCircle className="text-primary size-5" />
+                    </div>
+                    <div>
+                      <p className="text-foreground font-medium">
+                        API key required
+                      </p>
+                      <p className="text-muted-foreground mt-1 text-sm">
+                        Add an API key to start chatting with AI
                       </p>
                     </div>
+                    {onAddApiKey && (
+                      <Button
+                        onClick={onAddApiKey}
+                        size="sm"
+                        className="cursor-pointer"
+                      >
+                        Add API key
+                      </Button>
+                    )}
                   </div>
                 )}
+                {/* Error display - don't show for API key errors */}
+                {error &&
+                  status === 'error' &&
+                  !error.message?.includes('API_KEY not configured') && (
+                    <div className="border-destructive/30 bg-destructive/10 text-destructive mx-2 flex items-start gap-2 rounded-lg border p-3 text-sm">
+                      <AlertCircle className="mt-0.5 size-4 shrink-0" />
+                      <div className="min-w-0">
+                        <p className="font-medium">Request failed</p>
+                        <p className="text-destructive/80 mt-0.5 break-words">
+                          {error.message || 'An unknown error occurred'}
+                        </p>
+                      </div>
+                    </div>
+                  )}
                 <div ref={messagesEndRef} />
               </div>
             </ScrollArea>

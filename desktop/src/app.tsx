@@ -7,18 +7,20 @@ import {
   discoverAppPort,
   getRegisteredApps,
   removeApp,
+  warmupApp,
 } from './lib/app-manager'
 import { cn } from './lib/utils'
 import { useAIServerHealth } from './hooks/use-ai-server-health'
 import { useAppStatus } from './hooks/use-app-status'
 import { useHotReloadNotification } from './hooks/use-hot-reload-notification'
 import { useWorkspaces } from './hooks/use-workspaces'
+import { ApiKeyDialog } from './components/api-key-dialog'
 import { AppLogs } from './components/app-logs'
 import { AppView } from './components/app-view'
 import { Canvas } from './components/canvas'
 import { ChatContainer } from './components/chat-container'
 import { GlobalCommandMenu } from './components/global-command-menu'
-import { OnboardingDialog } from './components/onboarding-dialog'
+import { Onboarding } from './components/onboarding'
 import { Sidebar } from './components/sidebar'
 import { UpdateNotification } from './components/update-notification'
 import { WorkspaceSelector } from './components/workspace-selector'
@@ -33,13 +35,16 @@ function useAppConfigs(workspaceId: string | undefined) {
     const appConfigs = await getRegisteredApps()
     setApps(appConfigs)
 
-    // Auto-start all apps on launch
+    // Auto-start all apps on launch and collect ports for warmup
     console.log('🚀 Auto-starting registered apps...')
+    const portsToWarmup: { app: AppConfig; port: number }[] = []
+
     for (const app of appConfigs) {
       // Check if already running (discovers actual port, not just configured)
       const runningPort = await discoverAppPort(app.id, app.workingDir)
       if (runningPort) {
         console.log(`✅ ${app.name} already running on port ${runningPort}`)
+        portsToWarmup.push({ app, port: runningPort })
       } else {
         console.log(`▶️  Starting ${app.name}...`)
         try {
@@ -52,12 +57,29 @@ function useAppConfigs(workspaceId: string | undefined) {
             console.log(
               `✅ ${app.name} ${result.status} on port ${result.port}`,
             )
+            portsToWarmup.push({ app, port: result.port })
           }
           console.log(`✅ ${app.name} started`)
         } catch (err) {
           console.error(`❌ Failed to start ${app.name}:`, err)
         }
       }
+    }
+
+    // Warm up all apps in parallel (preload widget and main pages)
+    // This triggers Next.js to compile pages so they load instantly
+    if (portsToWarmup.length > 0) {
+      console.log('🔥 Warming up app pages...')
+      Promise.allSettled(
+        portsToWarmup.map(async ({ app, port }) => {
+          try {
+            await warmupApp(port)
+            console.log(`🔥 ${app.name} warmed up`)
+          } catch (err) {
+            console.warn(`⚠️ Failed to warm up ${app.name}:`, err)
+          }
+        }),
+      )
     }
   }, [])
 
@@ -68,17 +90,37 @@ function useAppConfigs(workspaceId: string | undefined) {
     setApps(appConfigs)
 
     // Auto-start any new apps that aren't running
+    const portsToWarmup: { app: AppConfig; port: number }[] = []
+
     for (const app of appConfigs) {
       const runningPort = await discoverAppPort(app.id, app.workingDir)
       if (!runningPort) {
         console.log(`▶️  Starting new app ${app.name}...`)
         try {
-          await autoStartApp(app)
+          const result = await autoStartApp(app)
+          if (result.status !== 'port_conflict') {
+            portsToWarmup.push({ app, port: result.port })
+          }
           console.log(`✅ ${app.name} started`)
         } catch (err) {
           console.error(`❌ Failed to start ${app.name}:`, err)
         }
       }
+    }
+
+    // Warm up newly started apps
+    if (portsToWarmup.length > 0) {
+      console.log('🔥 Warming up new app pages...')
+      Promise.allSettled(
+        portsToWarmup.map(async ({ app, port }) => {
+          try {
+            await warmupApp(port)
+            console.log(`🔥 ${app.name} warmed up`)
+          } catch (err) {
+            console.warn(`⚠️ Failed to warm up ${app.name}:`, err)
+          }
+        }),
+      )
     }
   }, [])
 
@@ -118,6 +160,13 @@ function useAppConfigs(workspaceId: string | undefined) {
           console.warn(
             `⚠️  ${newApp.name} requires port ${result.port} but it's in use. Will prompt on open.`,
           )
+        } else {
+          // Warm up the new app in the background
+          warmupApp(result.port)
+            .then(() => console.log(`🔥 ${newApp.name} warmed up`))
+            .catch((err) =>
+              console.warn(`⚠️ Failed to warm up ${newApp.name}:`, err),
+            )
         }
       }
     } catch (err) {
@@ -139,11 +188,15 @@ export function App() {
   const {
     workspaces,
     activeWorkspace,
+    isLoading: isLoadingWorkspaces,
     setActiveWorkspace,
     createWorkspace,
     updateWorkspace,
     deleteWorkspace,
   } = useWorkspaces()
+
+  // Track if user has completed onboarding this session (required for WebKit iframe painting)
+  const [hasCompletedOnboarding, setHasCompletedOnboarding] = useState(false)
 
   const { apps, addApp, deleteApp, reloadApps } = useAppConfigs(
     activeWorkspace?.id,
@@ -153,6 +206,7 @@ export function App() {
   const [isChatExpanded, setIsChatExpanded] = useState(false)
   const [isLogsOpen, setIsLogsOpen] = useState(false)
   const [userHomeDir, setUserHomeDir] = useState<string | null>(null)
+  const [showApiKeySetup, setShowApiKeySetup] = useState(false)
 
   // Load user's home directory for constructing data paths
   useEffect(() => {
@@ -203,10 +257,6 @@ export function App() {
   const isError = state === 'error'
   const isTransitioning = state === 'starting' || state === 'stopping'
 
-  // Show onboarding if server is down or keys are missing
-  const showOnboarding =
-    health.status === 'unhealthy' || health.status === 'no-keys'
-
   // Auto-open logs when app errors
   useEffect(() => {
     if (isError && activeApp) {
@@ -223,6 +273,31 @@ export function App() {
   const handleChatToggle = useCallback(() => {
     setIsChatExpanded((prev) => !prev)
   }, [])
+
+  const handleOnboardingComplete = useCallback(
+    (workspaceId: string) => {
+      setActiveWorkspace(workspaceId)
+      setHasCompletedOnboarding(true)
+    },
+    [setActiveWorkspace],
+  )
+
+  // Show onboarding until complete (provides user gesture for WebKit iframe painting)
+  if (
+    !isLoadingWorkspaces &&
+    !hasCompletedOnboarding &&
+    workspaces.length > 0
+  ) {
+    return (
+      <Onboarding
+        workspaces={workspaces}
+        health={health}
+        onComplete={handleOnboardingComplete}
+        onCreateWorkspace={createWorkspace}
+        onHealthRetry={checkHealth}
+      />
+    )
+  }
 
   return (
     <div
@@ -409,6 +484,8 @@ export function App() {
               }
             : null
         }
+        missingApiKey={health.status === 'no-keys'}
+        onAddApiKey={() => setShowApiKeySetup(true)}
       />
 
       {/* Update available notification */}
@@ -418,10 +495,12 @@ export function App() {
         onDismiss={dismissUpdate}
       />
 
-      {/* Onboarding dialog when AI server needs setup */}
-      {showOnboarding && (
-        <OnboardingDialog health={health} onRetry={checkHealth} />
-      )}
+      {/* API key setup dialog */}
+      <ApiKeyDialog
+        open={showApiKeySetup}
+        onOpenChange={setShowApiKeySetup}
+        onSuccess={checkHealth}
+      />
 
       {/* App logs viewer */}
       {activeApp && (

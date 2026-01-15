@@ -69,7 +69,7 @@ export function GlobalCommandMenu({
       'on port',
       activeAppPort,
     )
-    fetch(`http://localhost:${activeAppPort}/api/moldable/commands`)
+    fetch(`http://127.0.0.1:${activeAppPort}/api/moldable/commands`)
       .then((r) => r.json())
       .then((data) => {
         console.log('[GlobalCommandMenu] Got commands:', data.commands)

@@ -17,9 +17,9 @@ interface WidgetCardProps {
 }
 
 const WIDGET_SIZES = {
-  small: 'col-span-1 row-span-1 min-h-[140px]',
-  medium: 'col-span-1 row-span-1 min-h-[200px]',
-  large: 'col-span-2 row-span-1 min-h-[200px]',
+  small: 'min-h-[140px]',
+  medium: 'min-h-[200px]',
+  large: 'min-h-[200px]',
 }
 
 const STATUS_BG_COLORS: Record<AppState, string> = {
@@ -46,7 +46,7 @@ export function WidgetCard({ app, workspaceId, onClick }: WidgetCardProps) {
   const { resolvedTheme } = useTheme()
   // Use actual port if available, otherwise configured port
   const runningPort = actualPort ?? app.port
-  const widgetUrl = `http://localhost:${runningPort}/widget?theme=${resolvedTheme}&workspace=${workspaceId}`
+  const widgetUrl = `http://127.0.0.1:${runningPort}/widget?theme=${resolvedTheme}&workspace=${workspaceId}`
   const isRunning = state === 'running'
   const isStarting = state === 'starting'
   const isError = state === 'error'
@@ -54,7 +54,7 @@ export function WidgetCard({ app, workspaceId, onClick }: WidgetCardProps) {
   return (
     <div
       className={cn(
-        'border-border bg-card hover:border-primary/50 hover:shadow-primary/5 group relative flex flex-col overflow-hidden rounded-2xl border transition-all hover:shadow-lg',
+        'border-border bg-card hover:border-primary/50 hover:shadow-primary/5 group relative flex h-full flex-col overflow-hidden rounded-2xl border transition-all hover:shadow-lg',
         WIDGET_SIZES[app.widgetSize],
       )}
     >

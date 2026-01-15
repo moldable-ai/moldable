@@ -236,6 +236,9 @@ importers:
       '@lexical/extension':
         specifier: ^0.39.0
         version: 0.39.0
+      '@lexical/headless':
+        specifier: ^0.39.0
+        version: 0.39.0
       '@lexical/html':
         specifier: ^0.39.0
         version: 0.39.0
@@ -282,9 +285,6 @@ importers:
         specifier: ^4.0.1
         version: 4.0.1
     devDependencies:
-      '@lexical/headless':
-        specifier: ^0.39.0
-        version: 0.39.0
       '@moldable-ai/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
