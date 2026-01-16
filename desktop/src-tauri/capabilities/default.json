@@ -18,6 +18,8 @@
         { "path": "$HOME/moldable/**" }
       ]
     },
-    "fs:default"
+    "fs:default",
+    "updater:default",
+    "process:default"
   ]
 }

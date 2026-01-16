@@ -105,21 +105,21 @@ export function Sidebar({
 
   const handleCheckForUpdate = useCallback(async () => {
     const toastId = toast.loading('Checking for updates...')
-    try {
-      const update = await checkForUpdate()
-      if (update?.available) {
-        toast.success(`Update available: v${update.version}`, {
-          id: toastId,
-          description: 'Check the notification in the bottom left corner.',
-        })
-      } else {
-        toast.success("You're on the latest version", { id: toastId })
-      }
-    } catch (error) {
+    const { update, error } = await checkForUpdate()
+
+    if (error) {
       toast.error('Failed to check for updates', {
         id: toastId,
-        description: error instanceof Error ? error.message : 'Unknown error',
       })
+    } else if (update) {
+      // Got an Update object = update available
+      toast.success(`Update available: v${update.version}`, {
+        id: toastId,
+        description: 'Check the notification in the bottom left corner.',
+      })
+    } else {
+      // null = no update available
+      toast.success("You're on the latest version", { id: toastId })
     }
   }, [checkForUpdate])
 

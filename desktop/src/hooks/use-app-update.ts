@@ -41,18 +41,19 @@ export function useAppUpdate(options: UseAppUpdateOptions = {}) {
     setState((s) => ({ ...s, checking: true, error: null }))
     try {
       const update = await check()
+      // update is non-null if update available, null if on latest version
       console.log('[update] Check result:', {
-        available: update?.available,
+        updateAvailable: update !== null,
         version: update?.version,
         currentVersion: update?.currentVersion,
       })
       setState((s) => ({
         ...s,
         checking: false,
-        available: update?.available ?? false,
+        available: update !== null,
         update: update ?? null,
       }))
-      return update
+      return { update, error: false as const }
     } catch (error) {
       // Don't show error for expected failures (no internet, etc.)
       const errorMessage =
@@ -68,14 +69,14 @@ export function useAppUpdate(options: UseAppUpdateOptions = {}) {
       ) {
         console.debug('[update] Network unavailable, skipping update check')
         setState((s) => ({ ...s, checking: false }))
-        return null
+        return { update: null, error: false as const }
       }
       setState((s) => ({
         ...s,
         checking: false,
         error: errorMessage,
       }))
-      return null
+      return { update: null, error: true as const }
     }
   }, [])
 
@@ -111,9 +112,17 @@ export function useAppUpdate(options: UseAppUpdateOptions = {}) {
       console.log('[update] Relaunching to apply update...')
       await relaunch()
     } catch (error) {
+      console.error('[update] Install failed - full error:', error)
+      console.error('[update] Error type:', typeof error)
+      console.error(
+        '[update] Error constructor:',
+        (error as Error)?.constructor?.name,
+      )
+      if (error instanceof Error) {
+        console.error('[update] Error stack:', error.stack)
+      }
       const errorMessage =
-        error instanceof Error ? error.message : 'Update failed'
-      console.error('[update] Install failed:', errorMessage)
+        error instanceof Error ? error.message : String(error)
       setState((s) => ({
         ...s,
         downloading: false,
