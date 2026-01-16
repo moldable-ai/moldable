@@ -2668,8 +2668,24 @@ fn cleanup_ai_server(state: &Arc<Mutex<Option<CommandChild>>>) {
     if let Ok(mut ai_server) = state.lock() {
         if let Some(child) = ai_server.take() {
             println!("🛑 Stopping AI server...");
-            let _ = child.kill();
-            println!("✅ AI server stopped");
+            
+            // Get PID before attempting kill
+            let pid = child.pid();
+            
+            // Try graceful kill first via Tauri's CommandChild
+            let kill_result = child.kill();
+            if let Err(e) = kill_result {
+                eprintln!("  Tauri kill failed: {}, using kill_process_tree", e);
+            }
+            
+            // Always use kill_process_tree to ensure all children are killed
+            // (the AI server may spawn node processes that outlive the parent)
+            kill_process_tree(pid);
+            
+            // Give processes a moment to clean up
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            
+            println!("✅ AI server stopped (pid {})", pid);
         }
     }
 }
