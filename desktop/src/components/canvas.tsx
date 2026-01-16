@@ -65,6 +65,8 @@ export function Canvas({
           <motion.div
             key={app.id}
             variants={itemVariants}
+            initial="hidden"
+            animate="visible"
             className={WIDGET_GRID_CLASSES[app.widgetSize]}
           >
             <WidgetCard

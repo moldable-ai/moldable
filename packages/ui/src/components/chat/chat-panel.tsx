@@ -1,6 +1,6 @@
 'use client'
 
-import { AlertCircle, MessageCircle, Minimize2, Plus } from 'lucide-react'
+import { AlertCircle, ChevronDown, MessageCircle, Plus } from 'lucide-react'
 import {
   type ChangeEvent,
   type FormEvent,
@@ -380,7 +380,7 @@ export function ChatPanel({
                         onClick={handleMinimize}
                         className="text-muted-foreground hover:text-foreground"
                       >
-                        <Minimize2 className="size-4" />
+                        <ChevronDown className="size-4" />
                       </Button>
                     </TooltipTrigger>
                     <TooltipContent side="bottom">

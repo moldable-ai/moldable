@@ -6,6 +6,7 @@ use std::thread;
 use std::time::Duration;
 use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri_plugin_shell::ShellExt;
 use tauri_plugin_shell::process::CommandChild;
 
@@ -1075,6 +1076,72 @@ fn ensure_bundled_scripts(app_handle: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Install the Hello Moldables tutorial app on first launch
+/// This downloads from the moldable-ai/apps GitHub repo like other apps
+async fn ensure_hello_moldables_app_async(app_handle: tauri::AppHandle) -> Result<(), String> {
+    // Check if already installed (stored in shared config)
+    let shared_config = load_shared_config();
+    if shared_config.hello_moldables_installed {
+        return Ok(());
+    }
+    
+    println!("👋 Installing Hello Moldables tutorial app from GitHub...");
+    
+    // Fetch the app registry to get the hello-moldables app info
+    let registry = fetch_app_registry(Some(false)).await?;
+    
+    // Find the hello-moldables app in the registry
+    let hello_app = registry.apps.iter()
+        .find(|app| app.id == "hello-moldables")
+        .ok_or_else(|| "Hello Moldables app not found in registry".to_string())?;
+    
+    // Install from registry (this handles download, pnpm install, and registration)
+    match install_app_from_registry(
+        app_handle,
+        hello_app.id.clone(),
+        hello_app.path.clone(),
+        hello_app.commit.clone(),
+        hello_app.version.clone(),
+    ).await {
+        Ok(_) => {
+            println!("✅ Hello Moldables app installed!");
+        }
+        Err(e) => {
+            // Don't fail if already installed in workspace
+            if !e.contains("already installed") {
+                return Err(e);
+            }
+            println!("  Hello Moldables already installed in workspace");
+        }
+    }
+    
+    // Mark as installed in shared config so it won't reinstall if user deletes it
+    let mut shared_config = load_shared_config();
+    shared_config.hello_moldables_installed = true;
+    save_shared_config(&shared_config)?;
+    
+    Ok(())
+}
+
+/// Sync wrapper to spawn the async Hello Moldables installation
+fn ensure_hello_moldables_app(app_handle: &tauri::AppHandle) {
+    // Check if already installed first (avoid spawning task if not needed)
+    let shared_config = load_shared_config();
+    if shared_config.hello_moldables_installed {
+        return;
+    }
+    
+    let handle = app_handle.clone();
+    
+    // Spawn async task to install from GitHub
+    // This runs in the background so it doesn't block app startup
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = ensure_hello_moldables_app_async(handle).await {
+            eprintln!("⚠️  Failed to install Hello Moldables app: {}", e);
+        }
+    });
+}
+
 // ==================== END WORKSPACES ====================
 
 #[tauri::command]
@@ -1817,6 +1884,55 @@ fn get_all_preferences() -> Result<serde_json::Map<String, serde_json::Value>, S
         .map_err(|e| format!("Failed to parse config: {}", e))?;
     
     Ok(config.preferences)
+}
+
+// ==================== SHARED CONFIG ====================
+
+/// Shared config stored in ~/.moldable/shared/config.json
+/// Used for preferences that should persist across all workspaces
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct SharedConfig {
+    /// Whether the Hello Moldables tutorial app has been installed
+    #[serde(default)]
+    hello_moldables_installed: bool,
+}
+
+fn get_shared_config_path() -> Result<std::path::PathBuf, String> {
+    let home = std::env::var("HOME").map_err(|_| "Could not get HOME directory")?;
+    Ok(std::path::PathBuf::from(format!("{}/.moldable/shared/config.json", home)))
+}
+
+fn load_shared_config() -> SharedConfig {
+    let config_path = match get_shared_config_path() {
+        Ok(p) => p,
+        Err(_) => return SharedConfig::default(),
+    };
+    
+    if !config_path.exists() {
+        return SharedConfig::default();
+    }
+    
+    match std::fs::read_to_string(&config_path) {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+        Err(_) => SharedConfig::default(),
+    }
+}
+
+fn save_shared_config(config: &SharedConfig) -> Result<(), String> {
+    let config_path = get_shared_config_path()?;
+    
+    // Ensure directory exists
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create shared config directory: {}", e))?;
+    }
+    
+    let content = serde_json::to_string_pretty(config)
+        .map_err(|e| format!("Failed to serialize shared config: {}", e))?;
+    std::fs::write(&config_path, content)
+        .map_err(|e| format!("Failed to write shared config: {}", e))?;
+    
+    Ok(())
 }
 
 /// Available app info for installation
@@ -2891,6 +3007,80 @@ pub fn run() {
                 window.open_devtools();
             }
             
+            // Create custom menu to override Cmd+M (which normally minimizes on macOS)
+            let toggle_chat = MenuItemBuilder::new("Toggle Chat")
+                .id("toggle_chat")
+                .accelerator("CmdOrCtrl+M")
+                .build(app)?;
+            
+            // Build "Moldable" app menu with About, Hide, Quit, etc.
+            // Load and decode the app icon (PNG) for the About dialog
+            let icon = {
+                let png_bytes = include_bytes!("../icons/128x128.png");
+                image::load_from_memory(png_bytes)
+                    .ok()
+                    .map(|img| {
+                        let rgba = img.to_rgba8();
+                        let (width, height) = rgba.dimensions();
+                        tauri::image::Image::new_owned(rgba.into_raw(), width, height)
+                    })
+            };
+            
+            let app_menu = SubmenuBuilder::new(app, "Moldable")
+                .about(Some(tauri::menu::AboutMetadata {
+                    name: Some("Moldable".to_string()),
+                    version: Some(env!("CARGO_PKG_VERSION").to_string()),
+                    short_version: Some("prod".to_string()),
+                    copyright: Some("© 2026 Moldable AI".to_string()),
+                    icon,
+                    ..Default::default()
+                }))
+                .separator()
+                .services()
+                .separator()
+                .hide()
+                .hide_others()
+                .show_all()
+                .separator()
+                .quit()
+                .build()?;
+            
+            // Build Edit submenu with standard shortcuts (Cmd+A, Cmd+C, Cmd+V, etc.)
+            let edit_menu = SubmenuBuilder::new(app, "Edit")
+                .undo()
+                .redo()
+                .separator()
+                .cut()
+                .copy()
+                .paste()
+                .select_all()
+                .build()?;
+            
+            // Build a minimal Window submenu with our custom item
+            let window_menu = SubmenuBuilder::new(app, "Window")
+                .item(&toggle_chat)
+                .separator()
+                .minimize()
+                .maximize()
+                .close_window()
+                .build()?;
+            
+            let menu = MenuBuilder::new(app)
+                .item(&app_menu)
+                .item(&edit_menu)
+                .item(&window_menu)
+                .build()?;
+            
+            app.set_menu(menu)?;
+            
+            // Handle menu events
+            app.on_menu_event(move |app_handle, event| {
+                if event.id().as_ref() == "toggle_chat" {
+                    // Emit event to frontend
+                    let _ = app_handle.emit("toggle-chat", ());
+                }
+            });
+            
             // Ensure default workspace exists on fresh install
             if let Err(e) = ensure_default_workspace() {
                 eprintln!("⚠️  Failed to create default workspace: {}", e);
@@ -2900,6 +3090,9 @@ pub fn run() {
             if let Err(e) = ensure_bundled_scripts(app.handle()) {
                 eprintln!("⚠️  Failed to install bundled scripts: {}", e);
             }
+            
+            // Install Hello Moldables tutorial app on first launch (async, runs in background)
+            ensure_hello_moldables_app(app.handle());
             
             // Start AI server sidecar
             if let Err(e) = start_ai_server(app.handle(), ai_server_for_setup) {

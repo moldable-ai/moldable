@@ -457,18 +457,19 @@ export function Onboarding({
               <AnimatePresence>
                 {!isCreating && (
                   <motion.p
-                    className="text-muted-foreground max-w-[280px] text-center text-xs"
+                    className="text-muted-foreground/75 mt-10 max-w-[280px] text-center text-xs"
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
                     transition={{ delay: 0.2 }}
                   >
-                    By continuing, you agree to our{' '}
+                    By continuing, you agree to our
+                    <br />
                     <a
                       href="https://moldable.sh/legal/terms"
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-foreground underline underline-offset-2"
+                      className="text-muted-foreground underline underline-offset-2"
                     >
                       Terms of Service
                     </a>{' '}
@@ -477,7 +478,7 @@ export function Onboarding({
                       href="https://moldable.sh/legal/privacy"
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-foreground underline underline-offset-2"
+                      className="text-muted-foreground underline underline-offset-2"
                     >
                       Privacy Policy
                     </a>

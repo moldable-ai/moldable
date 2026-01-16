@@ -41,7 +41,7 @@ export function UpdateNotification({
           {/* Message */}
           <div className="flex flex-col gap-0.5">
             <span className="text-foreground text-sm font-medium">
-              New update available
+              Local update available
             </span>
           </div>
 

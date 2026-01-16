@@ -2,7 +2,10 @@ import { useChat } from '@ai-sdk/react'
 import { useEffect, useRef, useState } from 'react'
 import { type ReasoningEffort } from '@moldable-ai/ai/client'
 import { isTauri } from '../lib/app-manager'
-import { useMoldablePreferences } from './use-moldable-preferences'
+import {
+  type AvailableKeys,
+  useMoldablePreferences,
+} from './use-moldable-preferences'
 import { invoke } from '@tauri-apps/api/core'
 import { DefaultChatTransport, type UIMessage } from 'ai'
 
@@ -32,6 +35,8 @@ interface UseMoldableChatOptions {
   registeredApps?: RegisteredAppInfo[]
   /** Currently active/focused app in Moldable */
   activeApp?: ActiveAppContext | null
+  /** Available API keys from health check - used to auto-select appropriate model */
+  availableKeys?: AvailableKeys
   /** Callback when a response finishes streaming */
   onFinish?: (messages: UIMessage[]) => void
 }
@@ -50,8 +55,13 @@ interface DynamicBodyStore {
  * Hook for managing Moldable chat using AI SDK's useChat
  */
 export function useMoldableChat(options: UseMoldableChatOptions = {}) {
-  const { activeWorkspaceId, registeredApps = [], activeApp = null } = options
-  const preferences = useMoldablePreferences()
+  const {
+    activeWorkspaceId,
+    registeredApps = [],
+    activeApp = null,
+    availableKeys,
+  } = options
+  const preferences = useMoldablePreferences({ availableKeys })
   const [workspacePath, setWorkspacePath] = useState<string | null>(null)
 
   // Use a ref to store dynamic values that the transport body function can read

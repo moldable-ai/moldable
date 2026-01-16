@@ -12,6 +12,7 @@ import {
   getReasoningEffortOptions,
   useMoldableChat,
 } from '../hooks/use-moldable-chat'
+import type { AvailableKeys } from '../hooks/use-moldable-preferences'
 import { VendorLogo } from './vendor-logo'
 
 const WELCOME_MESSAGE = (
@@ -36,10 +37,16 @@ interface ChatContainerProps {
   registeredApps?: RegisteredAppInfo[]
   /** Currently active app being viewed (if any) */
   activeApp?: ActiveAppContext | null
+  /** Available API keys - used to auto-select appropriate model */
+  availableKeys?: AvailableKeys
   /** Whether API keys are missing */
   missingApiKey?: boolean
   /** Callback to trigger API key setup */
   onAddApiKey?: () => void
+  /** External input to populate (from apps via postMessage) */
+  suggestedInput?: string
+  /** Called when suggested input has been consumed */
+  onSuggestedInputConsumed?: () => void
 }
 
 export function ChatContainer({
@@ -50,8 +57,11 @@ export function ChatContainer({
   workspaceId,
   registeredApps,
   activeApp,
+  availableKeys,
   missingApiKey,
   onAddApiKey,
+  suggestedInput,
+  onSuggestedInputConsumed,
 }: ChatContainerProps) {
   const {
     messages,
@@ -69,6 +79,7 @@ export function ChatContainer({
     activeWorkspaceId: workspaceId,
     registeredApps,
     activeApp,
+    availableKeys,
   })
 
   const {
@@ -81,6 +92,14 @@ export function ChatContainer({
   } = useChatConversations(workspaceId)
 
   const [inputValue, setInputValue] = useState('')
+
+  // Consume suggested input from external sources (e.g., apps via postMessage)
+  useEffect(() => {
+    if (suggestedInput) {
+      setInputValue(suggestedInput)
+      onSuggestedInputConsumed?.()
+    }
+  }, [suggestedInput, onSuggestedInputConsumed])
 
   // Track previous status to detect when streaming ends
   const prevStatusRef = useRef(status)

@@ -212,6 +212,9 @@ export function App() {
   const [reloadKey, setReloadKey] = useState(0)
   const [isChatExpanded, setIsChatExpanded] = useState(false)
   const [isChatMinimized, setIsChatMinimized] = useState(false)
+  const [suggestedChatInput, setSuggestedChatInput] = useState<
+    string | undefined
+  >()
   const [isLogsOpen, setIsLogsOpen] = useState(false)
   const [userHomeDir, setUserHomeDir] = useState<string | null>(null)
   const [showApiKeySetup, setShowApiKeySetup] = useState(false)
@@ -286,21 +289,44 @@ export function App() {
     setIsChatExpanded((prev) => !prev)
   }, [isChatMinimized])
 
-  // Cmd+M to summon chat from minimized state (M for Moldable)
+  // Cmd+M to toggle chat (M for Moldable) - handled via Tauri menu to override macOS minimize
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'm' && e.metaKey && !e.shiftKey) {
-        e.preventDefault()
-        if (isChatMinimized) {
-          setIsChatMinimized(false)
-        }
+    const unlisten = listen('toggle-chat', () => {
+      if (isChatMinimized) {
+        // Minimized -> bring it back and expand
+        setIsChatMinimized(false)
+        setIsChatExpanded(true)
+      } else {
+        // Visible -> toggle expanded state
+        setIsChatExpanded((prev) => !prev)
+      }
+    })
+    return () => {
+      unlisten.then((fn) => fn())
+    }
+  }, [isChatMinimized])
+
+  // Listen for apps requesting to populate chat input
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      // Only handle messages from app iframes
+      if (
+        !event.origin.startsWith('http://127.0.0.1:') &&
+        !event.origin.startsWith('http://localhost:')
+      )
+        return
+
+      if (event.data?.type === 'moldable:set-chat-input' && event.data?.text) {
+        setSuggestedChatInput(event.data.text)
+        // Also open the chat if it's minimized or collapsed
+        setIsChatMinimized(false)
         setIsChatExpanded(true)
       }
     }
 
-    document.addEventListener('keydown', handleKeyDown)
-    return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [isChatMinimized])
+    window.addEventListener('message', handleMessage)
+    return () => window.removeEventListener('message', handleMessage)
+  }, [])
 
   const handleOnboardingComplete = useCallback(
     (workspaceId: string, markOnboardingDone: boolean = true) => {
@@ -520,8 +546,15 @@ export function App() {
               }
             : null
         }
+        availableKeys={{
+          hasOpenRouterKey: health.hasOpenRouterKey,
+          hasAnthropicKey: health.hasAnthropicKey,
+          hasOpenAIKey: health.hasOpenAIKey,
+        }}
         missingApiKey={health.status === 'no-keys'}
         onAddApiKey={() => setShowApiKeySetup(true)}
+        suggestedInput={suggestedChatInput}
+        onSuggestedInputConsumed={() => setSuggestedChatInput(undefined)}
       />
 
       {/* Hot reload notification (development) */}

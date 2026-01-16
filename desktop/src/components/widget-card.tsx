@@ -101,26 +101,6 @@ export function WidgetCard({ app, workspaceId, onClick }: WidgetCardProps) {
         onClick={onClick}
         className="bg-background relative flex-1 cursor-pointer overflow-hidden"
       >
-        {/* Loading state */}
-        {isLoading && isRunning && (
-          <div className="bg-muted/50 absolute inset-0 flex items-center justify-center">
-            <RefreshCw className="text-muted-foreground size-5 animate-spin" />
-          </div>
-        )}
-
-        {/* Error state */}
-        {isError && (
-          <div className="bg-status-error/5 absolute inset-0 flex flex-col items-center justify-center p-4 text-center">
-            <div className="bg-status-error/10 mb-2 flex size-10 items-center justify-center rounded-full">
-              <AlertCircle className="text-status-error size-5" />
-            </div>
-            <div className="mb-1 text-sm font-medium">Failed to start</div>
-            <div className="text-muted-foreground line-clamp-2 text-xs">
-              {error || 'Click to see details'}
-            </div>
-          </div>
-        )}
-
         {/* Stopped/Starting state */}
         {!isRunning && !isError && (
           <div className="bg-muted/30 absolute inset-0 flex flex-col items-center justify-center p-4 text-center">
@@ -157,19 +137,36 @@ export function WidgetCard({ app, workspaceId, onClick }: WidgetCardProps) {
           </div>
         )}
 
+        {/* Error state */}
+        {isError && (
+          <div className="bg-status-error/5 absolute inset-0 flex flex-col items-center justify-center p-4 text-center">
+            <div className="bg-status-error/10 mb-2 flex size-10 items-center justify-center rounded-full">
+              <AlertCircle className="text-status-error size-5" />
+            </div>
+            <div className="mb-1 text-sm font-medium">Failed to start</div>
+            <div className="text-muted-foreground line-clamp-2 text-xs">
+              {error || 'Click to see details'}
+            </div>
+          </div>
+        )}
+
         {/* Iframe with widget view - only show when running */}
         {isRunning && (
           <iframe
             src={widgetUrl}
-            className={cn(
-              'absolute inset-0 size-full border-0 transition-opacity',
-              isLoading ? 'opacity-0' : 'opacity-100',
-            )}
+            className="absolute inset-0 size-full border-0"
             title={`${app.name} widget`}
             allow="microphone; camera; display-capture"
             onLoad={() => setIsLoading(false)}
             onError={() => setIsLoading(false)}
           />
+        )}
+
+        {/* Loading overlay - on top of iframe while loading */}
+        {isLoading && isRunning && (
+          <div className="bg-muted/50 absolute inset-0 flex items-center justify-center">
+            <RefreshCw className="text-muted-foreground size-5 animate-spin" />
+          </div>
         )}
 
         {/* Invisible click overlay */}
