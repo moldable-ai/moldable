@@ -2134,3 +2134,93 @@ fn test_workspace_directory_isolation() {
     // Both can use same port (they're isolated)
     assert_eq!(read_personal.apps[0].port, read_work.apps[0].port);
 }
+
+// ==================== PNPM INSTALLATION TESTS ====================
+
+#[test]
+fn test_find_pnpm_path_returns_some_when_installed() {
+    // This test verifies find_pnpm_path works on systems with pnpm installed
+    // It should return Some on dev machines, None on machines without pnpm
+    let result = find_pnpm_path();
+    
+    // If pnpm is installed (likely on dev machines), verify the path exists
+    if let Some(path) = &result {
+        assert!(
+            std::path::Path::new(path).exists() || path == "pnpm",
+            "find_pnpm_path returned a path that doesn't exist: {}",
+            path
+        );
+    }
+    // If None, that's also valid - pnpm might not be installed
+}
+
+#[test]
+fn test_find_npm_path_returns_some_when_installed() {
+    // Similar to pnpm test - npm should be available if Node.js is installed
+    let result = find_npm_path();
+    
+    if let Some(path) = &result {
+        assert!(
+            std::path::Path::new(path).exists() || path == "npm",
+            "find_npm_path returned a path that doesn't exist: {}",
+            path
+        );
+    }
+}
+
+#[test]
+fn test_ensure_pnpm_installed_succeeds_when_pnpm_available() {
+    // Skip this test if pnpm isn't available (CI environments, etc.)
+    if find_pnpm_path().is_none() {
+        println!("Skipping test_ensure_pnpm_installed - pnpm not available");
+        return;
+    }
+    
+    let result = ensure_pnpm_installed();
+    assert!(result.is_ok(), "ensure_pnpm_installed failed: {:?}", result);
+    
+    let pnpm_path = result.unwrap();
+    assert!(!pnpm_path.is_empty());
+}
+
+#[test]
+fn test_ensure_pnpm_installed_returns_existing_path() {
+    // If pnpm is already installed, ensure_pnpm_installed should return quickly
+    // without trying to install anything
+    if find_pnpm_path().is_none() {
+        println!("Skipping test - pnpm not available");
+        return;
+    }
+    
+    let result1 = ensure_pnpm_installed();
+    let result2 = ensure_pnpm_installed();
+    
+    assert!(result1.is_ok());
+    assert!(result2.is_ok());
+    assert_eq!(result1.unwrap(), result2.unwrap());
+}
+
+#[test]
+fn test_find_pnpm_path_checks_common_locations() {
+    // This test verifies the function checks expected paths
+    // We can't guarantee any specific path exists, but we can verify
+    // the function doesn't panic and returns a valid Option
+    
+    let result = find_pnpm_path();
+    
+    // Result should be either None or a non-empty string
+    if let Some(path) = result {
+        assert!(!path.is_empty(), "find_pnpm_path returned empty string");
+        assert!(!path.contains('\n'), "find_pnpm_path result contains newline");
+    }
+}
+
+#[test]
+fn test_find_npm_path_checks_common_locations() {
+    let result = find_npm_path();
+    
+    if let Some(path) = result {
+        assert!(!path.is_empty(), "find_npm_path returned empty string");
+        assert!(!path.contains('\n'), "find_npm_path result contains newline");
+    }
+}

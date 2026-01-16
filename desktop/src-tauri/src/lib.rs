@@ -1293,9 +1293,10 @@ fn detect_app_in_folder(path: String) -> Result<Option<RegisteredApp>, String> {
                 // Start at 4100 to avoid conflicts with common dev server ports (3000-3100)
                 let port = manifest.port.unwrap_or_else(|| find_available_port(4100));
                 
-                // Use manifest command or find pnpm
+                // Use manifest command or find pnpm (fallback to "pnpm" if not found)
                 let command = manifest.command
-                    .unwrap_or_else(find_pnpm_path);
+                    .or_else(|| find_pnpm_path())
+                    .unwrap_or_else(|| "pnpm".to_string());
                 
                 // Use manifest args or default dev args
                 // Don't include -p <port> here - it's added at runtime by start_app
@@ -1354,7 +1355,8 @@ fn find_available_port(start: u16) -> u16 {
     start
 }
 
-fn find_pnpm_path() -> String {
+/// Find pnpm path if it exists, returns None if not found
+fn find_pnpm_path() -> Option<String> {
     // Check common pnpm locations
     let paths = [
         "/opt/homebrew/bin/pnpm",      // macOS ARM (Homebrew)
@@ -1365,7 +1367,7 @@ fn find_pnpm_path() -> String {
     
     for path in paths {
         if std::path::Path::new(path).exists() {
-            return path.to_string();
+            return Some(path.to_string());
         }
     }
     
@@ -1375,14 +1377,84 @@ fn find_pnpm_path() -> String {
             if let Ok(path) = String::from_utf8(output.stdout) {
                 let path = path.trim();
                 if !path.is_empty() {
-                    return path.to_string();
+                    return Some(path.to_string());
                 }
             }
         }
     }
     
-    // Fallback to just "pnpm" and hope it's in PATH
-    "pnpm".to_string()
+    None
+}
+
+/// Find npm path for installing pnpm
+fn find_npm_path() -> Option<String> {
+    let paths = [
+        "/opt/homebrew/bin/npm",
+        "/usr/local/bin/npm",
+        "/usr/bin/npm",
+        "/home/linuxbrew/.linuxbrew/bin/npm",
+    ];
+    
+    for path in paths {
+        if std::path::Path::new(path).exists() {
+            return Some(path.to_string());
+        }
+    }
+    
+    // Try via `which`
+    if let Ok(output) = std::process::Command::new("which").arg("npm").output() {
+        if output.status.success() {
+            if let Ok(path) = String::from_utf8(output.stdout) {
+                let path = path.trim();
+                if !path.is_empty() {
+                    return Some(path.to_string());
+                }
+            }
+        }
+    }
+    
+    None
+}
+
+/// Ensure pnpm is installed, installing it via npm if necessary.
+/// Returns the path to pnpm or an error.
+fn ensure_pnpm_installed() -> Result<String, String> {
+    // First check if pnpm is already available
+    if let Some(pnpm_path) = find_pnpm_path() {
+        return Ok(pnpm_path);
+    }
+    
+    println!("📦 pnpm not found, attempting to install via npm...");
+    
+    // Try npm install -g pnpm
+    if let Some(npm_path) = find_npm_path() {
+        let output = std::process::Command::new(&npm_path)
+            .args(["install", "-g", "pnpm"])
+            .output();
+        
+        if let Ok(output) = output {
+            if output.status.success() {
+                println!("  ✅ pnpm installed successfully");
+                // Check if pnpm is now available
+                if let Some(pnpm_path) = find_pnpm_path() {
+                    return Ok(pnpm_path);
+                }
+                // npm may put it somewhere we haven't checked, try just "pnpm"
+                return Ok("pnpm".to_string());
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!(
+                    "Failed to install pnpm: {}. Try running manually: npm install -g pnpm",
+                    stderr.trim()
+                ));
+            }
+        }
+    }
+    
+    Err(
+        "pnpm is required but npm was not found. Please install Node.js (https://nodejs.org) \
+         and then run: npm install -g pnpm".to_string()
+    )
 }
 
 fn find_node_path() -> Option<String> {
@@ -2025,6 +2097,27 @@ async fn install_app_from_registry(
     if app_dir.exists() {
         println!("📦 App '{}' already downloaded, registering in workspace...", app_id);
         
+        // Check if node_modules exists - if not, run pnpm install
+        let node_modules_path = app_dir.join("node_modules");
+        if !node_modules_path.exists() {
+            println!("  node_modules missing, running pnpm install...");
+            
+            let pnpm_path = ensure_pnpm_installed()?;
+            let install_output = std::process::Command::new(&pnpm_path)
+                .arg("install")
+                .current_dir(&app_dir)
+                .output()
+                .map_err(|e| format!("Failed to run pnpm install: {}", e))?;
+            
+            if !install_output.status.success() {
+                let stderr = String::from_utf8_lossy(&install_output.stderr);
+                eprintln!("pnpm install stderr: {}", stderr);
+                println!("  Warning: pnpm install had issues, but continuing...");
+            } else {
+                println!("  pnpm install completed");
+            }
+        }
+        
         let app_dir_str = app_dir.to_string_lossy().to_string();
         let detected = detect_app_in_folder(app_dir_str)?
             .ok_or_else(|| "Failed to detect app".to_string())?;
@@ -2187,8 +2280,8 @@ async fn install_app_from_registry(
     
     println!("  Running pnpm install...");
     
-    // Run pnpm install
-    let pnpm_path = find_pnpm_path();
+    // Ensure pnpm is installed, installing via npm if needed
+    let pnpm_path = ensure_pnpm_installed()?;
     let install_output = std::process::Command::new(&pnpm_path)
         .arg("install")
         .current_dir(&app_dir)
