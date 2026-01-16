@@ -118,6 +118,7 @@ export function Onboarding({
   const [loadingApps, setLoadingApps] = useState(false)
   const [installingApp, setInstallingApp] = useState<string | null>(null)
   const [installedAppIds, setInstalledAppIds] = useState<Set<string>>(new Set())
+  const [installError, setInstallError] = useState<string | null>(null)
 
   const detectedProvider = useMemo(() => detectKeyProvider(apiKey), [apiKey])
   const isValidKey = apiKey.trim().length > 20 && detectedProvider !== null
@@ -265,17 +266,30 @@ export function Onboarding({
     setStep('starter-apps')
   }
 
-  const handleInstallApp = useCallback(async (app: AppRegistryEntry) => {
-    setInstallingApp(app.id)
-    try {
-      await installAppFromRegistry(app.id, app.path, app.commit, app.version)
-      setInstalledAppIds((prev) => new Set([...prev, app.id]))
-    } catch (err) {
-      console.error('Failed to install app:', err)
-    } finally {
-      setInstallingApp(null)
-    }
-  }, [])
+  const handleInstallApp = useCallback(
+    async (app: AppRegistryEntry) => {
+      if (!selectedWorkspaceId) return
+
+      setInstallingApp(app.id)
+      setInstallError(null)
+      try {
+        // Ensure the workspace is active before installing so app goes to the right place
+        await invoke('set_active_workspace', {
+          workspaceId: selectedWorkspaceId,
+        })
+
+        await installAppFromRegistry(app.id, app.path, app.commit, app.version)
+        setInstalledAppIds((prev) => new Set([...prev, app.id]))
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err)
+        console.error('Failed to install app:', errorMsg)
+        setInstallError(errorMsg)
+      } finally {
+        setInstallingApp(null)
+      }
+    },
+    [selectedWorkspaceId],
+  )
 
   const handleFinishOnboarding = () => {
     if (selectedWorkspaceId) {
@@ -762,6 +776,21 @@ export function Onboarding({
                   })
                 )}
               </motion.div>
+
+              {/* Show install error if any */}
+              <AnimatePresence>
+                {installError && (
+                  <motion.div
+                    className="bg-destructive/10 border-destructive/20 text-destructive w-full rounded-lg border p-3 text-sm"
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                  >
+                    <p className="font-medium">Failed to install app</p>
+                    <p className="mt-1 text-xs opacity-80">{installError}</p>
+                  </motion.div>
+                )}
+              </AnimatePresence>
 
               <div className="flex w-full flex-col gap-2">
                 <Button
