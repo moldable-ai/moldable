@@ -5,12 +5,22 @@ import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-shell'
 import { AnimatePresence, motion } from 'framer-motion'
 
+/** Where Node.js was found */
+type NodeSource =
+  | 'moldable'
+  | 'homebrew'
+  | 'system'
+  | 'nvm'
+  | 'fnm'
+  | 'volta'
+  | 'other'
+
 /** Dependency status from the Rust backend */
 export interface DependencyStatus {
   nodeInstalled: boolean
   nodeVersion: string | null
   nodePath: string | null
-  nvmInstalled: boolean
+  nodeSource: NodeSource | null
   pnpmInstalled: boolean
   pnpmVersion: string | null
   pnpmPath: string | null
@@ -40,12 +50,33 @@ const staggerItem = {
   animate: { opacity: 1, y: 0 },
 }
 
+/** Get human-readable description of where Node.js was found */
+function getNodeSourceLabel(source: NodeSource | null): string {
+  switch (source) {
+    case 'moldable':
+      return 'Managed by Moldable'
+    case 'homebrew':
+      return 'Homebrew'
+    case 'system':
+      return 'System'
+    case 'nvm':
+      return 'NVM'
+    case 'fnm':
+      return 'fnm'
+    case 'volta':
+      return 'Volta'
+    case 'other':
+      return 'Custom'
+    default:
+      return ''
+  }
+}
+
 export function OnboardingDependencies({
   onComplete,
 }: OnboardingDependenciesProps) {
   const [depStatus, setDepStatus] = useState<DependencyStatus | null>(null)
   const [loading, setLoading] = useState(true)
-  const [installingNvm, setInstallingNvm] = useState(false)
   const [installingNode, setInstallingNode] = useState(false)
   const [installingPnpm, setInstallingPnpm] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -71,26 +102,11 @@ export function OnboardingDependencies({
     checkDependencies()
   }, [checkDependencies])
 
-  const handleInstallNvm = useCallback(async () => {
-    setInstallingNvm(true)
-    setError(null)
-    try {
-      await invoke<string>('install_nvm')
-      // Refresh status after installation
-      await checkDependencies()
-    } catch (err) {
-      console.error('Failed to install NVM:', err)
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setInstallingNvm(false)
-    }
-  }, [checkDependencies])
-
   const handleInstallNode = useCallback(async () => {
     setInstallingNode(true)
     setError(null)
     try {
-      await invoke<string>('install_node_via_nvm')
+      await invoke<string>('install_node')
       // Refresh status after installation
       await checkDependencies()
     } catch (err) {
@@ -120,7 +136,14 @@ export function OnboardingDependencies({
     await open(url)
   }, [])
 
-  const isInstalling = installingNvm || installingNode || installingPnpm
+  const isInstalling = installingNode || installingPnpm
+
+  // Build the Node.js status description
+  const nodeDescription = depStatus?.nodeInstalled
+    ? depStatus.nodeSource
+      ? `${getNodeSourceLabel(depStatus.nodeSource)}`
+      : 'JavaScript runtime installed'
+    : 'Required to run Moldable apps'
 
   return (
     <motion.div
@@ -167,23 +190,19 @@ export function OnboardingDependencies({
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 <p className="text-foreground text-sm font-medium">Node.js</p>
-                {depStatus?.nodeInstalled && (
+                {depStatus?.nodeInstalled && depStatus.nodeVersion && (
                   <span className="text-muted-foreground text-xs">
                     {depStatus.nodeVersion}
                   </span>
                 )}
               </div>
-              <p className="text-muted-foreground text-xs">
-                {depStatus?.nodeInstalled
-                  ? 'JavaScript runtime installed'
-                  : 'Required to run Moldable apps'}
-              </p>
+              <p className="text-muted-foreground text-xs">{nodeDescription}</p>
             </div>
             {depStatus?.nodeInstalled ? (
               <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-green-500/10 text-green-500">
                 <Check className="size-4" />
               </div>
-            ) : depStatus?.nvmInstalled ? (
+            ) : (
               <Button
                 size="sm"
                 onClick={handleInstallNode}
@@ -202,25 +221,6 @@ export function OnboardingDependencies({
                   </>
                 )}
               </Button>
-            ) : (
-              <Button
-                size="sm"
-                onClick={handleInstallNvm}
-                disabled={isInstalling}
-                className="shrink-0 cursor-pointer"
-              >
-                {installingNvm ? (
-                  <>
-                    <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-                    Installing NVM...
-                  </>
-                ) : (
-                  <>
-                    <Download className="mr-1.5 size-3.5" />
-                    Install via NVM
-                  </>
-                )}
-              </Button>
             )}
           </motion.div>
 
@@ -235,7 +235,7 @@ export function OnboardingDependencies({
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 <p className="text-foreground text-sm font-medium">pnpm</p>
-                {depStatus?.pnpmInstalled && (
+                {depStatus?.pnpmInstalled && depStatus.pnpmVersion && (
                   <span className="text-muted-foreground text-xs">
                     v{depStatus.pnpmVersion}
                   </span>

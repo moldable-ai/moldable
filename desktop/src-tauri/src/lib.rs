@@ -12,6 +12,10 @@ use tauri_plugin_log::{Target, TargetKind};
 use tauri_plugin_shell::ShellExt;
 use tauri_plugin_shell::process::CommandChild;
 
+// Runtime dependency management (Node.js, pnpm)
+mod runtime;
+use runtime::{DependencyStatus, find_pnpm_path};
+
 // Store running app processes and their output
 struct AppProcess {
     child: Child,
@@ -177,22 +181,9 @@ fn start_app_internal(
     // Ensure port flag reaches the underlying app when using pnpm/npm/yarn/bun
     let args = with_script_args_forwarded(&command, args, port);
 
-    // Build PATH with common locations for node/pnpm
-    let mut path_additions = vec![
-        "/opt/homebrew/bin".to_string(),
-        "/usr/local/bin".to_string(),
-        "/usr/bin".to_string(),
-        "/bin".to_string(),
-        "/home/linuxbrew/.linuxbrew/bin".to_string(),
-    ];
-
-    // Find node and add its directory to PATH
-    if let Some(node_dir) = find_node_path() {
-        path_additions.insert(0, node_dir);
-    }
-
-    let current_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", path_additions.join(":"), current_path);
+    // Build PATH with Moldable runtime and common locations
+    // This ensures Node.js and pnpm are available regardless of how the app was launched
+    let new_path = runtime::build_runtime_path();
 
     // Read merged env vars (shared + workspace-specific) and pass through to app processes
     let env_vars = get_merged_env_vars();
@@ -1431,424 +1422,43 @@ fn find_available_port(start: u16) -> u16 {
     start
 }
 
-/// Find pnpm path if it exists, returns None if not found
-fn find_pnpm_path() -> Option<String> {
-    // Check NVM's bin directory first (most common for devs)
-    if let Some(node_path) = find_node_path() {
-        let pnpm_in_node = format!("{}/pnpm", node_path);
-        if std::path::Path::new(&pnpm_in_node).exists() {
-            return Some(pnpm_in_node);
-        }
-    }
-    
-    // Check common pnpm locations
-    let paths = [
-        "/opt/homebrew/bin/pnpm",      // macOS ARM (Homebrew)
-        "/usr/local/bin/pnpm",          // macOS Intel (Homebrew)
-        "/usr/bin/pnpm",                // Linux system
-        "/home/linuxbrew/.linuxbrew/bin/pnpm", // Linux Homebrew
-    ];
-    
-    for path in paths {
-        if std::path::Path::new(path).exists() {
-            return Some(path.to_string());
-        }
-    }
-    
-    // Try to find via `which` command
-    if let Ok(output) = std::process::Command::new("which").arg("pnpm").output() {
-        if output.status.success() {
-            if let Ok(path) = String::from_utf8(output.stdout) {
-                let path = path.trim();
-                if !path.is_empty() {
-                    return Some(path.to_string());
-                }
-            }
-        }
-    }
-    
-    None
-}
+// ==================== DEPENDENCY MANAGEMENT ====================
+// See runtime.rs module for dependency detection, installation, and path management.
+// The runtime module handles:
+// - Finding Node.js, npm, pnpm (respecting existing installations)
+// - Installing Node.js to Moldable runtime (~/.moldable/runtime/node/)
+// - Installing pnpm via Corepack or npm
+// - Building PATH for spawned processes
 
-/// Find npm path for installing pnpm
-fn find_npm_path() -> Option<String> {
-    let paths = [
-        "/opt/homebrew/bin/npm",
-        "/usr/local/bin/npm",
-        "/usr/bin/npm",
-        "/home/linuxbrew/.linuxbrew/bin/npm",
-    ];
-    
-    for path in paths {
-        if std::path::Path::new(path).exists() {
-            return Some(path.to_string());
-        }
-    }
-    
-    // Try via `which`
-    if let Ok(output) = std::process::Command::new("which").arg("npm").output() {
-        if output.status.success() {
-            if let Ok(path) = String::from_utf8(output.stdout) {
-                let path = path.trim();
-                if !path.is_empty() {
-                    return Some(path.to_string());
-                }
-            }
-        }
-    }
-    
-    None
-}
-
-/// Ensure pnpm is installed, installing it via npm if necessary.
-/// Returns the path to pnpm or an error.
+/// Ensure pnpm is installed (delegates to runtime module)
 fn ensure_pnpm_installed() -> Result<String, String> {
-    // First check if pnpm is already available
-    if let Some(pnpm_path) = find_pnpm_path() {
-        return Ok(pnpm_path);
-    }
-    
-    info!("pnpm not found, attempting to install via npm...");
-    
-    // Try npm install -g pnpm
-    if let Some(npm_path) = find_npm_path() {
-        let output = std::process::Command::new(&npm_path)
-            .args(["install", "-g", "pnpm"])
-            .output();
-        
-        if let Ok(output) = output {
-            if output.status.success() {
-                info!("pnpm installed successfully");
-                // Check if pnpm is now available
-                if let Some(pnpm_path) = find_pnpm_path() {
-                    return Ok(pnpm_path);
-                }
-                // npm may put it somewhere we haven't checked, try just "pnpm"
-                return Ok("pnpm".to_string());
-            } else {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(format!(
-                    "Failed to install pnpm: {}. Try running manually: npm install -g pnpm",
-                    stderr.trim()
-                ));
-            }
-        }
-    }
-    
-    Err(
-        "pnpm is required but npm was not found. Please install Node.js (https://nodejs.org) \
-         and then run: npm install -g pnpm".to_string()
-    )
+    runtime::ensure_pnpm_installed()
 }
 
-/// Ensure node_modules exists in an app directory, running pnpm install if needed.
-/// This handles cases where apps were downloaded but dependencies weren't installed,
-/// or where node_modules was deleted/corrupted.
+/// Ensure node_modules exists in an app directory (delegates to runtime module)
 fn ensure_node_modules_installed(app_dir: &std::path::Path) -> Result<(), String> {
-    let node_modules_path = app_dir.join("node_modules");
-    if node_modules_path.exists() {
-        return Ok(());
-    }
-    
-    info!("node_modules missing in {:?}, running pnpm install...", app_dir);
-    
-    let pnpm_path = ensure_pnpm_installed()?;
-    let install_output = std::process::Command::new(&pnpm_path)
-        .arg("install")
-        .current_dir(app_dir)
-        .output()
-        .map_err(|e| format!("Failed to run pnpm install: {}", e))?;
-    
-    if !install_output.status.success() {
-        let stderr = String::from_utf8_lossy(&install_output.stderr);
-        warn!("pnpm install had issues (stderr: {}), but continuing...", stderr);
-    } else {
-        info!("pnpm install completed for {:?}", app_dir);
-    }
-    
-    Ok(())
-}
-
-fn find_node_path() -> Option<String> {
-    // Check for NVM installation (most common for devs)
-    if let Ok(home) = std::env::var("HOME") {
-        // Check NVM default
-        let nvm_default = format!("{}/.nvm/versions/node", home);
-        if let Ok(entries) = std::fs::read_dir(&nvm_default) {
-            // Find the latest version (or any version)
-            let mut versions: Vec<_> = entries
-                .filter_map(|e| e.ok())
-                .filter(|e| e.path().is_dir())
-                .collect();
-            // Sort by name to get latest version
-            versions.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
-            
-            if let Some(version_dir) = versions.first() {
-                let bin_dir = version_dir.path().join("bin");
-                if bin_dir.join("node").exists() {
-                    return Some(bin_dir.to_string_lossy().to_string());
-                }
-            }
-        }
-        
-        // Check for fnm (another node version manager)
-        let fnm_path = format!("{}/.local/share/fnm/aliases/default/bin", home);
-        if std::path::Path::new(&fnm_path).join("node").exists() {
-            return Some(fnm_path);
-        }
-    }
-    
-    // Check common system locations
-    let system_paths = [
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        "/usr/bin",
-    ];
-    
-    for path in system_paths {
-        if std::path::Path::new(path).join("node").exists() {
-            return Some(path.to_string());
-        }
-    }
-    
-    // Try to find via shell (this will use the user's shell config)
-    if let Ok(output) = std::process::Command::new("/bin/bash")
-        .args(["-l", "-c", "which node"])
-        .output() 
-    {
-        if output.status.success() {
-            if let Ok(path) = String::from_utf8(output.stdout) {
-                let path = path.trim();
-                if !path.is_empty() {
-                    // Return the directory containing node
-                    if let Some(parent) = std::path::Path::new(path).parent() {
-                        return Some(parent.to_string_lossy().to_string());
-                    }
-                }
-            }
-        }
-    }
-    
-    None
-}
-
-// ==================== DEPENDENCY CHECKING ====================
-
-/// Status of development dependencies (Node.js, pnpm)
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DependencyStatus {
-    node_installed: bool,
-    node_version: Option<String>,
-    node_path: Option<String>,
-    nvm_installed: bool,
-    pnpm_installed: bool,
-    pnpm_version: Option<String>,
-    pnpm_path: Option<String>,
-}
-
-/// Check if NVM is installed
-fn is_nvm_installed() -> bool {
-    if let Ok(home) = std::env::var("HOME") {
-        let nvm_dir = format!("{}/.nvm", home);
-        let nvm_sh = format!("{}/nvm.sh", nvm_dir);
-        return std::path::Path::new(&nvm_sh).exists();
-    }
-    false
-}
-
-/// Get version of a command (e.g., "node --version" returns "v20.10.0")
-fn get_command_version(cmd_path: &str, arg: &str) -> Option<String> {
-    std::process::Command::new(cmd_path)
-        .arg(arg)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
+    runtime::ensure_node_modules_installed(app_dir)
 }
 
 /// Check development dependencies status
-/// Note: We verify binaries actually work (return a version), not just exist,
-/// because macOS may have stub binaries that prompt for Xcode tools install
 #[tauri::command]
 fn check_dependencies() -> DependencyStatus {
-    let node_path = find_node_path();
-    let node_version = node_path.as_ref().and_then(|p| {
-        let node_bin = format!("{}/node", p);
-        get_command_version(&node_bin, "--version")
-    });
-    // Only consider node installed if it actually runs and returns a version
-    let node_installed = node_version.is_some();
-    
-    let nvm_installed = is_nvm_installed();
-    
-    let pnpm_path = find_pnpm_path();
-    let pnpm_version = pnpm_path.as_ref().and_then(|p| {
-        get_command_version(p, "--version")
-    });
-    // Only consider pnpm installed if it actually runs and returns a version
-    let pnpm_installed = pnpm_version.is_some();
-    
-    info!(
-        "Dependency check: node={} ({:?}), pnpm={} ({:?}), nvm={}",
-        node_installed, node_version,
-        pnpm_installed, pnpm_version,
-        nvm_installed
-    );
-    
-    DependencyStatus {
-        node_installed,
-        node_version,
-        node_path: if node_installed { node_path } else { None },
-        nvm_installed,
-        pnpm_installed,
-        pnpm_version,
-        pnpm_path: if pnpm_installed { pnpm_path } else { None },
-    }
+    runtime::check_dependencies()
 }
 
-/// Install NVM (Node Version Manager) - macOS only for now
-/// TODO: Add Windows (nvm-windows) and Linux support
+/// Install Node.js to Moldable runtime
 #[tauri::command]
-async fn install_nvm() -> Result<String, String> {
-    info!("Installing NVM...");
-    
-    let home = std::env::var("HOME").map_err(|_| "Could not get HOME directory")?;
-    let nvm_dir = format!("{}/.nvm", home);
-    
-    // Check if already installed
-    if std::path::Path::new(&format!("{}/nvm.sh", nvm_dir)).exists() {
-        return Ok("NVM is already installed".to_string());
-    }
-    
-    // Download and run the NVM install script
-    // Using bash -c to run the curl | bash pattern
-    let output = std::process::Command::new("/bin/bash")
-        .args([
-            "-c",
-            "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash"
-        ])
-        .output()
-        .map_err(|e| format!("Failed to run NVM installer: {}", e))?;
-    
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("NVM installation failed: {}", stderr));
-    }
-    
-    // Verify installation
-    if std::path::Path::new(&format!("{}/nvm.sh", nvm_dir)).exists() {
-        info!("NVM installed successfully");
-        Ok("NVM installed successfully".to_string())
-    } else {
-        Err("NVM installation completed but nvm.sh not found".to_string())
-    }
+async fn install_node() -> Result<String, String> {
+    runtime::install_node(None).await
 }
 
-/// Install Node.js via NVM
-#[tauri::command]
-async fn install_node_via_nvm() -> Result<String, String> {
-    info!("Installing Node.js via NVM...");
-    
-    let home = std::env::var("HOME").map_err(|_| "Could not get HOME directory")?;
-    let nvm_dir = format!("{}/.nvm", home);
-    let nvm_sh = format!("{}/nvm.sh", nvm_dir);
-    
-    // Verify NVM is installed
-    if !std::path::Path::new(&nvm_sh).exists() {
-        return Err("NVM is not installed. Please install NVM first.".to_string());
-    }
-    
-    // Source nvm.sh and install Node.js 24 (current LTS-ish)
-    // We use bash -c with the source command since nvm is a shell function
-    let script = format!(
-        r#"
-        export NVM_DIR="{}"
-        \. "$NVM_DIR/nvm.sh"
-        nvm install 24
-        "#,
-        nvm_dir
-    );
-    
-    let output = std::process::Command::new("/bin/bash")
-        .args(["-c", &script])
-        .output()
-        .map_err(|e| format!("Failed to run nvm install: {}", e))?;
-    
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        return Err(format!("Node.js installation failed: {} {}", stderr, stdout));
-    }
-    
-    // Verify Node.js is now available
-    if find_node_path().is_some() {
-        info!("Node.js installed successfully via NVM");
-        Ok("Node.js installed successfully".to_string())
-    } else {
-        // It might be installed but in a new NVM version directory we haven't checked yet
-        // Check the NVM versions directory directly
-        let versions_dir = format!("{}/versions/node", nvm_dir);
-        if let Ok(entries) = std::fs::read_dir(&versions_dir) {
-            if entries.count() > 0 {
-                info!("Node.js installed successfully via NVM");
-                return Ok("Node.js installed successfully".to_string());
-            }
-        }
-        Err("Node.js installation completed but node not found".to_string())
-    }
-}
-
-/// Install pnpm via npm
+/// Install pnpm
 #[tauri::command]
 async fn install_pnpm() -> Result<String, String> {
-    info!("Installing pnpm...");
-    
-    // Check if Node.js is available (we need npm)
-    let node_path = find_node_path()
-        .ok_or("Node.js is not installed. Please install Node.js first.")?;
-    
-    // For NVM installs, npm is in the same directory as node
-    let npm_path = format!("{}/npm", node_path);
-    let npm_cmd = if std::path::Path::new(&npm_path).exists() {
-        npm_path
-    } else {
-        // Fall back to finding npm
-        find_npm_path().ok_or("npm not found. Please ensure Node.js is properly installed.")?
-    };
-    
-    // Install pnpm globally using npm
-    // Use pnpm@latest-10 for stability as suggested
-    let output = std::process::Command::new(&npm_cmd)
-        .args(["install", "-g", "pnpm@latest-10"])
-        .output()
-        .map_err(|e| format!("Failed to run npm install: {}", e))?;
-    
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("pnpm installation failed: {}", stderr));
-    }
-    
-    // Verify pnpm is now available
-    // For NVM, global packages go to the same bin directory
-    let pnpm_in_node_path = format!("{}/pnpm", node_path);
-    if std::path::Path::new(&pnpm_in_node_path).exists() || find_pnpm_path().is_some() {
-        info!("pnpm installed successfully");
-        Ok("pnpm installed successfully".to_string())
-    } else {
-        // npm may have installed it somewhere - try to verify
-        if let Ok(which_output) = std::process::Command::new("which").arg("pnpm").output() {
-            if which_output.status.success() {
-                info!("pnpm installed successfully");
-                return Ok("pnpm installed successfully".to_string());
-            }
-        }
-        Err("pnpm installation completed but pnpm not found in PATH".to_string())
-    }
+    runtime::install_pnpm().await
 }
 
-// ==================== END DEPENDENCY CHECKING ====================
+// ==================== END DEPENDENCY MANAGEMENT ====================
 
 // Get the .env file path (workspace-aware with layered resolution)
 fn get_env_file_path() -> Result<std::path::PathBuf, String> {
@@ -3319,8 +2929,7 @@ pub fn run() {
             get_system_log_path,
             // Dependency checking and installation
             check_dependencies,
-            install_nvm,
-            install_node_via_nvm,
+            install_node,
             install_pnpm
         ])
         .setup(move |app| {
