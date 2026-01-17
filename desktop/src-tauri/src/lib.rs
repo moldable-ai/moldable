@@ -266,6 +266,8 @@ pub fn run() {
             env::set_app_env_var,
             env::get_all_env_vars,
             env::save_api_key,
+            env::get_api_key_status,
+            env::remove_api_key,
             // Preferences (from preferences module)
             preferences::get_preference,
             preferences::set_preference,
@@ -288,6 +290,7 @@ pub fn run() {
             // System logs (from logs module)
             logs::get_system_logs,
             logs::get_system_log_path,
+            logs::clear_system_logs,
             // Dependency checking and installation
             check_dependencies,
             install_node,

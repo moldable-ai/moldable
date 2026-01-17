@@ -1,6 +1,7 @@
 import {
   Download,
   Grid2x2,
+  Key,
   MessageSquare,
   Monitor,
   Moon,
@@ -31,6 +32,7 @@ import {
 import { useAppUpdate } from '../hooks/use-app-update'
 import type { AppConfig } from '../app'
 import { AddAppDialog } from './add-app-dialog'
+import { ApiKeySettingsDialog } from './api-key-settings-dialog'
 import { McpSettingsDialog } from './mcp-settings-dialog'
 import { SystemLogs } from './system-logs'
 import { toast } from 'sonner'
@@ -126,6 +128,7 @@ export function Sidebar({
   }, [checkForUpdate])
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
+  const [isApiKeyDialogOpen, setIsApiKeyDialogOpen] = useState(false)
   const [isMcpDialogOpen, setIsMcpDialogOpen] = useState(false)
   const [isAddAppDialogOpen, setIsAddAppDialogOpen] = useState(false)
   const [isSystemLogsOpen, setIsSystemLogsOpen] = useState(false)
@@ -354,6 +357,13 @@ export function Sidebar({
             </DropdownMenuSub>
             <DropdownMenuSeparator />
             <DropdownMenuItem
+              onClick={() => setIsApiKeyDialogOpen(true)}
+              className="text-foreground hover:bg-muted flex cursor-pointer items-center gap-2 px-3 py-2 text-sm"
+            >
+              <Key className="size-4" />
+              API Keys
+            </DropdownMenuItem>
+            <DropdownMenuItem
               onClick={() => setIsMcpDialogOpen(true)}
               className="text-foreground hover:bg-muted flex cursor-pointer items-center gap-2 px-3 py-2 text-sm"
             >
@@ -379,6 +389,12 @@ export function Sidebar({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+
+      {/* API Key Settings Dialog */}
+      <ApiKeySettingsDialog
+        open={isApiKeyDialogOpen}
+        onOpenChange={setIsApiKeyDialogOpen}
+      />
 
       {/* MCP Settings Dialog */}
       <McpSettingsDialog

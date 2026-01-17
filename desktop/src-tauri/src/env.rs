@@ -238,6 +238,117 @@ pub fn save_api_key(api_key: String) -> Result<String, String> {
     Ok(provider_name.to_string())
 }
 
+/// API key provider info (for settings UI)
+#[derive(serde::Serialize)]
+pub struct ApiKeyInfo {
+    pub provider: String,
+    pub env_var: String,
+    pub is_configured: bool,
+    /// Masked key value like "sk-or-...abc123"
+    pub masked_value: Option<String>,
+}
+
+/// Get status of all API keys from the shared .env file
+#[tauri::command]
+pub fn get_api_key_status() -> Result<Vec<ApiKeyInfo>, String> {
+    let env_path = get_shared_env_file_path()?;
+    let env = parse_env_file(&env_path);
+
+    let providers = vec![
+        ("OpenRouter", "OPENROUTER_API_KEY"),
+        ("Anthropic", "ANTHROPIC_API_KEY"),
+        ("OpenAI", "OPENAI_API_KEY"),
+    ];
+
+    let result = providers
+        .into_iter()
+        .map(|(provider, env_var)| {
+            let value = env.get(env_var);
+            let is_configured = value.is_some();
+            let masked_value = value.map(|v| mask_api_key(v));
+
+            ApiKeyInfo {
+                provider: provider.to_string(),
+                env_var: env_var.to_string(),
+                is_configured,
+                masked_value,
+            }
+        })
+        .collect();
+
+    Ok(result)
+}
+
+/// Mask an API key for display (show prefix and last 6 chars)
+fn mask_api_key(key: &str) -> String {
+    if key.len() <= 12 {
+        return "••••••••".to_string();
+    }
+
+    // Find a good prefix to show (e.g., "sk-or-", "sk-ant-", "sk-")
+    let prefix_len = if key.starts_with("sk-or-") {
+        6
+    } else if key.starts_with("sk-ant-") {
+        7
+    } else if key.starts_with("sk-proj-") {
+        8
+    } else if key.starts_with("sk-") {
+        3
+    } else {
+        0
+    };
+
+    let suffix_len = 6;
+    let prefix = &key[..prefix_len];
+    let suffix = &key[key.len() - suffix_len..];
+
+    format!("{}•••{}", prefix, suffix)
+}
+
+/// Remove an API key from the shared .env file
+#[tauri::command]
+pub fn remove_api_key(env_var: String) -> Result<(), String> {
+    let valid_vars = vec![
+        "OPENROUTER_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+    ];
+
+    if !valid_vars.contains(&env_var.as_str()) {
+        return Err(format!("Invalid env var: {}", env_var));
+    }
+
+    let env_path = get_shared_env_file_path()?;
+
+    // Read existing content
+    let content = std::fs::read_to_string(&env_path).unwrap_or_default();
+    let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+
+    // Filter out the line with the key
+    let key_prefix = format!("{}=", env_var);
+    let new_lines: Vec<String> = lines
+        .into_iter()
+        .filter(|line| !line.starts_with(&key_prefix))
+        .collect();
+
+    // Write back
+    let file = std::fs::File::create(&env_path)
+        .map_err(|e| format!("Failed to create .env: {}", e))?;
+    let mut writer = std::io::BufWriter::new(file);
+    writer
+        .write_all(new_lines.join("\n").as_bytes())
+        .map_err(|e| format!("Failed to write .env: {}", e))?;
+    writer
+        .flush()
+        .map_err(|e| format!("Failed to flush .env: {}", e))?;
+    writer
+        .get_ref()
+        .sync_all()
+        .map_err(|e| format!("Failed to sync .env: {}", e))?;
+
+    Ok(())
+}
+
 // ============================================================================
 // TESTS
 // ============================================================================
@@ -392,5 +503,87 @@ JSON_CONFIG={"key": "value", "nested": {"a": 1}}"#;
         assert_eq!(env.len(), 100);
         assert_eq!(env.get("KEY_0"), Some(&"value_0".to_string()));
         assert_eq!(env.get("KEY_99"), Some(&"value_99".to_string()));
+    }
+
+    // ========================================================================
+    // mask_api_key tests
+    // ========================================================================
+
+    #[test]
+    fn test_mask_api_key_openrouter() {
+        let key = "sk-or-v1-abc123def456ghi789jkl012mno345pqr678stu901vwx234";
+        let masked = mask_api_key(key);
+        // Should show "sk-or-" prefix and last 6 chars
+        assert!(masked.starts_with("sk-or-"));
+        assert!(masked.ends_with("vwx234"));
+        assert!(masked.contains("•••"));
+    }
+
+    #[test]
+    fn test_mask_api_key_anthropic() {
+        let key = "sk-ant-api03-abc123def456ghi789jkl012mno345pqr678stu901";
+        let masked = mask_api_key(key);
+        // Should show "sk-ant-" prefix and last 6 chars
+        assert!(masked.starts_with("sk-ant-"));
+        assert!(masked.ends_with("stu901"));
+        assert!(masked.contains("•••"));
+    }
+
+    #[test]
+    fn test_mask_api_key_openai() {
+        let key = "sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwxyz";
+        let masked = mask_api_key(key);
+        // Should show "sk-proj-" prefix and last 6 chars
+        assert!(masked.starts_with("sk-proj-"));
+        assert!(masked.ends_with("wxyz"));
+        assert!(masked.contains("•••"));
+    }
+
+    #[test]
+    fn test_mask_api_key_openai_legacy() {
+        let key = "sk-abc123def456ghi789jkl012mno345pqr678stu901vwxyz123";
+        let masked = mask_api_key(key);
+        // Should show "sk-" prefix and last 6 chars
+        assert!(masked.starts_with("sk-"));
+        assert!(masked.ends_with("z123"));
+        assert!(masked.contains("•••"));
+    }
+
+    #[test]
+    fn test_mask_api_key_short_key() {
+        let key = "short";
+        let masked = mask_api_key(key);
+        // Short keys should be fully masked
+        assert_eq!(masked, "••••••••");
+    }
+
+    #[test]
+    fn test_mask_api_key_exactly_12_chars() {
+        let key = "123456789012";
+        let masked = mask_api_key(key);
+        // Keys <= 12 chars should be fully masked
+        assert_eq!(masked, "••••••••");
+    }
+
+    #[test]
+    fn test_mask_api_key_unknown_prefix() {
+        let key = "unknown-prefix-abc123def456ghi789jkl012mno345";
+        let masked = mask_api_key(key);
+        // Unknown prefix should show no prefix, just masked with last 6 chars
+        assert!(masked.starts_with("•••"));
+        assert!(masked.ends_with("no345"));
+    }
+
+    #[test]
+    fn test_mask_api_key_preserves_structure() {
+        // Verify the masked output has expected structure
+        let key = "sk-or-v1-abcdefghijklmnopqrstuvwxyz123456";
+        let masked = mask_api_key(key);
+
+        // Should be: prefix + "•••" + suffix (last 6 chars)
+        let parts: Vec<&str> = masked.split("•••").collect();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0], "sk-or-");
+        assert_eq!(parts[1], "123456");
     }
 }

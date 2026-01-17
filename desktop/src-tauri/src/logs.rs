@@ -21,6 +21,25 @@ pub fn get_system_log_path(app_handle: AppHandle) -> Result<String, String> {
     Ok(log_file.to_string_lossy().to_string())
 }
 
+/// Clear the system log file
+#[tauri::command]
+pub fn clear_system_logs(app_handle: AppHandle) -> Result<(), String> {
+    let log_dir = app_handle
+        .path()
+        .app_log_dir()
+        .map_err(|e| format!("Failed to get log directory: {}", e))?;
+
+    let log_file = log_dir.join("Moldable.log");
+
+    if log_file.exists() {
+        // Truncate the file by writing an empty string
+        std::fs::write(&log_file, "")
+            .map_err(|e| format!("Failed to clear log file: {}", e))?;
+    }
+
+    Ok(())
+}
+
 /// Read system logs from the log file
 #[tauri::command]
 pub fn get_system_logs(app_handle: AppHandle, max_lines: Option<usize>) -> Result<Vec<String>, String> {
@@ -55,6 +74,9 @@ pub fn get_system_logs(app_handle: AppHandle, max_lines: Option<usize>) -> Resul
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+    use tempfile::tempdir;
+
     #[test]
     fn test_log_line_truncation_logic() {
         // Test the truncation logic used in get_system_logs
@@ -86,5 +108,77 @@ mod tests {
         assert_eq!(result.len(), 500);
         assert_eq!(result[0], "Line 0");
         assert_eq!(result[499], "Line 499");
+    }
+
+    #[test]
+    fn test_clear_logs_truncates_file() {
+        // Test that clearing logs truncates the file to empty
+        let dir = tempdir().unwrap();
+        let log_file = dir.path().join("Moldable.log");
+        
+        // Create a log file with some content
+        {
+            let mut file = std::fs::File::create(&log_file).unwrap();
+            writeln!(file, "Line 1").unwrap();
+            writeln!(file, "Line 2").unwrap();
+            writeln!(file, "Line 3").unwrap();
+        }
+        
+        // Verify file has content
+        let content = std::fs::read_to_string(&log_file).unwrap();
+        assert!(!content.is_empty());
+        
+        // Clear the file (simulating what clear_system_logs does)
+        std::fs::write(&log_file, "").unwrap();
+        
+        // Verify file is empty
+        let content = std::fs::read_to_string(&log_file).unwrap();
+        assert!(content.is_empty());
+    }
+
+    #[test]
+    fn test_clear_logs_nonexistent_file() {
+        // Test that clearing a non-existent file is a no-op
+        let dir = tempdir().unwrap();
+        let log_file = dir.path().join("Moldable.log");
+        
+        // File doesn't exist
+        assert!(!log_file.exists());
+        
+        // Simulating the check in clear_system_logs - should not error
+        if log_file.exists() {
+            std::fs::write(&log_file, "").unwrap();
+        }
+        
+        // File still doesn't exist (which is fine)
+        assert!(!log_file.exists());
+    }
+
+    #[test]
+    fn test_clear_logs_then_read() {
+        // Test the full flow: write logs, clear, read back empty
+        let dir = tempdir().unwrap();
+        let log_file = dir.path().join("Moldable.log");
+        
+        // Create a log file with content
+        {
+            let mut file = std::fs::File::create(&log_file).unwrap();
+            for i in 0..100 {
+                writeln!(file, "Log entry {}", i).unwrap();
+            }
+        }
+        
+        // Read and verify we have lines
+        let content = std::fs::read_to_string(&log_file).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 100);
+        
+        // Clear the log file
+        std::fs::write(&log_file, "").unwrap();
+        
+        // Read back - should be empty
+        let content = std::fs::read_to_string(&log_file).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert!(lines.is_empty() || (lines.len() == 1 && lines[0].is_empty()));
     }
 }

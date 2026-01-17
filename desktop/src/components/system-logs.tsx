@@ -5,6 +5,7 @@ import {
   FileText,
   FolderOpen,
   Terminal,
+  Trash2,
   X,
 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -22,6 +23,7 @@ export function SystemLogs({ isOpen, onClose }: SystemLogsProps) {
   const [logs, setLogs] = useState<string[]>([])
   const [logPath, setLogPath] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  const [isClearing, setIsClearing] = useState(false)
   const logsEndRef = useRef<HTMLDivElement>(null)
   const logsContainerRef = useRef<HTMLDivElement>(null)
   const [isUserScrolledUp, setIsUserScrolledUp] = useState(false)
@@ -86,6 +88,20 @@ export function SystemLogs({ isOpen, onClose }: SystemLogsProps) {
     }
   }, [logPath])
 
+  const handleClearLogs = useCallback(async () => {
+    if (!isTauri()) return
+
+    setIsClearing(true)
+    try {
+      await invoke('clear_system_logs')
+      setLogs([])
+    } catch (err) {
+      console.error('Failed to clear logs:', err)
+    } finally {
+      setIsClearing(false)
+    }
+  }, [])
+
   if (!isOpen) return null
 
   // Parse log level from line for coloring
@@ -115,6 +131,16 @@ export function SystemLogs({ isOpen, onClose }: SystemLogsProps) {
             </span>
           </div>
           <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleClearLogs}
+              className="cursor-pointer gap-1.5"
+              disabled={isClearing || logs.length === 0}
+            >
+              <Trash2 className="size-3.5" />
+              {isClearing ? 'Clearing...' : 'Clear'}
+            </Button>
             <Button
               variant="outline"
               size="sm"
