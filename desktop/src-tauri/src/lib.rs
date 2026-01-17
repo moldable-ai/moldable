@@ -136,6 +136,13 @@ fn start_app_internal(
         ));
     }
     
+    // Ensure node_modules exists - install dependencies if needed
+    // This handles cases where dependencies weren't installed or were deleted
+    if let Err(e) = ensure_node_modules_installed(working_path) {
+        warn!("Failed to ensure node_modules for {}: {}", app_id, e);
+        // Don't fail - the app might still work, or will show a clearer error
+    }
+    
     let mut app_state = state.0.lock().map_err(|e| e.to_string())?;
 
     // Check if already running
@@ -1426,6 +1433,14 @@ fn find_available_port(start: u16) -> u16 {
 
 /// Find pnpm path if it exists, returns None if not found
 fn find_pnpm_path() -> Option<String> {
+    // Check NVM's bin directory first (most common for devs)
+    if let Some(node_path) = find_node_path() {
+        let pnpm_in_node = format!("{}/pnpm", node_path);
+        if std::path::Path::new(&pnpm_in_node).exists() {
+            return Some(pnpm_in_node);
+        }
+    }
+    
     // Check common pnpm locations
     let paths = [
         "/opt/homebrew/bin/pnpm",      // macOS ARM (Homebrew)
@@ -1526,6 +1541,34 @@ fn ensure_pnpm_installed() -> Result<String, String> {
     )
 }
 
+/// Ensure node_modules exists in an app directory, running pnpm install if needed.
+/// This handles cases where apps were downloaded but dependencies weren't installed,
+/// or where node_modules was deleted/corrupted.
+fn ensure_node_modules_installed(app_dir: &std::path::Path) -> Result<(), String> {
+    let node_modules_path = app_dir.join("node_modules");
+    if node_modules_path.exists() {
+        return Ok(());
+    }
+    
+    info!("node_modules missing in {:?}, running pnpm install...", app_dir);
+    
+    let pnpm_path = ensure_pnpm_installed()?;
+    let install_output = std::process::Command::new(&pnpm_path)
+        .arg("install")
+        .current_dir(app_dir)
+        .output()
+        .map_err(|e| format!("Failed to run pnpm install: {}", e))?;
+    
+    if !install_output.status.success() {
+        let stderr = String::from_utf8_lossy(&install_output.stderr);
+        warn!("pnpm install had issues (stderr: {}), but continuing...", stderr);
+    } else {
+        info!("pnpm install completed for {:?}", app_dir);
+    }
+    
+    Ok(())
+}
+
 fn find_node_path() -> Option<String> {
     // Check for NVM installation (most common for devs)
     if let Ok(home) = std::env::var("HOME") {
@@ -1588,6 +1631,224 @@ fn find_node_path() -> Option<String> {
     
     None
 }
+
+// ==================== DEPENDENCY CHECKING ====================
+
+/// Status of development dependencies (Node.js, pnpm)
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DependencyStatus {
+    node_installed: bool,
+    node_version: Option<String>,
+    node_path: Option<String>,
+    nvm_installed: bool,
+    pnpm_installed: bool,
+    pnpm_version: Option<String>,
+    pnpm_path: Option<String>,
+}
+
+/// Check if NVM is installed
+fn is_nvm_installed() -> bool {
+    if let Ok(home) = std::env::var("HOME") {
+        let nvm_dir = format!("{}/.nvm", home);
+        let nvm_sh = format!("{}/nvm.sh", nvm_dir);
+        return std::path::Path::new(&nvm_sh).exists();
+    }
+    false
+}
+
+/// Get version of a command (e.g., "node --version" returns "v20.10.0")
+fn get_command_version(cmd_path: &str, arg: &str) -> Option<String> {
+    std::process::Command::new(cmd_path)
+        .arg(arg)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+}
+
+/// Check development dependencies status
+/// Note: We verify binaries actually work (return a version), not just exist,
+/// because macOS may have stub binaries that prompt for Xcode tools install
+#[tauri::command]
+fn check_dependencies() -> DependencyStatus {
+    let node_path = find_node_path();
+    let node_version = node_path.as_ref().and_then(|p| {
+        let node_bin = format!("{}/node", p);
+        get_command_version(&node_bin, "--version")
+    });
+    // Only consider node installed if it actually runs and returns a version
+    let node_installed = node_version.is_some();
+    
+    let nvm_installed = is_nvm_installed();
+    
+    let pnpm_path = find_pnpm_path();
+    let pnpm_version = pnpm_path.as_ref().and_then(|p| {
+        get_command_version(p, "--version")
+    });
+    // Only consider pnpm installed if it actually runs and returns a version
+    let pnpm_installed = pnpm_version.is_some();
+    
+    info!(
+        "Dependency check: node={} ({:?}), pnpm={} ({:?}), nvm={}",
+        node_installed, node_version,
+        pnpm_installed, pnpm_version,
+        nvm_installed
+    );
+    
+    DependencyStatus {
+        node_installed,
+        node_version,
+        node_path: if node_installed { node_path } else { None },
+        nvm_installed,
+        pnpm_installed,
+        pnpm_version,
+        pnpm_path: if pnpm_installed { pnpm_path } else { None },
+    }
+}
+
+/// Install NVM (Node Version Manager) - macOS only for now
+/// TODO: Add Windows (nvm-windows) and Linux support
+#[tauri::command]
+async fn install_nvm() -> Result<String, String> {
+    info!("Installing NVM...");
+    
+    let home = std::env::var("HOME").map_err(|_| "Could not get HOME directory")?;
+    let nvm_dir = format!("{}/.nvm", home);
+    
+    // Check if already installed
+    if std::path::Path::new(&format!("{}/nvm.sh", nvm_dir)).exists() {
+        return Ok("NVM is already installed".to_string());
+    }
+    
+    // Download and run the NVM install script
+    // Using bash -c to run the curl | bash pattern
+    let output = std::process::Command::new("/bin/bash")
+        .args([
+            "-c",
+            "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash"
+        ])
+        .output()
+        .map_err(|e| format!("Failed to run NVM installer: {}", e))?;
+    
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("NVM installation failed: {}", stderr));
+    }
+    
+    // Verify installation
+    if std::path::Path::new(&format!("{}/nvm.sh", nvm_dir)).exists() {
+        info!("NVM installed successfully");
+        Ok("NVM installed successfully".to_string())
+    } else {
+        Err("NVM installation completed but nvm.sh not found".to_string())
+    }
+}
+
+/// Install Node.js via NVM
+#[tauri::command]
+async fn install_node_via_nvm() -> Result<String, String> {
+    info!("Installing Node.js via NVM...");
+    
+    let home = std::env::var("HOME").map_err(|_| "Could not get HOME directory")?;
+    let nvm_dir = format!("{}/.nvm", home);
+    let nvm_sh = format!("{}/nvm.sh", nvm_dir);
+    
+    // Verify NVM is installed
+    if !std::path::Path::new(&nvm_sh).exists() {
+        return Err("NVM is not installed. Please install NVM first.".to_string());
+    }
+    
+    // Source nvm.sh and install Node.js 24 (current LTS-ish)
+    // We use bash -c with the source command since nvm is a shell function
+    let script = format!(
+        r#"
+        export NVM_DIR="{}"
+        \. "$NVM_DIR/nvm.sh"
+        nvm install 24
+        "#,
+        nvm_dir
+    );
+    
+    let output = std::process::Command::new("/bin/bash")
+        .args(["-c", &script])
+        .output()
+        .map_err(|e| format!("Failed to run nvm install: {}", e))?;
+    
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(format!("Node.js installation failed: {} {}", stderr, stdout));
+    }
+    
+    // Verify Node.js is now available
+    if find_node_path().is_some() {
+        info!("Node.js installed successfully via NVM");
+        Ok("Node.js installed successfully".to_string())
+    } else {
+        // It might be installed but in a new NVM version directory we haven't checked yet
+        // Check the NVM versions directory directly
+        let versions_dir = format!("{}/versions/node", nvm_dir);
+        if let Ok(entries) = std::fs::read_dir(&versions_dir) {
+            if entries.count() > 0 {
+                info!("Node.js installed successfully via NVM");
+                return Ok("Node.js installed successfully".to_string());
+            }
+        }
+        Err("Node.js installation completed but node not found".to_string())
+    }
+}
+
+/// Install pnpm via npm
+#[tauri::command]
+async fn install_pnpm() -> Result<String, String> {
+    info!("Installing pnpm...");
+    
+    // Check if Node.js is available (we need npm)
+    let node_path = find_node_path()
+        .ok_or("Node.js is not installed. Please install Node.js first.")?;
+    
+    // For NVM installs, npm is in the same directory as node
+    let npm_path = format!("{}/npm", node_path);
+    let npm_cmd = if std::path::Path::new(&npm_path).exists() {
+        npm_path
+    } else {
+        // Fall back to finding npm
+        find_npm_path().ok_or("npm not found. Please ensure Node.js is properly installed.")?
+    };
+    
+    // Install pnpm globally using npm
+    // Use pnpm@latest-10 for stability as suggested
+    let output = std::process::Command::new(&npm_cmd)
+        .args(["install", "-g", "pnpm@latest-10"])
+        .output()
+        .map_err(|e| format!("Failed to run npm install: {}", e))?;
+    
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("pnpm installation failed: {}", stderr));
+    }
+    
+    // Verify pnpm is now available
+    // For NVM, global packages go to the same bin directory
+    let pnpm_in_node_path = format!("{}/pnpm", node_path);
+    if std::path::Path::new(&pnpm_in_node_path).exists() || find_pnpm_path().is_some() {
+        info!("pnpm installed successfully");
+        Ok("pnpm installed successfully".to_string())
+    } else {
+        // npm may have installed it somewhere - try to verify
+        if let Ok(which_output) = std::process::Command::new("which").arg("pnpm").output() {
+            if which_output.status.success() {
+                info!("pnpm installed successfully");
+                return Ok("pnpm installed successfully".to_string());
+            }
+        }
+        Err("pnpm installation completed but pnpm not found in PATH".to_string())
+    }
+}
+
+// ==================== END DEPENDENCY CHECKING ====================
 
 // Get the .env file path (workspace-aware with layered resolution)
 fn get_env_file_path() -> Result<std::path::PathBuf, String> {
@@ -2215,25 +2476,8 @@ async fn install_app_from_registry(
     if app_dir.exists() {
         info!("App '{}' already downloaded, registering in workspace...", app_id);
         
-        // Check if node_modules exists - if not, run pnpm install
-        let node_modules_path = app_dir.join("node_modules");
-        if !node_modules_path.exists() {
-            info!("node_modules missing, running pnpm install...");
-            
-            let pnpm_path = ensure_pnpm_installed()?;
-            let install_output = std::process::Command::new(&pnpm_path)
-                .arg("install")
-                .current_dir(&app_dir)
-                .output()
-                .map_err(|e| format!("Failed to run pnpm install: {}", e))?;
-            
-            if !install_output.status.success() {
-                let stderr = String::from_utf8_lossy(&install_output.stderr);
-                warn!("pnpm install had issues (stderr: {}), but continuing...", stderr);
-            } else {
-                info!("pnpm install completed");
-            }
-        }
+        // Ensure dependencies are installed
+        ensure_node_modules_installed(&app_dir)?;
         
         let app_dir_str = app_dir.to_string_lossy().to_string();
         let detected = detect_app_in_folder(app_dir_str)?
@@ -3072,7 +3316,12 @@ pub fn run() {
             stop_audio_capture,
             // System logs
             get_system_logs,
-            get_system_log_path
+            get_system_log_path,
+            // Dependency checking and installation
+            check_dependencies,
+            install_nvm,
+            install_node_via_nvm,
+            install_pnpm
         ])
         .setup(move |app| {
             #[cfg(debug_assertions)]
@@ -3201,45 +3450,75 @@ pub fn run() {
                 }
 
                 info!("Auto-starting {} registered app(s)...", apps.len());
+                
+                // Limit concurrent app starts to avoid exhausting resources
+                // (especially when multiple apps need pnpm install)
+                const MAX_CONCURRENT_STARTS: usize = 4;
+                let semaphore = Arc::new((
+                    std::sync::Mutex::new(0usize),
+                    std::sync::Condvar::new(),
+                ));
+                
                 for a in apps {
-                    // Prefer configured port, but always fall back if allowed.
-                    // Retry a few times in case availability changes between checks and spawn.
-                    let preferred = a.port;
-                    let mut attempts_left = 5u8;
-                    let mut next_port = preferred;
+                    let state_clone = AppState(Arc::clone(&state_for_autostart.0));
+                    let sem = Arc::clone(&semaphore);
+                    
+                    // Wait until we have a slot available
+                    {
+                        let (lock, cvar) = &*sem;
+                        let mut count = lock.lock().unwrap();
+                        while *count >= MAX_CONCURRENT_STARTS {
+                            count = cvar.wait(count).unwrap();
+                        }
+                        *count += 1;
+                    }
+                    
+                    std::thread::spawn(move || {
+                        // Prefer configured port, but always fall back if allowed.
+                        // Retry a few times in case availability changes between checks and spawn.
+                        let preferred = a.port;
+                        let mut attempts_left = 5u8;
+                        let mut next_port = preferred;
 
-                    loop {
-                        let chosen = if is_port_available(next_port) {
-                            next_port
-                        } else if a.requires_port {
-                            next_port
-                        } else {
-                            find_free_port(next_port)
-                        };
+                        loop {
+                            let chosen = if is_port_available(next_port) {
+                                next_port
+                            } else if a.requires_port {
+                                next_port
+                            } else {
+                                find_free_port(next_port)
+                            };
 
-                        match start_app_internal(
-                            a.id.clone(),
-                            a.path.clone(),
-                            a.command.clone(),
-                            a.args.clone(),
-                            Some(chosen),
-                            &state_for_autostart,
-                        ) {
-                            Ok(_) => {
-                                info!("Started {} on :{}", a.id, chosen);
-                                break;
-                            }
-                            Err(e) => {
-                                attempts_left = attempts_left.saturating_sub(1);
-                                if attempts_left == 0 || a.requires_port {
-                                    error!("Failed to start {}: {}", a.id, e);
+                            match start_app_internal(
+                                a.id.clone(),
+                                a.path.clone(),
+                                a.command.clone(),
+                                a.args.clone(),
+                                Some(chosen),
+                                &state_clone,
+                            ) {
+                                Ok(_) => {
+                                    info!("Started {} on :{}", a.id, chosen);
                                     break;
                                 }
-                                // Try the next free port
-                                next_port = chosen.saturating_add(1);
+                                Err(e) => {
+                                    attempts_left = attempts_left.saturating_sub(1);
+                                    if attempts_left == 0 || a.requires_port {
+                                        error!("Failed to start {}: {}", a.id, e);
+                                        break;
+                                    }
+                                    // Try the next free port
+                                    next_port = chosen.saturating_add(1);
+                                }
                             }
                         }
-                    }
+                        
+                        // Release our slot
+                        let (lock, cvar) = &*sem;
+                        let mut count = lock.lock().unwrap();
+                        *count -= 1;
+                        cvar.notify_one();
+                    });
                 }
             });
             

@@ -18,7 +18,7 @@
     "test": "turbo test",
     "build:ai-server": "node scripts/build-ai-server.js",
     "build:desktop": "pnpm build:packages && pnpm build:ai-server && pnpm --filter moldable-desktop tauri build --bundles app",
-    "build:desktop:install": "pnpm build:desktop && cp -r desktop/src-tauri/target/release/bundle/macos/Moldable.app /Applications/",
+    "build:desktop:install": "pnpm build:desktop && rm -rf /Applications/Moldable.app && ditto desktop/src-tauri/target/release/bundle/macos/Moldable.app /Applications/Moldable.app",
     "pre-commit": "pnpm format && git add -u && pnpm lint && pnpm check-types && pnpm test",
     "prepare": "husky",
     "setup:tools": "node scripts/setup-cli-tools.js",
