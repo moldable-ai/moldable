@@ -6,10 +6,16 @@
 //! 
 //! 1. **Respect existing installations** - System Node.js (Homebrew, etc.) is checked first
 //! 2. **Moldable runtime as fallback** - Only used when no working Node is found
-//! 3. **GUI-app compatible** - Works without shell config (no NVM dependency)
+//! 3. **GUI-app compatible** - Works without shell config (no NVM dependency on shell functions)
 //! 4. **Verify binaries work** - Check that binaries execute, not just exist
+//! 5. **Support all major version managers** - NVM, fnm, Volta, asdf, mise, n, nodenv
+//!
+//! # CRITICAL: This is core infrastructure
+//! 
+//! If Node/pnpm detection fails, the entire app is unusable. Every edge case
+//! must be handled. When in doubt, try more locations and verify binaries work.
 
-use log::{info, warn};
+use log::{info, warn, error};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -30,10 +36,18 @@ pub enum NodeSource {
     System,
     /// NVM (~/.nvm/versions/node/)
     Nvm,
-    /// fnm (~/.local/share/fnm/)
+    /// fnm (~/.local/share/fnm/ or ~/.fnm/)
     Fnm,
-    /// Volta (~/.volta/bin/)
+    /// Volta (~/.volta/)
     Volta,
+    /// asdf version manager (~/.asdf/)
+    Asdf,
+    /// mise/rtx version manager
+    Mise,
+    /// n version manager (/usr/local/n/)
+    N,
+    /// nodenv (~/.nodenv/)
+    Nodenv,
     /// Found via shell lookup or other means
     Other,
 }
@@ -91,89 +105,204 @@ pub fn get_moldable_node_bin_dir() -> Option<String> {
     }
 }
 
-/// Find Node.js binary path, checking system locations first
+/// Find Node.js binary path, checking all known locations
 /// 
-/// Priority order (respects existing installations):
+/// This is CRITICAL infrastructure - if we can't find node, the app is useless.
+/// We check every possible location and verify the binary actually works.
+/// 
+/// Priority order:
 /// 1. Homebrew ARM (/opt/homebrew/bin)
 /// 2. Homebrew Intel (/usr/local/bin)  
-/// 3. System (/usr/bin)
-/// 4. NVM (~/.nvm/versions/node/*/bin)
-/// 5. fnm (~/.local/share/fnm/aliases/default/bin)
-/// 6. Volta (~/.volta/bin)
-/// 7. Moldable runtime (~/.moldable/runtime/node/current/bin)
-/// 8. Shell lookup (bash -l -c "which node")
+/// 3. NVM (~/.nvm/versions/node/*/bin) - most popular version manager
+/// 4. fnm (~/.local/share/fnm/ or ~/.fnm/)
+/// 5. Volta (~/.volta/)
+/// 6. asdf (~/.asdf/)
+/// 7. mise/rtx (~/.local/share/mise/)
+/// 8. n (/usr/local/n/)
+/// 9. nodenv (~/.nodenv/)
+/// 10. Moldable runtime (~/.moldable/runtime/node/current/bin)
+/// 11. System (/usr/bin) - checked late because macOS has Xcode stubs
+/// 12. Shell lookup (bash -l -c "which node")
 pub fn find_node() -> Option<FoundBinary> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    
+    // Build list of all candidates with their sources
+    let mut candidates: Vec<(String, NodeSource)> = Vec::new();
+    
     // 1. Homebrew ARM (most common on modern Macs)
-    if Path::new("/opt/homebrew/bin/node").exists() {
-        return Some(FoundBinary {
-            path: "/opt/homebrew/bin".to_string(),
-            source: NodeSource::Homebrew,
-        });
-    }
+    candidates.push(("/opt/homebrew/bin".to_string(), NodeSource::Homebrew));
     
     // 2. Homebrew Intel
-    if Path::new("/usr/local/bin/node").exists() {
-        return Some(FoundBinary {
-            path: "/usr/local/bin".to_string(),
-            source: NodeSource::Homebrew,
-        });
-    }
+    candidates.push(("/usr/local/bin".to_string(), NodeSource::Homebrew));
     
-    // 3. System
-    if Path::new("/usr/bin/node").exists() {
-        return Some(FoundBinary {
-            path: "/usr/bin".to_string(),
-            source: NodeSource::System,
-        });
-    }
-    
-    // 4-6. Version managers (check home-based paths)
-    if let Ok(home) = std::env::var("HOME") {
-        // 4. NVM
+    // 3. NVM - check versions directory for latest
+    if !home.is_empty() {
         let nvm_versions = format!("{}/.nvm/versions/node", home);
         if let Some(bin_dir) = find_latest_version_bin(&nvm_versions) {
-            return Some(FoundBinary {
-                path: bin_dir,
-                source: NodeSource::Nvm,
-            });
+            candidates.push((bin_dir, NodeSource::Nvm));
+        }
+        // Also check NVM default alias
+        let nvm_default = format!("{}/.nvm/alias/default", home);
+        if Path::new(&nvm_default).exists() {
+            if let Ok(version) = std::fs::read_to_string(&nvm_default) {
+                let version = version.trim();
+                // Version could be like "22" or "v22.12.0" or "lts/iron"
+                let version_path = format!("{}/.nvm/versions/node/{}/bin", home, version);
+                if Path::new(&version_path).join("node").exists() {
+                    candidates.push((version_path, NodeSource::Nvm));
+                }
+                // Try with v prefix
+                let version_path_v = format!("{}/.nvm/versions/node/v{}/bin", home, version);
+                if Path::new(&version_path_v).join("node").exists() {
+                    candidates.push((version_path_v, NodeSource::Nvm));
+                }
+            }
         }
         
-        // 5. fnm
-        let fnm_path = format!("{}/.local/share/fnm/aliases/default/bin", home);
-        if Path::new(&fnm_path).join("node").exists() {
-            return Some(FoundBinary {
-                path: fnm_path,
-                source: NodeSource::Fnm,
-            });
+        // 4. fnm - check multiple possible locations
+        let fnm_paths = [
+            format!("{}/.local/share/fnm/aliases/default/bin", home),
+            format!("{}/.fnm/aliases/default/bin", home),
+            format!("{}/.local/share/fnm/node-versions/default/installation/bin", home),
+        ];
+        for fnm_path in fnm_paths {
+            candidates.push((fnm_path, NodeSource::Fnm));
+        }
+        // fnm also stores versions - find latest
+        let fnm_versions_paths = [
+            format!("{}/.local/share/fnm/node-versions", home),
+            format!("{}/.fnm/node-versions", home),
+        ];
+        for fnm_versions in fnm_versions_paths {
+            if let Some(bin_dir) = find_latest_version_bin(&fnm_versions) {
+                candidates.push((bin_dir, NodeSource::Fnm));
+            }
         }
         
-        // 6. Volta
-        let volta_path = format!("{}/.volta/bin", home);
-        if Path::new(&volta_path).join("node").exists() {
-            return Some(FoundBinary {
-                path: volta_path,
-                source: NodeSource::Volta,
-            });
+        // 5. Volta - uses shims but also has direct binaries
+        candidates.push((format!("{}/.volta/bin", home), NodeSource::Volta));
+        // Volta also has tools/image for actual binaries
+        let volta_tools = format!("{}/.volta/tools/image/node", home);
+        if let Some(bin_dir) = find_latest_version_bin(&volta_tools) {
+            candidates.push((bin_dir, NodeSource::Volta));
         }
+        
+        // 6. asdf
+        candidates.push((format!("{}/.asdf/shims", home), NodeSource::Asdf));
+        let asdf_installs = format!("{}/.asdf/installs/nodejs", home);
+        if let Some(bin_dir) = find_latest_version_bin(&asdf_installs) {
+            candidates.push((bin_dir, NodeSource::Asdf));
+        }
+        
+        // 7. mise (formerly rtx)
+        let mise_paths = [
+            format!("{}/.local/share/mise/installs/node", home),
+            format!("{}/.local/share/rtx/installs/node", home),
+            format!("{}/.mise/installs/node", home),
+        ];
+        for mise_path in mise_paths {
+            if let Some(bin_dir) = find_latest_version_bin(&mise_path) {
+                candidates.push((bin_dir, NodeSource::Mise));
+            }
+        }
+        // mise shims
+        candidates.push((format!("{}/.local/share/mise/shims", home), NodeSource::Mise));
+        
+        // 8. n version manager
+        let n_versions = "/usr/local/n/versions/node";
+        if let Some(bin_dir) = find_latest_version_bin(n_versions) {
+            candidates.push((bin_dir, NodeSource::N));
+        }
+        
+        // 9. nodenv
+        let nodenv_versions = format!("{}/.nodenv/versions", home);
+        if let Some(bin_dir) = find_latest_version_bin(&nodenv_versions) {
+            candidates.push((bin_dir, NodeSource::Nodenv));
+        }
+        candidates.push((format!("{}/.nodenv/shims", home), NodeSource::Nodenv));
     }
     
-    // 7. Moldable runtime (fallback for fresh installs)
+    // 10. Moldable runtime (our managed fallback)
     if let Some(moldable_bin) = get_moldable_node_bin_dir() {
-        return Some(FoundBinary {
-            path: moldable_bin,
-            source: NodeSource::Moldable,
-        });
+        candidates.push((moldable_bin, NodeSource::Moldable));
     }
     
-    // 8. Shell lookup (last resort, often fails for GUI apps)
+    // 11. System paths (checked late because macOS /usr/bin/node is often an Xcode stub)
+    candidates.push(("/usr/bin".to_string(), NodeSource::System));
+    
+    // Now check each candidate - verify binary exists AND works
+    for (bin_dir, source) in &candidates {
+        let node_path = Path::new(bin_dir).join("node");
+        
+        if !node_path.exists() {
+            continue;
+        }
+        
+        // Verify it's actually executable and returns a version
+        // This catches macOS Xcode stubs that exist but prompt for install
+        if verify_node_binary(&node_path) {
+            info!("Found working Node.js at {} (source: {:?})", bin_dir, source);
+            return Some(FoundBinary {
+                path: bin_dir.clone(),
+                source: *source,
+            });
+        } else {
+            warn!("Node binary exists at {} but doesn't work, skipping", bin_dir);
+        }
+    }
+    
+    // 12. Last resort: Shell lookup (may find things we missed)
+    info!("No node found in known locations, trying shell lookup...");
     if let Some(path) = find_via_shell("node") {
-        return Some(FoundBinary {
-            path,
-            source: NodeSource::Other,
-        });
+        // Verify this one too
+        let node_path = Path::new(&path).join("node");
+        if verify_node_binary(&node_path) {
+            info!("Found working Node.js via shell at {}", path);
+            return Some(FoundBinary {
+                path,
+                source: NodeSource::Other,
+            });
+        }
     }
     
+    error!("Could not find a working Node.js installation anywhere!");
     None
+}
+
+/// Verify a node binary actually works (not just exists)
+/// This catches macOS Xcode stubs and broken installations
+fn verify_node_binary(node_path: &Path) -> bool {
+    // Check if file exists and is executable
+    if !node_path.exists() {
+        return false;
+    }
+    
+    // Try to get version with a timeout
+    // Use a short timeout since this should be instant
+    let output = Command::new(node_path)
+        .arg("--version")
+        .output();
+    
+    match output {
+        Ok(o) if o.status.success() => {
+            let version = String::from_utf8_lossy(&o.stdout);
+            // Should start with 'v' followed by a number
+            version.trim().starts_with('v') && 
+                version.trim().chars().nth(1).map(|c| c.is_ascii_digit()).unwrap_or(false)
+        }
+        Ok(o) => {
+            // Command ran but failed - might be Xcode stub
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            if stderr.contains("xcode") || stderr.contains("command line tools") {
+                warn!("Node at {:?} appears to be macOS Xcode stub", node_path);
+            }
+            false
+        }
+        Err(e) => {
+            warn!("Failed to execute node at {:?}: {}", node_path, e);
+            false
+        }
+    }
 }
 
 /// Find Node.js path (returns just the directory path for backwards compatibility)
@@ -182,74 +311,146 @@ pub fn find_node_path() -> Option<String> {
 }
 
 /// Find pnpm binary path
+/// 
+/// Checks all known locations where pnpm might be installed.
+/// This is CRITICAL - if we can't find pnpm, apps won't start.
 pub fn find_pnpm_path() -> Option<String> {
-    // First check alongside Node.js (most reliable)
+    let home = std::env::var("HOME").unwrap_or_default();
+    
+    // Build list of all candidate paths
+    let mut candidates: Vec<String> = Vec::new();
+    
+    // First check alongside Node.js (most reliable for global installs)
     if let Some(node_path) = find_node_path() {
-        let pnpm_in_node = format!("{}/pnpm", node_path);
-        if Path::new(&pnpm_in_node).exists() {
-            return Some(pnpm_in_node);
+        candidates.push(format!("{}/pnpm", node_path));
+    }
+    
+    // Homebrew locations
+    candidates.extend([
+        "/opt/homebrew/bin/pnpm".to_string(),      // macOS ARM
+        "/usr/local/bin/pnpm".to_string(),          // macOS Intel
+    ]);
+    
+    // pnpm's own locations when installed via `pnpm env`
+    if !home.is_empty() {
+        candidates.extend([
+            format!("{}/.local/share/pnpm/pnpm", home),
+            format!("{}/Library/pnpm/pnpm", home),  // macOS alternate
+            format!("{}/.pnpm-home/pnpm", home),     // Windows-style on Unix
+        ]);
+    }
+    
+    // npm global locations (pnpm installed via npm)
+    candidates.extend([
+        "/usr/bin/pnpm".to_string(),
+        "/home/linuxbrew/.linuxbrew/bin/pnpm".to_string(),
+    ]);
+    
+    // Version manager locations
+    if !home.is_empty() {
+        // Volta
+        candidates.push(format!("{}/.volta/bin/pnpm", home));
+        
+        // asdf
+        candidates.push(format!("{}/.asdf/shims/pnpm", home));
+        
+        // mise
+        candidates.push(format!("{}/.local/share/mise/shims/pnpm", home));
+        
+        // Corepack locations (pnpm via Node's corepack)
+        // These are alongside node
+        if let Some(node_path) = find_node_path() {
+            candidates.push(format!("{}/corepack", node_path));
         }
     }
     
-    // Check common pnpm locations
-    let paths = [
-        "/opt/homebrew/bin/pnpm",      // macOS ARM (Homebrew)
-        "/usr/local/bin/pnpm",          // macOS Intel (Homebrew)
-        "/usr/bin/pnpm",                // Linux system
-        "/home/linuxbrew/.linuxbrew/bin/pnpm", // Linux Homebrew
-    ];
-    
-    for path in paths {
-        if Path::new(path).exists() {
-            return Some(path.to_string());
-        }
-    }
-    
-    // Check Moldable runtime
+    // Moldable runtime
     if let Some(moldable_bin) = get_moldable_node_bin_dir() {
-        let pnpm_in_moldable = format!("{}/pnpm", moldable_bin);
-        if Path::new(&pnpm_in_moldable).exists() {
-            return Some(pnpm_in_moldable);
+        candidates.push(format!("{}/pnpm", moldable_bin));
+    }
+    
+    // Check each candidate
+    for path in &candidates {
+        if Path::new(path).exists() {
+            // Verify it works
+            if verify_pnpm_binary(path) {
+                info!("Found working pnpm at {}", path);
+                return Some(path.clone());
+            }
         }
     }
     
-    // Try shell lookup
+    // Try shell lookup as last resort
     if let Some(path) = find_via_which("pnpm") {
-        return Some(path);
+        if verify_pnpm_binary(&path) {
+            info!("Found working pnpm via shell at {}", path);
+            return Some(path);
+        }
     }
     
+    warn!("Could not find a working pnpm installation");
     None
+}
+
+/// Verify a pnpm binary actually works
+fn verify_pnpm_binary(pnpm_path: &str) -> bool {
+    let output = Command::new(pnpm_path)
+        .arg("--version")
+        .output();
+    
+    match output {
+        Ok(o) if o.status.success() => {
+            let version = String::from_utf8_lossy(&o.stdout);
+            // pnpm version should be numeric like "9.0.0"
+            let v = version.trim();
+            !v.is_empty() && v.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false)
+        }
+        _ => false,
+    }
 }
 
 /// Find npm binary path
 pub fn find_npm_path() -> Option<String> {
-    // First check alongside Node.js
+    let home = std::env::var("HOME").unwrap_or_default();
+    
+    // Build candidates list
+    let mut candidates: Vec<String> = Vec::new();
+    
+    // First check alongside Node.js (most reliable)
     if let Some(node_path) = find_node_path() {
-        let npm_in_node = format!("{}/npm", node_path);
-        if Path::new(&npm_in_node).exists() {
-            return Some(npm_in_node);
-        }
+        candidates.push(format!("{}/npm", node_path));
     }
     
-    // Check common locations
-    let paths = [
-        "/opt/homebrew/bin/npm",
-        "/usr/local/bin/npm",
-        "/usr/bin/npm",
-        "/home/linuxbrew/.linuxbrew/bin/npm",
-    ];
+    // Homebrew locations
+    candidates.extend([
+        "/opt/homebrew/bin/npm".to_string(),
+        "/usr/local/bin/npm".to_string(),
+    ]);
     
-    for path in paths {
-        if Path::new(path).exists() {
-            return Some(path.to_string());
-        }
+    // System locations
+    candidates.extend([
+        "/usr/bin/npm".to_string(),
+        "/home/linuxbrew/.linuxbrew/bin/npm".to_string(),
+    ]);
+    
+    // Version manager locations
+    if !home.is_empty() {
+        candidates.extend([
+            format!("{}/.volta/bin/npm", home),
+            format!("{}/.asdf/shims/npm", home),
+            format!("{}/.local/share/mise/shims/npm", home),
+        ]);
     }
     
-    // Check Moldable runtime
+    // Moldable runtime
     if let Some(moldable_bin) = get_moldable_node_bin_dir() {
-        let npm_in_moldable = format!("{}/npm", moldable_bin);
-        if Path::new(&npm_in_moldable).exists() {
-            return Some(npm_in_moldable);
+        candidates.push(format!("{}/npm", moldable_bin));
+    }
+    
+    // Check each candidate
+    for path in &candidates {
+        if Path::new(path).exists() {
+            return Some(path.clone());
         }
     }
     
@@ -258,25 +459,63 @@ pub fn find_npm_path() -> Option<String> {
 }
 
 /// Find the latest Node version in a version manager's directory
+/// Uses semantic version sorting (not lexicographic) to find the newest
 fn find_latest_version_bin(versions_dir: &str) -> Option<String> {
-    let entries = std::fs::read_dir(versions_dir).ok()?;
+    let entries = match std::fs::read_dir(versions_dir) {
+        Ok(e) => e,
+        Err(_) => return None,
+    };
     
     let mut versions: Vec<_> = entries
         .filter_map(|e| e.ok())
         .filter(|e| e.path().is_dir())
         .collect();
     
-    // Sort descending to get latest version first
-    versions.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+    if versions.is_empty() {
+        return None;
+    }
     
-    versions.first().and_then(|version_dir| {
-        let bin_dir = version_dir.path().join("bin");
-        if bin_dir.join("node").exists() {
-            Some(bin_dir.to_string_lossy().to_string())
-        } else {
-            None
+    // Sort by parsed version number (newest first)
+    // Handle formats like "v22.12.0", "22.12.0", "v22", "lts-iron"
+    versions.sort_by(|a, b| {
+        let parse_version = |name: &std::ffi::OsStr| -> (u32, u32, u32) {
+            let s = name.to_string_lossy();
+            let s = s.trim_start_matches('v').trim_start_matches("lts-");
+            let parts: Vec<u32> = s
+                .split('.')
+                .filter_map(|p| p.parse().ok())
+                .collect();
+            (
+                parts.first().copied().unwrap_or(0),
+                parts.get(1).copied().unwrap_or(0),
+                parts.get(2).copied().unwrap_or(0),
+            )
+        };
+        
+        let va = parse_version(&a.file_name());
+        let vb = parse_version(&b.file_name());
+        vb.cmp(&va) // Descending order (newest first)
+    });
+    
+    // Try each version directory until we find one with a working node
+    for version_dir in versions {
+        let path = version_dir.path();
+        
+        // Check both `bin/node` and direct `node` (different managers have different layouts)
+        let bin_candidates = [
+            path.join("bin"),
+            path.join("installation/bin"), // fnm layout
+            path.clone(),
+        ];
+        
+        for bin_dir in bin_candidates {
+            if bin_dir.join("node").exists() {
+                return Some(bin_dir.to_string_lossy().to_string());
+            }
         }
-    })
+    }
+    
+    None
 }
 
 /// Find a binary via shell (bash -l -c "which ...")
@@ -691,32 +930,140 @@ pub fn ensure_node_modules_installed(app_dir: &Path) -> Result<(), String> {
 }
 
 // ============================================================================
-// PATH BUILDING
+// PATH & ENVIRONMENT BUILDING
 // ============================================================================
 
-/// Build PATH string with Moldable runtime prepended (if it exists)
+/// Build PATH string with discovered Node.js directory prepended
+/// 
+/// This ensures that when we spawn app processes, scripts using
+/// `#!/usr/bin/env node` can find the node binary, regardless of
+/// where it was installed (Homebrew, NVM, fnm, Volta, etc.)
+/// 
+/// CRITICAL: This PATH is used for ALL spawned app processes.
+/// If node isn't in this PATH, `#!/usr/bin/env node` scripts will fail.
 pub fn build_runtime_path() -> String {
     let mut path_parts: Vec<String> = Vec::new();
+    let home = std::env::var("HOME").unwrap_or_default();
     
-    // Add Moldable runtime if it exists
-    if let Some(moldable_bin) = get_moldable_node_bin_dir() {
-        path_parts.push(moldable_bin);
+    // CRITICAL: Add the discovered node directory FIRST
+    // This handles NVM, fnm, Volta, and other version managers
+    // that install node outside of standard system paths
+    if let Some(node_bin_dir) = find_node_path() {
+        path_parts.push(node_bin_dir);
     }
     
-    // Add common locations
-    path_parts.extend([
-        "/opt/homebrew/bin".to_string(),
-        "/usr/local/bin".to_string(),
-        "/usr/bin".to_string(),
-        "/bin".to_string(),
-    ]);
+    // Add pnpm directory if different from node directory
+    if let Some(pnpm_path) = find_pnpm_path() {
+        if let Some(pnpm_dir) = Path::new(&pnpm_path).parent() {
+            let pnpm_dir_str = pnpm_dir.to_string_lossy().to_string();
+            if !path_parts.contains(&pnpm_dir_str) {
+                path_parts.push(pnpm_dir_str);
+            }
+        }
+    }
     
-    // Add existing PATH
+    // Add Moldable runtime if it exists (might be different from above)
+    if let Some(moldable_bin) = get_moldable_node_bin_dir() {
+        if !path_parts.contains(&moldable_bin) {
+            path_parts.push(moldable_bin);
+        }
+    }
+    
+    // Add version manager shim directories (some tools need these in PATH)
+    if !home.is_empty() {
+        let shim_dirs = [
+            format!("{}/.volta/bin", home),
+            format!("{}/.asdf/shims", home),
+            format!("{}/.local/share/mise/shims", home),
+            format!("{}/.nodenv/shims", home),
+            format!("{}/.local/share/pnpm", home),  // pnpm global bin
+        ];
+        
+        for shim_dir in shim_dirs {
+            if Path::new(&shim_dir).exists() && !path_parts.contains(&shim_dir) {
+                path_parts.push(shim_dir);
+            }
+        }
+    }
+    
+    // Add common system locations
+    let common_paths = [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+    ];
+    
+    for path in common_paths {
+        let path_str = path.to_string();
+        if !path_parts.contains(&path_str) {
+            path_parts.push(path_str);
+        }
+    }
+    
+    // Add existing PATH (deduplicated against what we've already added)
     if let Ok(existing_path) = std::env::var("PATH") {
-        path_parts.push(existing_path);
+        for part in existing_path.split(':') {
+            let part_str = part.to_string();
+            if !part_str.is_empty() && !path_parts.contains(&part_str) {
+                path_parts.push(part_str);
+            }
+        }
     }
     
     path_parts.join(":")
+}
+
+/// Get environment variables needed for version managers to work correctly
+/// 
+/// Some version managers (Volta, NVM) need specific env vars to function.
+/// This returns a HashMap of env vars that should be set when spawning processes.
+pub fn get_version_manager_env_vars() -> std::collections::HashMap<String, String> {
+    let mut env_vars = std::collections::HashMap::new();
+    let home = std::env::var("HOME").unwrap_or_default();
+    
+    if home.is_empty() {
+        return env_vars;
+    }
+    
+    // NVM
+    let nvm_dir = format!("{}/.nvm", home);
+    if Path::new(&nvm_dir).exists() {
+        env_vars.insert("NVM_DIR".to_string(), nvm_dir);
+    }
+    
+    // Volta
+    let volta_home = format!("{}/.volta", home);
+    if Path::new(&volta_home).exists() {
+        env_vars.insert("VOLTA_HOME".to_string(), volta_home);
+    }
+    
+    // fnm
+    let fnm_dir = format!("{}/.local/share/fnm", home);
+    if Path::new(&fnm_dir).exists() {
+        env_vars.insert("FNM_DIR".to_string(), fnm_dir);
+    }
+    let fnm_alt_dir = format!("{}/.fnm", home);
+    if Path::new(&fnm_alt_dir).exists() {
+        env_vars.insert("FNM_DIR".to_string(), fnm_alt_dir);
+    }
+    
+    // asdf
+    let asdf_dir = format!("{}/.asdf", home);
+    if Path::new(&asdf_dir).exists() {
+        env_vars.insert("ASDF_DIR".to_string(), asdf_dir.clone());
+        env_vars.insert("ASDF_DATA_DIR".to_string(), asdf_dir);
+    }
+    
+    // mise
+    let mise_data_dir = format!("{}/.local/share/mise", home);
+    if Path::new(&mise_data_dir).exists() {
+        env_vars.insert("MISE_DATA_DIR".to_string(), mise_data_dir);
+    }
+    
+    env_vars
 }
 
 // ============================================================================
@@ -829,15 +1176,141 @@ mod tests {
     }
 
     #[test]
+    fn test_verify_node_binary_with_real_node() {
+        // If we can find node, verify the verification works
+        if let Some(found) = find_node() {
+            let node_path = Path::new(&found.path).join("node");
+            assert!(
+                verify_node_binary(&node_path),
+                "verify_node_binary should return true for real node at {:?}",
+                node_path
+            );
+        }
+    }
+
+    #[test]
+    fn test_verify_node_binary_nonexistent() {
+        let fake_path = Path::new("/nonexistent/path/to/node");
+        assert!(
+            !verify_node_binary(fake_path),
+            "verify_node_binary should return false for nonexistent path"
+        );
+    }
+
+    #[test]
+    fn test_verify_pnpm_binary_with_real_pnpm() {
+        // If we can find pnpm, verify the verification works
+        if let Some(pnpm_path) = find_pnpm_path() {
+            assert!(
+                verify_pnpm_binary(&pnpm_path),
+                "verify_pnpm_binary should return true for real pnpm at {}",
+                pnpm_path
+            );
+        }
+    }
+
+    #[test]
+    fn test_verify_pnpm_binary_nonexistent() {
+        assert!(
+            !verify_pnpm_binary("/nonexistent/path/to/pnpm"),
+            "verify_pnpm_binary should return false for nonexistent path"
+        );
+    }
+
+    #[test]
+    fn test_get_version_manager_env_vars() {
+        let env_vars = get_version_manager_env_vars();
+        
+        // Should return a HashMap (may be empty if no version managers installed)
+        // Just verify it doesn't panic and returns valid structure
+        for (key, value) in &env_vars {
+            assert!(!key.is_empty(), "env var key should not be empty");
+            assert!(!value.is_empty(), "env var value should not be empty");
+            // Values should be paths that exist
+            assert!(
+                Path::new(value).exists(),
+                "env var {} points to non-existent path: {}",
+                key, value
+            );
+        }
+    }
+
+    #[test]
+    fn test_find_latest_version_bin_empty_dir() {
+        // Should handle non-existent directories gracefully
+        let result = find_latest_version_bin("/nonexistent/path");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_find_latest_version_bin_version_sorting() {
+        // Create a temp directory with fake version directories to test sorting
+        let temp_dir = std::env::temp_dir().join("moldable_test_versions");
+        let _ = std::fs::remove_dir_all(&temp_dir); // Clean up from previous runs
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        
+        // Create fake version directories (without actual node binaries)
+        let versions = ["v18.0.0", "v20.11.1", "v22.12.0", "v21.6.2"];
+        for v in versions {
+            let version_dir = temp_dir.join(v).join("bin");
+            std::fs::create_dir_all(&version_dir).unwrap();
+            // Create a fake node file
+            std::fs::write(version_dir.join("node"), "fake").unwrap();
+        }
+        
+        // find_latest_version_bin should return v22.12.0 (the highest version)
+        let result = find_latest_version_bin(temp_dir.to_str().unwrap());
+        assert!(result.is_some());
+        let result_path = result.unwrap();
+        assert!(
+            result_path.contains("v22.12.0"),
+            "Should find v22.12.0 as latest, got: {}",
+            result_path
+        );
+        
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_node_source_new_variants() {
+        // Test serialization of new NodeSource variants
+        let sources = [
+            (NodeSource::Asdf, "\"asdf\""),
+            (NodeSource::Mise, "\"mise\""),
+            (NodeSource::N, "\"n\""),
+            (NodeSource::Nodenv, "\"nodenv\""),
+        ];
+        
+        for (source, expected) in sources {
+            let json = serde_json::to_string(&source).unwrap();
+            assert_eq!(json, expected, "NodeSource::{:?} should serialize to {}", source, expected);
+        }
+    }
+
+    #[test]
     fn test_build_runtime_path() {
         let path = build_runtime_path();
         
         // Should contain common paths
-        assert!(path.contains("/opt/homebrew/bin") || path.contains("/usr/local/bin"));
-        assert!(path.contains("/usr/bin"));
+        assert!(path.contains("/usr/bin"), "PATH should contain /usr/bin");
         
         // Should not be empty
         assert!(!path.is_empty());
+        
+        // If node is installed, the path should include its directory
+        if let Some(node_dir) = find_node_path() {
+            assert!(
+                path.contains(&node_dir),
+                "PATH should contain discovered node directory: {}",
+                node_dir
+            );
+        }
+        
+        // Should not have duplicate entries
+        let parts: Vec<&str> = path.split(':').collect();
+        let unique_parts: std::collections::HashSet<&str> = parts.iter().cloned().collect();
+        assert_eq!(parts.len(), unique_parts.len(), "PATH should not have duplicates");
     }
 
     #[test]

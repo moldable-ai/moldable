@@ -175,8 +175,13 @@ pub fn start_app_internal(
     // Ensure port flag reaches the underlying app when using pnpm/npm/yarn/bun
     let args = with_script_args_forwarded(&command, args, port);
 
-    // Build PATH with Moldable runtime and common locations
+    // Build PATH with discovered Node.js directory and all necessary locations
+    // CRITICAL: This PATH must include wherever node is installed (NVM, fnm, Volta, etc.)
     let new_path = runtime::build_runtime_path();
+    
+    // Get version manager env vars (NVM_DIR, VOLTA_HOME, etc.)
+    // Some version managers need these to function correctly
+    let version_manager_env = runtime::get_version_manager_env_vars();
 
     // Read merged env vars (shared + workspace-specific)
     let env_vars = get_merged_env_vars();
@@ -195,6 +200,12 @@ pub fn start_app_internal(
     // Ensure app data directory exists
     let _ = std::fs::create_dir_all(&app_data_dir);
 
+    info!(
+        "Starting app {} with PATH containing node: {}",
+        app_id,
+        runtime::find_node_path().unwrap_or_else(|| "NOT FOUND".to_string())
+    );
+
     // Start the process with piped stderr/stdout
     let mut cmd = Command::new(&command);
     cmd.args(&args)
@@ -204,13 +215,21 @@ pub fn start_app_internal(
         .env("MOLDABLE_APP_ID", &app_id)
         .env("MOLDABLE_HOST", "127.0.0.1")
         .env("MOLDABLE_HOME", &moldable_home)
-        .env("MOLDABLE_APP_DATA_DIR", &app_data_dir);
+        .env("MOLDABLE_APP_DATA_DIR", &app_data_dir)
+        // HOME is critical for version managers
+        .env("HOME", &home);
+    
+    // Add version manager environment variables
+    for (k, v) in &version_manager_env {
+        cmd.env(k, v);
+    }
 
     if let Some(p) = port {
         let p_str = p.to_string();
         cmd.env("MOLDABLE_PORT", &p_str).env("PORT", &p_str);
     }
 
+    // Add user's custom env vars (from .env files)
     for (k, v) in env_vars {
         cmd.env(k, v);
     }
