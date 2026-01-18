@@ -15,7 +15,11 @@ export {
   ConversationHistory,
   type ConversationMeta,
 } from './conversation-history'
-export { ChatPanel, type ChatPanelProps } from './chat-panel'
+export {
+  ChatPanel,
+  type ChatPanelProps,
+  type ToolProgressData,
+} from './chat-panel'
 export {
   ThinkingTimeline,
   ThinkingTimelineMarker,
@@ -27,3 +31,8 @@ export {
   DEFAULT_TOOL_HANDLERS,
   type ToolHandler,
 } from './tool-handlers'
+export {
+  ToolProgressProvider,
+  useToolProgress,
+  useToolCallProgress,
+} from './tool-progress-context'

@@ -7,9 +7,17 @@ import { z } from 'zod/v4'
 const WIDGET_SIZES = ['small', 'medium', 'large'] as const
 
 /**
- * API server port (matches Rust API_SERVER_PORT)
+ * Default API server port (may be different if another instance is running)
  */
-const API_SERVER_PORT = 39102
+const DEFAULT_API_SERVER_PORT = 39102
+
+/**
+ * Options for creating scaffold tools
+ */
+export interface ScaffoldToolsOptions {
+  /** API server port (passed from frontend which knows the actual port) */
+  apiServerPort?: number
+}
 
 /**
  * Response from the create-app API
@@ -31,7 +39,9 @@ interface CreateAppResponse {
 /**
  * Create app scaffolding tools
  */
-export function createScaffoldTools() {
+export function createScaffoldTools(options: ScaffoldToolsOptions = {}) {
+  const { apiServerPort = DEFAULT_API_SERVER_PORT } = options
+
   const scaffoldAppSchema = z.object({
     appId: z
       .string()
@@ -79,7 +89,7 @@ export function createScaffoldTools() {
         try {
           // Call the Rust API server to create the app
           const response = await fetch(
-            `http://127.0.0.1:${API_SERVER_PORT}/api/create-app`,
+            `http://127.0.0.1:${apiServerPort}/api/create-app`,
             {
               method: 'POST',
               headers: {

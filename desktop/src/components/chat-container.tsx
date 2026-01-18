@@ -47,6 +47,10 @@ interface ChatContainerProps {
   suggestedInput?: string
   /** Called when suggested input has been consumed */
   onSuggestedInputConsumed?: () => void
+  /** AI server port (may be fallback port if default was unavailable) */
+  aiServerPort?: number
+  /** API server port (for scaffold tools, handles multi-user on same machine) */
+  apiServerPort?: number
 }
 
 export function ChatContainer({
@@ -62,6 +66,8 @@ export function ChatContainer({
   onAddApiKey,
   suggestedInput,
   onSuggestedInputConsumed,
+  aiServerPort,
+  apiServerPort,
 }: ChatContainerProps) {
   const {
     messages,
@@ -75,11 +81,14 @@ export function ChatContainer({
     setSelectedModel,
     selectedReasoningEffort,
     setSelectedReasoningEffort,
+    toolProgress,
   } = useMoldableChat({
     activeWorkspaceId: workspaceId,
     registeredApps,
     activeApp,
     availableKeys,
+    aiServerPort,
+    apiServerPort,
   })
 
   const {
@@ -300,6 +309,7 @@ export function ChatContainer({
       onMinimizedChange={onMinimizedChange}
       missingApiKey={missingApiKey}
       onAddApiKey={onAddApiKey}
+      toolProgress={toolProgress}
     />
   )
 }

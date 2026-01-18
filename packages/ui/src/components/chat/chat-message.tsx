@@ -15,6 +15,7 @@ import {
   ThinkingTimelineMarker,
 } from './thinking-timeline'
 import { getToolHandler } from './tool-handlers'
+import { useToolProgress } from './tool-progress-context'
 import { AnimatePresence, motion } from 'framer-motion'
 
 const DEFAULT_ACTIONS_LABEL = 'Thinking'
@@ -65,6 +66,9 @@ function PureMessage({
   isLast = false,
   isStreaming = false,
 }: MessageProps) {
+  // Get tool progress for streaming stdout/stderr
+  const toolProgress = useToolProgress()
+
   // Track open state for each thinking group independently
   const [thinkingGroupStates, setThinkingGroupStates] = useState<
     Map<string, { isOpen: boolean; userOpened: boolean }>
@@ -140,13 +144,31 @@ function PureMessage({
             part.state === 'call' ||
             part.state === 'pending'
 
-          const toolContent = isToolLoading
-            ? toolHandler.renderLoading?.(part.args) || (
-                <div className="text-muted-foreground text-xs">
-                  {toolHandler.loadingLabel}
-                </div>
-              )
-            : toolHandler.renderOutput(part.output, part.toolCallId || key)
+          // Check for streaming progress (stdout/stderr from command execution)
+          const progress = part.toolCallId
+            ? toolProgress[part.toolCallId]
+            : undefined
+          const hasStreamingOutput =
+            progress && (progress.stdout || progress.stderr)
+
+          let toolContent: ReactNode
+          if (hasStreamingOutput && toolHandler.renderStreaming) {
+            // Show streaming output (live stdout/stderr)
+            toolContent = toolHandler.renderStreaming(part.args, progress)
+          } else if (isToolLoading) {
+            // Show loading state (arguments streaming or waiting)
+            toolContent = toolHandler.renderLoading?.(part.args) || (
+              <div className="text-muted-foreground text-xs">
+                {toolHandler.loadingLabel}
+              </div>
+            )
+          } else {
+            // Show final output
+            toolContent = toolHandler.renderOutput(
+              part.output,
+              part.toolCallId || key,
+            )
+          }
 
           items.push({
             type: 'inline-tool' as const,
@@ -251,7 +273,7 @@ function PureMessage({
       contentItems: items,
       hasFinalAssistantText: state.hasText,
     }
-  }, [message.id, message.parts, message.content])
+  }, [message.id, message.parts, message.content, toolProgress])
 
   // Determine if last thinking group is streaming
   const lastThinkingGroup = contentItems

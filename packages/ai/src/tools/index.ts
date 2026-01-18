@@ -1,4 +1,4 @@
-import { createBashTools } from './bash'
+import { type CommandProgressCallback, createBashTools } from './bash'
 import { createFilesystemTools } from './filesystem'
 import { createScaffoldTools } from './scaffold'
 import { createSearchTools } from './search'
@@ -6,11 +6,19 @@ import { createSkillsTools } from './skills'
 import { createWebSearchTools } from './web-search'
 
 export { createFilesystemTools } from './filesystem'
-export { createBashTools } from './bash'
+export {
+  createBashTools,
+  type CommandProgressCallback,
+  type CommandProgressUpdate,
+} from './bash'
 export { createSearchTools } from './search'
 export { createWebSearchTools, type WebSearchResult } from './web-search'
 export { createSkillsTools, SKILLS_TOOL_DESCRIPTIONS } from './skills'
-export { createScaffoldTools, SCAFFOLD_TOOL_DESCRIPTIONS } from './scaffold'
+export {
+  createScaffoldTools,
+  SCAFFOLD_TOOL_DESCRIPTIONS,
+  type ScaffoldToolsOptions,
+} from './scaffold'
 
 export type MoldableToolsOptions = {
   /** Base path for file operations (security boundary) */
@@ -23,6 +31,10 @@ export type MoldableToolsOptions = {
   googleApiKey?: string
   /** Google Search Engine ID (or set GOOGLE_SEARCH_ENGINE_ID env var) */
   googleSearchEngineId?: string
+  /** Callback for streaming command output to the UI */
+  onCommandProgress?: CommandProgressCallback
+  /** API server port for scaffold tools (passed from frontend) */
+  apiServerPort?: number
 }
 
 /**
@@ -35,6 +47,8 @@ export function createMoldableTools(options: MoldableToolsOptions = {}) {
     maxSearchResults,
     googleApiKey,
     googleSearchEngineId,
+    onCommandProgress,
+    apiServerPort,
   } = options
 
   return {
@@ -42,6 +56,7 @@ export function createMoldableTools(options: MoldableToolsOptions = {}) {
     ...createBashTools({
       cwd: basePath,
       maxBuffer,
+      onProgress: onCommandProgress,
     }),
     ...createSearchTools({
       basePath,
@@ -52,7 +67,7 @@ export function createMoldableTools(options: MoldableToolsOptions = {}) {
       searchEngineId: googleSearchEngineId,
     }),
     ...createSkillsTools(),
-    ...createScaffoldTools(),
+    ...createScaffoldTools({ apiServerPort }),
   }
 }
 

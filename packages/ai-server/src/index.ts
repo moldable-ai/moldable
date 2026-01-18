@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import {
+  type CommandProgressUpdate,
   DEFAULT_MODEL,
   LLMProvider,
   type ReasoningEffort,
@@ -61,8 +62,20 @@ for (const envPath of envPaths) {
   }
 }
 
-const PORT = process.env.MOLDABLE_AI_PORT || 39100
-const HOST = process.env.MOLDABLE_AI_HOST || '127.0.0.1'
+// Port and host are read at runtime via functions to prevent Bun from inlining
+// defaults at compile time when using `bun build --compile`
+function getPort(): number {
+  const envPort = process.env.MOLDABLE_AI_PORT
+  if (envPort) {
+    const parsed = parseInt(envPort, 10)
+    if (!isNaN(parsed)) return parsed
+  }
+  return 39100
+}
+
+function getHost(): string {
+  return process.env.MOLDABLE_AI_HOST || '127.0.0.1'
+}
 const DEBUG_CHAT_REQUESTS =
   process.env.MOLDABLE_DEBUG_CHAT_REQUESTS === '1' ||
   process.env.MOLDABLE_DEBUG_PROMPTS === '1' ||
@@ -272,6 +285,7 @@ async function handleChat(
       reasoningEffort?: ReasoningEffort
       basePath?: string // Workspace root for file operations
       activeWorkspaceId?: string // Active workspace ID (e.g., "personal", "work")
+      apiServerPort?: number // API server port for scaffold tools (handles multi-user on same machine)
       registeredApps?: Array<{
         // All registered apps in Moldable
         id: string
@@ -348,25 +362,40 @@ async function handleChat(
     if (toolsBasePath) {
       console.log('   Tools base path:', toolsBasePath)
     }
+    if (body.apiServerPort) {
+      console.log('   API server port:', body.apiServerPort)
+    }
 
-    // Create Moldable built-in tools
-    const moldableTools = createMoldableTools({
-      basePath: toolsBasePath,
-    })
-
-    // Create MCP tools from connected servers
+    // Create MCP tools from connected servers (these don't need the writer)
     const mcpTools = createMcpTools(mcpManager)
     const mcpToolCount = Object.keys(mcpTools).length
     if (mcpToolCount > 0) {
       console.log(`   MCP tools: ${mcpToolCount}`)
     }
 
-    // Combine all tools
-    const tools = {
-      ...moldableTools,
-      ...mcpTools,
-    }
-    const toolNames = Object.keys(tools)
+    // Get tool names for system prompt (we'll create actual tools inside the stream)
+    const toolNamesForPrompt = [
+      // Moldable built-in tool names
+      'readFile',
+      'writeFile',
+      'editFile',
+      'deleteFile',
+      'listDirectory',
+      'fileExists',
+      'runCommand',
+      'grep',
+      'globFileSearch',
+      'webSearch',
+      'scaffoldApp',
+      'listSkillRepos',
+      'listAvailableSkills',
+      'syncSkills',
+      'addSkillRepo',
+      'updateSkillSelection',
+      'initSkillsConfig',
+      // MCP tool names
+      ...Object.keys(mcpTools),
+    ]
 
     // Build system message (async to load AGENTS.md from development workspace)
     // developmentWorkspace is ONLY for reading AGENTS.md when developing Moldable itself
@@ -375,7 +404,7 @@ async function handleChat(
       activeWorkspaceId: body.activeWorkspaceId,
       moldableHome: MOLDABLE_HOME,
       currentDate: new Date(),
-      availableTools: toolNames,
+      availableTools: toolNamesForPrompt,
       registeredApps: body.registeredApps,
       activeApp: body.activeApp,
     })
@@ -437,9 +466,9 @@ async function handleChat(
     })
 
     // Convert UIMessages to ModelMessages using AI SDK's converter
-    const modelMessages = await convertToModelMessages(validUIMessages, {
-      tools: toolNames.length > 0 ? tools : undefined,
-    })
+    // Note: We can't pass tools here since they're created inside the stream callback
+    // This is fine - the converter just needs to know about existing tool results in messages
+    const modelMessages = await convertToModelMessages(validUIMessages)
 
     // DEBUG: Log model messages structure
     console.log('   === ModelMessages Debug ===')
@@ -524,8 +553,8 @@ async function handleChat(
           {
             provider: model,
             temperature,
-            tools_enabled: `${toolNames.length} tools`,
-            available_tools: toolNames,
+            tools_enabled: `${toolNamesForPrompt.length} tools`,
+            available_tools: toolNamesForPrompt,
           },
           { namespace: 'config' },
         ),
@@ -543,6 +572,39 @@ async function handleChat(
         originalMessages: body.messages,
         execute: async ({ writer }) => {
           try {
+            // Create Moldable built-in tools INSIDE the stream execute callback
+            // so we have access to the writer for streaming progress
+            const moldableTools = createMoldableTools({
+              basePath: toolsBasePath,
+              // Pass API server port for scaffold tools (handles multi-user on same machine)
+              apiServerPort: body.apiServerPort,
+              // Stream command progress (stdout/stderr) to the UI as data parts
+              onCommandProgress: (
+                toolCallId: string,
+                progress: CommandProgressUpdate & { command: string },
+              ) => {
+                // Throttle updates: only send every 100ms or when output changes significantly
+                // For now, send all updates - can optimize later if needed
+                writer.write({
+                  type: 'data-tool-progress',
+                  id: toolCallId, // Same ID enables reconciliation/updating
+                  data: {
+                    toolCallId,
+                    command: progress.command,
+                    stdout: progress.stdout,
+                    stderr: progress.stderr,
+                    status: 'running',
+                  },
+                })
+              },
+            })
+
+            // Combine all tools
+            const tools = {
+              ...moldableTools,
+              ...mcpTools,
+            }
+
             if (DEBUG_CHAT_REQUESTS) {
               console.log('   Starting streamText...')
             }
@@ -1059,7 +1121,7 @@ async function handleInstallBundle(
 
 // Create HTTP server
 const server = createServer(async (req, res) => {
-  const url = new URL(req.url || '/', `http://${HOST}:${PORT}`)
+  const url = new URL(req.url || '/', `http://${getHost()}:${getPort()}`)
 
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
@@ -1111,8 +1173,10 @@ const server = createServer(async (req, res) => {
 })
 
 // Start server
-server.listen(Number(PORT), HOST, async () => {
-  console.log(`🤖 Moldable AI server running at http://${HOST}:${PORT}`)
+const port = getPort()
+const host = getHost()
+server.listen(port, host, async () => {
+  console.log(`🤖 Moldable AI server running at http://${host}:${port}`)
   console.log(`   MOLDABLE_HOME: ${MOLDABLE_HOME}`)
   console.log(
     `   Development workspace: ${WORKSPACE_ROOT || '(not configured)'}`,

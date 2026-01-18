@@ -334,7 +334,19 @@ async function initializeSandbox(
 }
 
 /**
- * Execute a command with optional sandboxing
+ * Progress update emitted during command execution
+ */
+export type CommandProgressUpdate = {
+  type: 'stdout' | 'stderr'
+  content: string
+  /** Accumulated stdout so far */
+  stdout: string
+  /** Accumulated stderr so far */
+  stderr: string
+}
+
+/**
+ * Execute a command with optional sandboxing and progress streaming
  */
 async function executeCommand(
   command: string,
@@ -343,6 +355,8 @@ async function executeCommand(
     maxBuffer?: number
     useSandbox?: boolean
     abortSignal?: AbortSignal
+    /** Callback for streaming stdout/stderr as it arrives */
+    onProgress?: (update: CommandProgressUpdate) => void
   },
 ): Promise<{
   success: boolean
@@ -360,6 +374,7 @@ async function executeCommand(
     maxBuffer = 1024 * 1024,
     useSandbox = true,
     abortSignal,
+    onProgress,
   } = options
 
   let finalCommand = command
@@ -419,19 +434,23 @@ async function executeCommand(
       }
     }
 
-    // Collect stdout
+    // Collect stdout and emit progress
     child.stdout?.on('data', (data: Buffer) => {
       const chunk = data.toString()
       if (stdout.length + chunk.length <= maxBuffer) {
         stdout += chunk
+        // Emit progress callback with the new chunk
+        onProgress?.({ type: 'stdout', content: chunk, stdout, stderr })
       }
     })
 
-    // Collect stderr
+    // Collect stderr and emit progress
     child.stderr?.on('data', (data: Buffer) => {
       const chunk = data.toString()
       if (stderr.length + chunk.length <= maxBuffer) {
         stderr += chunk
+        // Emit progress callback with the new chunk
+        onProgress?.({ type: 'stderr', content: chunk, stdout, stderr })
       }
     })
 
@@ -485,6 +504,14 @@ async function executeCommand(
 }
 
 /**
+ * Callback for streaming command progress to the UI
+ */
+export type CommandProgressCallback = (
+  toolCallId: string,
+  progress: CommandProgressUpdate & { command: string },
+) => void
+
+/**
  * Create bash/shell tools for the AI agent with sandbox support
  */
 export function createBashTools(
@@ -493,6 +520,8 @@ export function createBashTools(
     maxBuffer?: number
     sandboxConfig?: Partial<SandboxRuntimeConfig>
     disableSandbox?: boolean
+    /** Callback for streaming stdout/stderr to the UI as commands execute */
+    onProgress?: CommandProgressCallback
   } = {},
 ) {
   const {
@@ -500,6 +529,7 @@ export function createBashTools(
     maxBuffer = 1024 * 1024,
     sandboxConfig,
     disableSandbox = false,
+    onProgress,
   } = options
 
   // Build config with workspace path added to allowWrite (with /** for nested paths)
@@ -551,7 +581,7 @@ export function createBashTools(
       description:
         'Execute a bash command. By default runs in a sandboxed environment with filesystem and network restrictions. For package manager installs (pnpm/npm/yarn/bun install/add), set sandbox=false to allow network access to package registries.',
       inputSchema: zodSchema(runCommandSchema),
-      execute: async (input, { abortSignal }) => {
+      execute: async (input, { abortSignal, toolCallId }) => {
         // Default sandbox=true, but allow explicit override for package installs
         const useSandbox = input.sandbox !== false && !disableSandbox
         return executeCommand(input.command, {
@@ -559,6 +589,11 @@ export function createBashTools(
           maxBuffer,
           useSandbox,
           abortSignal,
+          // Stream progress to UI if callback provided
+          onProgress: onProgress
+            ? (update) =>
+                onProgress(toolCallId, { ...update, command: input.command })
+            : undefined,
         })
       },
     }),

@@ -7,7 +7,7 @@ import {
   Plus,
   Trash2,
 } from 'lucide-react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -33,7 +33,7 @@ import {
 } from '@moldable-ai/ui'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 
-const AI_SERVER_URL = 'http://127.0.0.1:39100'
+const DEFAULT_AI_SERVER_PORT = 39100
 
 interface McpServerConfig {
   type?: 'stdio' | 'http' | 'sse'
@@ -58,6 +58,8 @@ interface McpServerInfo {
 interface McpSettingsDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
+  /** AI server port (may be fallback port if default was unavailable) */
+  aiServerPort?: number
 }
 
 // Server row with expandable tools
@@ -204,6 +206,7 @@ function ServerRow({
 export function McpSettingsDialog({
   open,
   onOpenChange,
+  aiServerPort = DEFAULT_AI_SERVER_PORT,
 }: McpSettingsDialogProps) {
   const [servers, setServers] = useState<McpServerInfo[]>([])
   const [isLoading, setIsLoading] = useState(false)
@@ -212,6 +215,12 @@ export function McpSettingsDialog({
   const [showAddForm, setShowAddForm] = useState(false)
   const [editingServer, setEditingServer] = useState<string | null>(null)
   const [isSaving, setIsSaving] = useState(false)
+
+  // Build AI server URL with dynamic port
+  const AI_SERVER_URL = useMemo(
+    () => `http://127.0.0.1:${aiServerPort}`,
+    [aiServerPort],
+  )
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
 
   // Form state
@@ -240,7 +249,7 @@ export function McpSettingsDialog({
     } finally {
       setIsLoading(false)
     }
-  }, [])
+  }, [AI_SERVER_URL])
 
   const reloadServers = useCallback(async () => {
     try {
@@ -249,7 +258,7 @@ export function McpSettingsDialog({
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to reload')
     }
-  }, [fetchServers])
+  }, [AI_SERVER_URL, fetchServers])
 
   useEffect(() => {
     if (open) {
@@ -425,7 +434,7 @@ export function McpSettingsDialog({
         setIsInstalling(false)
       }
     },
-    [reloadServers],
+    [AI_SERVER_URL, reloadServers],
   )
 
   // Listen for Tauri window drag-drop events when dialog is open

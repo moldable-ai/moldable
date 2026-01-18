@@ -23,6 +23,17 @@ import { cn } from '../../lib/utils'
 import { ThinkingTimelineMarker } from './thinking-timeline'
 
 /**
+ * Progress data for streaming tool execution (e.g., command stdout/stderr)
+ */
+export interface ToolStreamingProgress {
+  toolCallId: string
+  command?: string
+  stdout: string
+  stderr: string
+  status: 'running' | 'complete'
+}
+
+/**
  * Tool handler definition
  */
 export type ToolHandler = {
@@ -37,6 +48,12 @@ export type ToolHandler = {
   // Render function for loading state (optional, for inline tools)
   // args contains the streaming tool arguments (may be partial during streaming)
   renderLoading?: (args?: unknown) => ReactNode
+  // Render function for streaming execution output (stdout/stderr)
+  // Called when progress data is available during tool execution
+  renderStreaming?: (
+    args: unknown,
+    progress: ToolStreamingProgress,
+  ) => ReactNode
 }
 
 /**
@@ -182,12 +199,12 @@ function TerminalOutput({
 function FileOperation({
   operation,
   path,
-  success = true,
+  status = 'success',
   children,
 }: {
   operation: 'read' | 'write' | 'list' | 'check' | 'delete' | 'edit'
   path: string
-  success?: boolean
+  status?: 'loading' | 'success' | 'error'
   children?: ReactNode
 }) {
   const icons = {
@@ -198,7 +215,15 @@ function FileOperation({
     delete: Trash2,
     edit: FileCode,
   }
-  const labels = {
+  const loadingLabels = {
+    read: 'Reading',
+    write: 'Writing',
+    list: 'Listing',
+    check: 'Checking',
+    delete: 'Deleting',
+    edit: 'Editing',
+  }
+  const completedLabels = {
     read: 'Read',
     write: 'Wrote',
     list: 'Listed',
@@ -208,29 +233,38 @@ function FileOperation({
   }
   const Icon = icons[operation]
   const fileName = getFileName(path)
+  const label =
+    status === 'loading' ? loadingLabels[operation] : completedLabels[operation]
 
   return (
     <div className="my-1 min-w-0">
       <div
         className={cn(
           'inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs',
-          success
-            ? 'bg-muted text-muted-foreground'
-            : 'bg-destructive/10 text-destructive',
+          status === 'error'
+            ? 'bg-destructive/10 text-destructive'
+            : 'bg-muted text-muted-foreground',
         )}
       >
-        <Icon className="size-3.5 shrink-0" />
-        <span className="shrink-0 font-medium">{labels[operation]}</span>
+        <Icon
+          className={cn(
+            'size-3.5 shrink-0',
+            status === 'loading' && 'animate-pulse',
+          )}
+        />
+        <span className="shrink-0 font-medium">{label}</span>
         <code
           className="bg-background/50 min-w-0 truncate rounded px-1 font-mono"
           title={path}
         >
           {fileName}
         </code>
-        {success ? (
+        {status === 'success' && (
           <Check className="size-3 shrink-0 text-green-600" />
-        ) : (
-          <X className="size-3 shrink-0" />
+        )}
+        {status === 'error' && <X className="size-3 shrink-0" />}
+        {status === 'loading' && (
+          <span className="text-muted-foreground/60 shrink-0">...</span>
         )}
       </div>
       {children}
@@ -254,12 +288,16 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
     loadingLabel: 'Reading file...',
     marker: ThinkingTimelineMarker.File,
     inline: true,
-    renderLoading: () => (
-      <div className="bg-muted text-muted-foreground inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs">
-        <FileText className="size-3.5 shrink-0 animate-pulse" />
-        <span className="truncate">Reading file...</span>
-      </div>
-    ),
+    renderLoading: (args?: unknown) => {
+      const { path } = (args ?? {}) as { path?: string }
+      return (
+        <FileOperation
+          operation="read"
+          path={path || 'file'}
+          status="loading"
+        />
+      )
+    },
     renderOutput: (output, toolCallId) => {
       const result = (output ?? {}) as {
         success?: boolean
@@ -268,24 +306,24 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
         error?: string
       }
 
-      if (!result.success) {
+      // If output is empty, tool is still executing
+      if (output === undefined || output === null) {
         return (
           <FileOperation
             key={toolCallId}
             operation="read"
-            path={result.path || 'file'}
-            success={false}
+            path="file"
+            status="loading"
           />
         )
       }
 
-      // Show simple indicator for successful reads
       return (
         <FileOperation
           key={toolCallId}
           operation="read"
           path={result.path || 'file'}
-          success={true}
+          status={result.success === false ? 'error' : 'success'}
         />
       )
     },
@@ -329,12 +367,11 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
 
       // Fallback when content hasn't started streaming yet
       return (
-        <div className="bg-muted text-muted-foreground inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs">
-          <FileText className="size-3.5 shrink-0 animate-pulse" />
-          <span className="truncate">
-            Writing {path ? getFileName(path) : 'file'}...
-          </span>
-        </div>
+        <FileOperation
+          operation="write"
+          path={path || 'file'}
+          status="loading"
+        />
       )
     },
     renderOutput: (output, toolCallId) => {
@@ -347,24 +384,24 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
         truncated?: boolean
       }
 
-      if (!result.success) {
+      // If output is empty, tool is still executing
+      if (output === undefined || output === null) {
         return (
           <FileOperation
             key={toolCallId}
             operation="write"
-            path={result.path || 'file'}
-            success={false}
+            path="file"
+            status="loading"
           />
         )
       }
 
-      // Show simple indicator for successful writes
       return (
         <FileOperation
           key={toolCallId}
           operation="write"
           path={result.path || 'file'}
-          success={true}
+          status={result.success === false ? 'error' : 'success'}
         />
       )
     },
@@ -374,12 +411,16 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
     loadingLabel: 'Listing directory...',
     marker: ThinkingTimelineMarker.Folder,
     inline: true,
-    renderLoading: () => (
-      <div className="bg-muted text-muted-foreground inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs">
-        <FolderOpen className="size-3.5 shrink-0 animate-pulse" />
-        <span className="truncate">Listing directory...</span>
-      </div>
-    ),
+    renderLoading: (args?: unknown) => {
+      const { path } = (args ?? {}) as { path?: string }
+      return (
+        <FileOperation
+          operation="list"
+          path={path || 'directory'}
+          status="loading"
+        />
+      )
+    },
     renderOutput: (output, toolCallId) => {
       const result = (output ?? {}) as {
         success?: boolean
@@ -389,13 +430,25 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
         error?: string
       }
 
+      // If output is empty, tool is still executing
+      if (output === undefined || output === null) {
+        return (
+          <FileOperation
+            key={toolCallId}
+            operation="list"
+            path="directory"
+            status="loading"
+          />
+        )
+      }
+
       if (result.success === false) {
         return (
           <FileOperation
             key={toolCallId}
             operation="list"
             path={result.path || 'directory'}
-            success={false}
+            status="error"
           />
         )
       }
@@ -436,16 +489,32 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
     loadingLabel: 'Checking file...',
     marker: ThinkingTimelineMarker.File,
     inline: true,
-    renderLoading: () => (
-      <div className="bg-muted text-muted-foreground inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs">
-        <FileText className="size-3.5 shrink-0 animate-pulse" />
-        <span className="truncate">Checking file...</span>
-      </div>
-    ),
+    renderLoading: (args?: unknown) => {
+      const { path } = (args ?? {}) as { path?: string }
+      return (
+        <FileOperation
+          operation="check"
+          path={path || 'file'}
+          status="loading"
+        />
+      )
+    },
     renderOutput: (output, toolCallId) => {
       const result = (output ?? {}) as {
         exists?: boolean
         path?: string
+      }
+
+      // If output is empty, tool is still executing
+      if (output === undefined || output === null) {
+        return (
+          <FileOperation
+            key={toolCallId}
+            operation="check"
+            path="file"
+            status="loading"
+          />
+        )
       }
 
       return (
@@ -454,6 +523,7 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
           className="bg-muted text-muted-foreground my-1 inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs"
         >
           <FileText className="size-3.5 shrink-0" />
+          <span className="shrink-0 font-medium">Checked</span>
           <code className="bg-background/50 min-w-0 truncate rounded px-1 font-mono">
             {result.path || 'file'}
           </code>
@@ -486,6 +556,9 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
               <code className="text-terminal-foreground min-w-0 flex-1 truncate font-mono text-xs">
                 {summarizeCommand(command)}
               </code>
+              <span className="text-terminal-muted shrink-0 text-[10px]">
+                Running...
+              </span>
             </div>
             <div className="max-h-[150px] overflow-auto p-3">
               <div className="text-terminal-foreground break-all font-mono text-xs">
@@ -516,6 +589,23 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
         exitCode?: number
         command?: string
         error?: string
+      }
+
+      // If output is empty, tool is still executing
+      if (output === undefined || output === null) {
+        return (
+          <div
+            key={toolCallId}
+            className="border-terminal-border bg-terminal my-2 min-w-0 max-w-full overflow-hidden rounded-lg border"
+          >
+            <div className="bg-terminal-header flex min-w-0 items-center gap-2 px-3 py-1.5">
+              <Terminal className="text-terminal-muted size-3.5 shrink-0 animate-pulse" />
+              <code className="text-terminal-foreground/60 min-w-0 flex-1 truncate font-mono text-xs italic">
+                Executing...
+              </code>
+            </div>
+          </div>
+        )
       }
 
       return (
@@ -556,6 +646,9 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
                   unsandboxed
                 </span>
               )}
+              <span className="text-terminal-muted shrink-0 text-[10px]">
+                Running...
+              </span>
             </div>
             <div className="max-h-[150px] overflow-auto p-3">
               <div className="text-terminal-foreground break-all font-mono text-xs">
@@ -578,6 +671,57 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
         </div>
       )
     },
+    // Render with streaming stdout/stderr output
+    renderStreaming: (args, progress) => {
+      const { command, sandbox } = (args ?? {}) as {
+        command?: string
+        sandbox?: boolean
+      }
+      const { stdout, stderr } = progress
+      const hasOutput = stdout || stderr
+
+      return (
+        <div className="border-terminal-border bg-terminal my-2 min-w-0 max-w-full overflow-hidden rounded-lg border">
+          {/* Terminal header */}
+          <div className="border-terminal-border bg-terminal-header flex min-w-0 items-center gap-2 border-b px-3 py-1.5">
+            <Terminal className="text-terminal-muted size-3.5 shrink-0 animate-pulse" />
+            <code className="text-terminal-foreground min-w-0 flex-1 truncate font-mono text-xs">
+              {command ? summarizeCommand(command) : 'Running...'}
+            </code>
+            {sandbox === false && (
+              <span className="shrink-0 rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-medium text-amber-600">
+                unsandboxed
+              </span>
+            )}
+            <span className="text-terminal-muted shrink-0 animate-pulse text-[10px]">
+              Running...
+            </span>
+          </div>
+          {/* Terminal body - command + streaming output */}
+          <div className="max-h-[300px] overflow-auto p-3">
+            {/* Full command */}
+            <div className="text-terminal-foreground mb-2 break-all font-mono text-xs">
+              <span className="text-terminal-muted">$</span> {command}
+            </div>
+            {/* Streaming output */}
+            {hasOutput && (
+              <div className="border-terminal-border/50 border-t pt-2">
+                {stdout && (
+                  <pre className="text-terminal-stdout whitespace-pre-wrap break-all font-mono text-xs">
+                    {stdout}
+                  </pre>
+                )}
+                {stderr && (
+                  <pre className="text-terminal-stderr whitespace-pre-wrap break-all font-mono text-xs">
+                    {stderr}
+                  </pre>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )
+    },
     renderOutput: (output, toolCallId) => {
       const result = (output ?? {}) as {
         success?: boolean
@@ -587,6 +731,23 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
         command?: string
         error?: string
         sandboxed?: boolean
+      }
+
+      // If output is empty, tool is still executing
+      if (output === undefined || output === null) {
+        return (
+          <div
+            key={toolCallId}
+            className="border-terminal-border bg-terminal my-2 min-w-0 max-w-full overflow-hidden rounded-lg border"
+          >
+            <div className="bg-terminal-header flex min-w-0 items-center gap-2 px-3 py-1.5">
+              <Terminal className="text-terminal-muted size-3.5 shrink-0 animate-pulse" />
+              <code className="text-terminal-foreground/60 min-w-0 flex-1 truncate font-mono text-xs italic">
+                Executing...
+              </code>
+            </div>
+          </div>
+        )
       }
 
       return (
@@ -615,12 +776,11 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
     renderLoading: (args?: unknown) => {
       const { path } = (args ?? {}) as { path?: string }
       return (
-        <div className="bg-muted text-muted-foreground inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs">
-          <Trash2 className="size-3.5 shrink-0 animate-pulse" />
-          <span className="truncate">
-            Deleting {path ? getFileName(path) : 'file'}...
-          </span>
-        </div>
+        <FileOperation
+          operation="delete"
+          path={path || 'file'}
+          status="loading"
+        />
       )
     },
     renderOutput: (output, toolCallId) => {
@@ -630,12 +790,24 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
         error?: string
       }
 
+      // If output is empty, tool is still executing
+      if (output === undefined || output === null) {
+        return (
+          <FileOperation
+            key={toolCallId}
+            operation="delete"
+            path="file"
+            status="loading"
+          />
+        )
+      }
+
       return (
         <FileOperation
           key={toolCallId}
           operation="delete"
           path={result.path || 'file'}
-          success={result.success !== false}
+          status={result.success === false ? 'error' : 'success'}
         />
       )
     },
@@ -648,12 +820,11 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
     renderLoading: (args?: unknown) => {
       const { path } = (args ?? {}) as { path?: string }
       return (
-        <div className="bg-muted text-muted-foreground inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs">
-          <FileCode className="size-3.5 shrink-0 animate-pulse" />
-          <span className="truncate">
-            Editing {path ? getFileName(path) : 'file'}...
-          </span>
-        </div>
+        <FileOperation
+          operation="edit"
+          path={path || 'file'}
+          status="loading"
+        />
       )
     },
     renderOutput: (output, toolCallId) => {
@@ -663,12 +834,24 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
         error?: string
       }
 
+      // If output is empty, tool is still executing
+      if (output === undefined || output === null) {
+        return (
+          <FileOperation
+            key={toolCallId}
+            operation="edit"
+            path="file"
+            status="loading"
+          />
+        )
+      }
+
       return (
         <FileOperation
           key={toolCallId}
           operation="edit"
           path={result.path || 'file'}
-          success={result.success !== false}
+          status={result.success === false ? 'error' : 'success'}
         />
       )
     },
@@ -710,6 +893,19 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
         error?: string
         // Alternative format from ripgrep
         content?: string
+      }
+
+      // If output is empty, tool is still executing
+      if (output === undefined || output === null) {
+        return (
+          <div
+            key={toolCallId}
+            className="bg-muted text-muted-foreground my-1 inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs"
+          >
+            <Search className="size-3.5 shrink-0 animate-pulse" />
+            <span className="truncate">Searching...</span>
+          </div>
+        )
       }
 
       // Handle raw content output (ripgrep format)
@@ -797,6 +993,19 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
         error?: string
       }
 
+      // If output is empty, tool is still executing
+      if (output === undefined || output === null) {
+        return (
+          <div
+            key={toolCallId}
+            className="bg-muted text-muted-foreground my-1 inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs"
+          >
+            <Search className="size-3.5 shrink-0 animate-pulse" />
+            <span className="truncate">Finding files...</span>
+          </div>
+        )
+      }
+
       if (result.success === false || !result.files?.length) {
         return (
           <div
@@ -857,6 +1066,19 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
           snippet: string
         }>
         error?: string
+      }
+
+      // If output is empty, tool is still executing
+      if (output === undefined || output === null) {
+        return (
+          <div
+            key={toolCallId}
+            className="bg-muted text-muted-foreground my-1 inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs"
+          >
+            <Globe className="size-3.5 shrink-0 animate-pulse" />
+            <span className="truncate">Searching the web...</span>
+          </div>
+        )
       }
 
       if (result.success === false || !result.results?.length) {
@@ -1287,6 +1509,19 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
         error?: string
       }
 
+      // If output is empty, tool is still executing
+      if (output === undefined || output === null) {
+        return (
+          <div
+            key={toolCallId}
+            className="bg-muted text-muted-foreground inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs"
+          >
+            <Package className="size-3.5 shrink-0 animate-pulse" />
+            <span className="truncate">Creating app...</span>
+          </div>
+        )
+      }
+
       if (result.success === false) {
         return (
           <div
@@ -1338,6 +1573,24 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
 }
 
 /**
+ * Loading indicator for inline tool loading states
+ */
+function LoadingIndicator({
+  icon: Icon,
+  children,
+}: {
+  icon: React.ComponentType<{ className?: string }>
+  children: ReactNode
+}) {
+  return (
+    <div className="bg-muted text-muted-foreground inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs">
+      <Icon className="size-3.5 shrink-0 animate-pulse" />
+      <span className="truncate">{children}</span>
+    </div>
+  )
+}
+
+/**
  * Get the handler for a tool
  */
 export function getToolHandler(toolName: string): ToolHandler {
@@ -1348,9 +1601,12 @@ export function getToolHandler(toolName: string): ToolHandler {
 
   // Default handler for unknown tools
   return {
-    loadingLabel: `Using ${toolName}...`,
+    loadingLabel: `Running ${toolName}...`,
     marker: ThinkingTimelineMarker.Default,
     inline: false,
+    renderLoading: () => (
+      <LoadingIndicator icon={Sparkles}>Running {toolName}...</LoadingIndicator>
+    ),
     renderOutput: (output, toolCallId) => {
       const outputContent =
         typeof output === 'string'

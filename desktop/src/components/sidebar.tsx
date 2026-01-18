@@ -54,6 +54,8 @@ interface SidebarProps {
   isChatActive?: boolean
   /** Called when API keys change to refresh health status */
   onHealthRefresh?: () => void
+  /** AI server port (may be fallback port if default was unavailable) */
+  aiServerPort?: number
 }
 
 function AppIcon({
@@ -106,6 +108,7 @@ export function Sidebar({
   onChatToggle,
   isChatActive = false,
   onHealthRefresh,
+  aiServerPort,
 }: SidebarProps) {
   const { theme, resolvedTheme, setTheme } = useTheme()
   const { checking: checkingForUpdates, checkForUpdate } = useAppUpdate({
@@ -414,6 +417,7 @@ export function Sidebar({
       <McpSettingsDialog
         open={isMcpDialogOpen}
         onOpenChange={setIsMcpDialogOpen}
+        aiServerPort={aiServerPort}
       />
 
       {/* Developer Tools Dialog */}

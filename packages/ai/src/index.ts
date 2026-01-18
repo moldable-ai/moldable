@@ -35,6 +35,8 @@ export {
   createBashTools,
   createMoldableTools,
   TOOL_DESCRIPTIONS,
+  type CommandProgressCallback,
+  type CommandProgressUpdate,
 } from './tools'
 
 // Utilities

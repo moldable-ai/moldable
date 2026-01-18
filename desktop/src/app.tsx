@@ -502,6 +502,7 @@ export function App() {
           onChatToggle={handleChatToggle}
           isChatActive={isChatExpanded}
           onHealthRefresh={checkHealth}
+          aiServerPort={health.port}
         />
 
         {/* Main content area */}
@@ -561,6 +562,8 @@ export function App() {
         onAddApiKey={() => setShowApiKeySetup(true)}
         suggestedInput={suggestedChatInput}
         onSuggestedInputConsumed={() => setSuggestedChatInput(undefined)}
+        aiServerPort={health.port}
+        apiServerPort={health.apiServerPort}
       />
 
       {/* Hot reload notification (development) */}

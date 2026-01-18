@@ -31,9 +31,21 @@ import {
   type ReasoningEffortOption,
   ReasoningEffortSelector,
 } from './reasoning-effort-selector'
+import { ToolProgressProvider } from './tool-progress-context'
 import { AnimatePresence, motion } from 'framer-motion'
 
 type ChatStatus = 'ready' | 'submitted' | 'streaming' | 'error'
+
+/**
+ * Progress data for a running tool (command execution with streaming stdout/stderr)
+ */
+export interface ToolProgressData {
+  toolCallId: string
+  command: string
+  stdout: string
+  stderr: string
+  status: 'running' | 'complete'
+}
 
 export interface ChatPanelProps {
   /** Chat messages */
@@ -90,6 +102,8 @@ export interface ChatPanelProps {
   missingApiKey?: boolean
   /** Callback to trigger API key setup */
   onAddApiKey?: () => void
+  /** Progress data for running tools (streaming stdout/stderr) */
+  toolProgress?: Record<string, ToolProgressData>
 }
 
 /**
@@ -123,6 +137,7 @@ export function ChatPanel({
   error,
   missingApiKey,
   onAddApiKey,
+  toolProgress = {},
 }: ChatPanelProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -399,7 +414,9 @@ export function ChatPanel({
                     {welcomeMessage}
                   </div>
                 )}
-                <Messages messages={messages} status={status} />
+                <ToolProgressProvider value={toolProgress}>
+                  <Messages messages={messages} status={status} />
+                </ToolProgressProvider>
                 {/* Missing API key prompt */}
                 {(missingApiKey ||
                   (error &&
