@@ -152,7 +152,47 @@ const SECURITY_PREFERENCES_DEFAULT_TRUE: &[&str] = &[
     "requireDangerousCommandApproval",
 ];
 
-/// Migrate shared config to ensure security preferences default to true.
+/// Default dangerous command patterns (populated on first run).
+/// Users can edit/remove these as they wish.
+fn get_default_dangerous_patterns() -> serde_json::Value {
+    serde_json::json!([
+        // File operations
+        {"pattern": "\\brm\\s+(-[a-z]*r[a-z]*|-[a-z]*f[a-z]*r)\\b", "description": "Recursive delete (rm -rf)"},
+        {"pattern": "\\bmv\\s+/\\s", "description": "Moving root directory"},
+        {"pattern": "\\bshred\\b", "description": "Secure deletion (unrecoverable)"},
+        // System privileges
+        {"pattern": "\\bsudo\\b", "description": "Elevated privileges (sudo)"},
+        {"pattern": "\\b(mkfs|dd|fdisk|parted)\\b", "description": "Disk formatting/operations"},
+        {"pattern": ">\\s*/dev/(sd|hd|nvme|disk)", "description": "Redirect to disk device"},
+        {"pattern": "\\bchmod\\s+(-[a-z]*\\s+)?7[0-7]{2}\\b", "description": "Permissive chmod (7xx)"},
+        {"pattern": "\\bchmod\\s+-R\\s+777\\b", "description": "Recursive world-writable"},
+        {"pattern": "\\bchown\\s+(-[a-z]*\\s+)?root\\b", "description": "Change owner to root"},
+        // Remote execution
+        {"pattern": "\\b(curl|wget)\\b.*\\|\\s*(bash|sh|zsh)\\b", "description": "Remote script execution"},
+        {"pattern": ":\\(\\)\\s*\\{.*:\\|:.*\\}", "description": "Fork bomb"},
+        // Process management
+        {"pattern": "\\bkill\\s+(-9|-KILL)\\s", "description": "Aggressive process killing"},
+        {"pattern": "\\bpkill\\s+(-9|-KILL)\\s", "description": "Aggressive pkill"},
+        {"pattern": "\\b(shutdown|reboot|halt|poweroff)\\b", "description": "System power commands"},
+        // Git dangerous operations
+        {"pattern": "\\bgit\\s+push\\s+.*(-f|--force).*\\b(main|master)\\b", "description": "Force push to main/master"},
+        {"pattern": "\\bgit\\s+push\\s+.*\\b(main|master)\\b.*(-f|--force)", "description": "Force push to main/master"},
+        {"pattern": "\\bgit\\s+reset\\s+--hard\\b", "description": "Discard uncommitted changes"},
+        {"pattern": "\\bgit\\s+clean\\s+-[a-z]*f", "description": "Remove untracked files"},
+        {"pattern": "\\bgit\\s+push\\s+.*:(?!\\s)", "description": "Delete remote branch"},
+        {"pattern": "\\bgit\\s+push\\s+--delete\\b", "description": "Delete remote branch"},
+        // Docker/container operations
+        {"pattern": "\\bdocker\\s+system\\s+prune\\b", "description": "Remove all unused docker data"},
+        {"pattern": "\\bdocker\\s+(rm|rmi)\\s+(-[a-z]*f|-[a-z]*a)", "description": "Force remove containers/images"},
+        {"pattern": "\\bdocker\\s+container\\s+prune\\b", "description": "Remove stopped containers"},
+        // Database operations
+        {"pattern": "\\b(drop\\s+database|drop\\s+table)\\b", "description": "Drop database/table"},
+        {"pattern": "\\btruncate\\s+table\\b", "description": "Empty table"},
+        {"pattern": "\\bdelete\\s+from\\s+\\w+\\s*(;|$|where\\s+1)", "description": "Mass deletion without WHERE"},
+    ])
+}
+
+/// Migrate shared config to ensure security preferences are set.
 /// This runs on app start to handle existing configs that don't have these keys.
 pub fn migrate_security_preferences() {
     use log::info;
@@ -160,17 +200,24 @@ pub fn migrate_security_preferences() {
     let mut config = load_shared_config();
     let mut needs_save = false;
 
+    // Set boolean security preferences to true if missing
     for key in SECURITY_PREFERENCES_DEFAULT_TRUE {
         if !config.preferences.contains_key(*key) {
-            info!(
-                "Migrating shared config: setting {} = true",
-                key
-            );
+            info!("Migrating shared config: setting {} = true", key);
             config
                 .preferences
                 .insert(key.to_string(), serde_json::json!(true));
             needs_save = true;
         }
+    }
+
+    // Populate default dangerous patterns if missing
+    if !config.preferences.contains_key("dangerousPatterns") {
+        info!("Migrating shared config: populating default dangerousPatterns");
+        config
+            .preferences
+            .insert("dangerousPatterns".to_string(), get_default_dangerous_patterns());
+        needs_save = true;
     }
 
     if needs_save {

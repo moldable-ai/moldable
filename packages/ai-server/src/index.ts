@@ -340,7 +340,7 @@ async function handleChat(
       apiServerPort?: number // API server port for scaffold tools (handles multi-user on same machine)
       requireUnsandboxedApproval?: boolean // Whether to require user approval for unsandboxed commands
       requireDangerousCommandApproval?: boolean // Whether to require user approval for dangerous commands
-      customDangerousPatterns?: string[] // Custom dangerous command patterns (regex strings)
+      dangerousPatterns?: string[] // Dangerous command patterns (regex strings)
       registeredApps?: Array<{
         // All registered apps in Moldable
         id: string
@@ -639,8 +639,8 @@ async function handleChat(
               // Whether to require user approval for dangerous commands (default: true)
               requireDangerousCommandApproval:
                 body.requireDangerousCommandApproval ?? true,
-              // Custom dangerous command patterns (regex strings)
-              customDangerousPatterns: body.customDangerousPatterns ?? [],
+              // Dangerous command patterns (regex strings)
+              dangerousPatterns: body.dangerousPatterns ?? [],
               // Stream command progress (stdout/stderr) to the UI as data parts
               onCommandProgress: (
                 toolCallId: string,

@@ -1,14 +1,19 @@
 import {
+  BUILTIN_DANGEROUS_PATTERNS,
   createBashTools,
   getAugmentedPath,
   getSandboxStatus,
-  isDangerousCommand,
+  isDangerousCommand as isDangerousCommandRaw,
   resetSandbox,
 } from './bash'
 import { promises as fs } from 'fs'
 import os from 'os'
 import path from 'path'
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+
+// Wrap isDangerousCommand to use the default patterns for testing
+const isDangerousCommand = (command: string) =>
+  isDangerousCommandRaw(command, BUILTIN_DANGEROUS_PATTERNS)
 
 // Helper to execute tool and extract result (handles AI SDK's union types)
 type CommandResult = {
@@ -608,6 +613,130 @@ describe('isDangerousCommand', () => {
 
     it('should flag drop table', () => {
       expect(isDangerousCommand('drop table users')).toBe(true)
+    })
+
+    it('should flag TRUNCATE TABLE', () => {
+      expect(isDangerousCommand('TRUNCATE TABLE users')).toBe(true)
+    })
+
+    it('should flag DELETE FROM without WHERE', () => {
+      expect(isDangerousCommand('DELETE FROM users;')).toBe(true)
+    })
+
+    it('should flag DELETE FROM with WHERE 1', () => {
+      expect(isDangerousCommand('DELETE FROM users WHERE 1')).toBe(true)
+    })
+  })
+
+  describe('git reset and clean', () => {
+    it('should flag git reset --hard', () => {
+      expect(isDangerousCommand('git reset --hard')).toBe(true)
+    })
+
+    it('should flag git reset --hard HEAD~1', () => {
+      expect(isDangerousCommand('git reset --hard HEAD~1')).toBe(true)
+    })
+
+    it('should flag git clean -fd', () => {
+      expect(isDangerousCommand('git clean -fd')).toBe(true)
+    })
+
+    it('should flag git clean -f', () => {
+      expect(isDangerousCommand('git clean -f')).toBe(true)
+    })
+
+    it('should flag git push origin :branch (delete)', () => {
+      expect(isDangerousCommand('git push origin :feature-branch')).toBe(true)
+    })
+
+    it('should flag git push --delete', () => {
+      expect(
+        isDangerousCommand('git push --delete origin feature-branch'),
+      ).toBe(true)
+    })
+
+    it('should not flag git reset --soft', () => {
+      expect(isDangerousCommand('git reset --soft HEAD~1')).toBe(false)
+    })
+  })
+
+  describe('docker operations', () => {
+    it('should flag docker system prune', () => {
+      expect(isDangerousCommand('docker system prune')).toBe(true)
+    })
+
+    it('should flag docker system prune -a', () => {
+      expect(isDangerousCommand('docker system prune -a')).toBe(true)
+    })
+
+    it('should flag docker rm -f', () => {
+      expect(isDangerousCommand('docker rm -f container_id')).toBe(true)
+    })
+
+    it('should flag docker rmi -f', () => {
+      expect(isDangerousCommand('docker rmi -f image_id')).toBe(true)
+    })
+
+    it('should flag docker container prune', () => {
+      expect(isDangerousCommand('docker container prune')).toBe(true)
+    })
+
+    it('should not flag docker ps', () => {
+      expect(isDangerousCommand('docker ps')).toBe(false)
+    })
+
+    it('should not flag docker run', () => {
+      expect(isDangerousCommand('docker run -it ubuntu bash')).toBe(false)
+    })
+  })
+
+  describe('process killing', () => {
+    it('should flag kill -9', () => {
+      expect(isDangerousCommand('kill -9 1234')).toBe(true)
+    })
+
+    it('should flag kill -KILL', () => {
+      expect(isDangerousCommand('kill -KILL 1234')).toBe(true)
+    })
+
+    it('should flag pkill -9', () => {
+      expect(isDangerousCommand('pkill -9 process_name')).toBe(true)
+    })
+
+    it('should not flag normal kill', () => {
+      expect(isDangerousCommand('kill 1234')).toBe(false)
+    })
+  })
+
+  describe('system power commands', () => {
+    it('should flag shutdown', () => {
+      expect(isDangerousCommand('shutdown -h now')).toBe(true)
+    })
+
+    it('should flag reboot', () => {
+      expect(isDangerousCommand('reboot')).toBe(true)
+    })
+
+    it('should flag halt', () => {
+      expect(isDangerousCommand('halt')).toBe(true)
+    })
+
+    it('should flag poweroff', () => {
+      expect(isDangerousCommand('poweroff')).toBe(true)
+    })
+  })
+
+  describe('file operations', () => {
+    it('should flag mv /', () => {
+      expect(isDangerousCommand('mv / /backup')).toBe(true)
+    })
+
+    it('should flag shred', () => {
+      expect(isDangerousCommand('shred -u secret.txt')).toBe(true)
+    })
+
+    it('should flag chmod -R 777', () => {
+      expect(isDangerousCommand('chmod -R 777 /var/www')).toBe(true)
     })
   })
 

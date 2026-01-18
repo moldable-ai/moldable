@@ -79,47 +79,67 @@ export function getAugmentedPath(): string {
 }
 
 /**
- * Built-in dangerous command patterns.
- * These match the DEFAULT_DANGEROUS_PATTERNS in the frontend config.
+ * Default dangerous command patterns used to populate user config on first run.
+ * Exported for reference/migration purposes only - the actual patterns checked
+ * at runtime come from user config (dangerousPatterns).
+ * @see DEFAULT_DANGEROUS_PATTERNS in desktop/src/hooks/use-workspace-config.ts
  */
 export const BUILTIN_DANGEROUS_PATTERNS = [
+  // File operations
   '\\brm\\s+(-[a-z]*r[a-z]*|-[a-z]*f[a-z]*r)\\b', // Recursive delete (rm -rf)
-  '\\bsudo\\b', // Elevated privileges (sudo)
+  '\\bmv\\s+/\\s', // Moving root directory
+  '\\bshred\\b', // Secure deletion (unrecoverable)
+
+  // System privileges
+  '\\bsudo\\b', // Elevated privileges
   '\\b(mkfs|dd|fdisk|parted)\\b', // Disk formatting/operations
   '>\\s*/dev/(sd|hd|nvme|disk)', // Redirect to disk device
+  '\\bchmod\\s+(-[a-z]*\\s+)?7[0-7]{2}\\b', // Permissive chmod (7xx)
+  '\\bchmod\\s+-R\\s+777\\b', // Recursive world-writable
+  '\\bchown\\s+(-[a-z]*\\s+)?root\\b', // Change owner to root
+
+  // Remote execution
   '\\b(curl|wget)\\b.*\\|\\s*(bash|sh|zsh)\\b', // Remote script execution
   ':\\(\\)\\s*\\{.*:\\|:.*\\}', // Fork bomb
-  '\\bchmod\\s+(-[a-z]*\\s+)?7[0-7]{2}\\b', // Permissive chmod (7xx)
-  '\\bchown\\s+(-[a-z]*\\s+)?root\\b', // Change owner to root
+
+  // Process management
+  '\\bkill\\s+(-9|-KILL)\\s', // Aggressive process killing
+  '\\bpkill\\s+(-9|-KILL)\\s', // Aggressive pkill
+  '\\b(shutdown|reboot|halt|poweroff)\\b', // System power commands
+
+  // Git dangerous operations
   '\\bgit\\s+push\\s+.*(-f|--force).*\\b(main|master)\\b', // Force push to main/master
   '\\bgit\\s+push\\s+.*\\b(main|master)\\b.*(-f|--force)', // Force push to main/master
-  '\\b(drop\\s+database|drop\\s+table)\\b', // Database drop commands
+  '\\bgit\\s+reset\\s+--hard\\b', // Discard uncommitted changes
+  '\\bgit\\s+clean\\s+-[a-z]*f', // Remove untracked files
+  '\\bgit\\s+push\\s+.*:(?!\\s)', // Delete remote branch (push origin :branch)
+  '\\bgit\\s+push\\s+--delete\\b', // Delete remote branch
+
+  // Docker/container operations
+  '\\bdocker\\s+system\\s+prune\\b', // Remove all unused docker data
+  '\\bdocker\\s+(rm|rmi)\\s+(-[a-z]*f|-[a-z]*a)', // Force remove containers/images
+  '\\bdocker\\s+container\\s+prune\\b', // Remove stopped containers
+
+  // Database operations
+  '\\b(drop\\s+database|drop\\s+table)\\b', // Drop database/table
+  '\\btruncate\\s+table\\b', // Empty table
+  '\\bdelete\\s+from\\s+\\w+\\s*(;|$|where\\s+1)', // Mass deletion without proper WHERE
 ]
 
 /**
  * Detect dangerous commands that should require user approval.
  * These commands can cause data loss, system damage, or security issues.
  * @param command - The command to check
- * @param customPatterns - Additional regex patterns to check (strings)
+ * @param patterns - Regex patterns to check (strings). If empty, no commands are flagged.
  * @internal Exported for testing
  */
 export function isDangerousCommand(
   command: string,
-  customPatterns: string[] = [],
+  patterns: string[] = [],
 ): boolean {
   const cmd = command.toLowerCase()
 
-  // Check built-in patterns
-  for (const pattern of BUILTIN_DANGEROUS_PATTERNS) {
-    try {
-      if (new RegExp(pattern, 'i').test(cmd)) return true
-    } catch {
-      // Invalid pattern, skip
-    }
-  }
-
-  // Check custom patterns
-  for (const pattern of customPatterns) {
+  for (const pattern of patterns) {
     try {
       if (new RegExp(pattern, 'i').test(cmd)) return true
     } catch {
@@ -578,8 +598,8 @@ export function createBashTools(
     requireUnsandboxedApproval?: boolean
     /** Whether to require user approval for dangerous commands (default: true) */
     requireDangerousCommandApproval?: boolean
-    /** Custom dangerous command patterns (regex strings) to check in addition to built-in patterns */
-    customDangerousPatterns?: string[]
+    /** Dangerous command patterns (regex strings) that require approval */
+    dangerousPatterns?: string[]
   } = {},
 ) {
   const {
@@ -590,7 +610,7 @@ export function createBashTools(
     onProgress,
     requireUnsandboxedApproval = true,
     requireDangerousCommandApproval = true,
-    customDangerousPatterns = [],
+    dangerousPatterns = [],
   } = options
 
   // Build config with workspace path added to allowWrite (with /** for nested paths)
@@ -651,7 +671,7 @@ export function createBashTools(
               // Check dangerous command approval
               if (
                 requireDangerousCommandApproval &&
-                isDangerousCommand(command, customDangerousPatterns)
+                isDangerousCommand(command, dangerousPatterns)
               )
                 return true
               return false

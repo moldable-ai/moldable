@@ -39,8 +39,8 @@ export type MoldableToolsOptions = {
   requireUnsandboxedApproval?: boolean
   /** Whether to require user approval for dangerous commands (default: true) */
   requireDangerousCommandApproval?: boolean
-  /** Custom dangerous command patterns (regex strings) */
-  customDangerousPatterns?: string[]
+  /** Dangerous command patterns (regex strings) that require approval */
+  dangerousPatterns?: string[]
 }
 
 /**
@@ -57,7 +57,7 @@ export function createMoldableTools(options: MoldableToolsOptions = {}) {
     apiServerPort,
     requireUnsandboxedApproval,
     requireDangerousCommandApproval,
-    customDangerousPatterns,
+    dangerousPatterns,
   } = options
 
   return {
@@ -68,7 +68,7 @@ export function createMoldableTools(options: MoldableToolsOptions = {}) {
       onProgress: onCommandProgress,
       requireUnsandboxedApproval,
       requireDangerousCommandApproval,
-      customDangerousPatterns,
+      dangerousPatterns,
     }),
     ...createSearchTools({
       basePath,

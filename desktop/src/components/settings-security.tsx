@@ -1,4 +1,4 @@
-import { AlertTriangle, Plus, Shield, Trash2 } from 'lucide-react'
+import { AlertTriangle, Plus, RotateCcw, Shield, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import {
   Button,
@@ -21,8 +21,8 @@ interface SettingsSecurityProps {
   onRequireUnsandboxedApprovalChange: (value: boolean) => void
   requireDangerousCommandApproval: boolean
   onRequireDangerousCommandApprovalChange: (value: boolean) => void
-  customDangerousPatterns: DangerousPattern[]
-  onCustomDangerousPatternsChange: (patterns: DangerousPattern[]) => void
+  dangerousPatterns: DangerousPattern[]
+  onDangerousPatternsChange: (patterns: DangerousPattern[]) => void
 }
 
 export function SettingsSecurity({
@@ -30,8 +30,8 @@ export function SettingsSecurity({
   onRequireUnsandboxedApprovalChange,
   requireDangerousCommandApproval,
   onRequireDangerousCommandApprovalChange,
-  customDangerousPatterns,
-  onCustomDangerousPatternsChange,
+  dangerousPatterns,
+  onDangerousPatternsChange,
 }: SettingsSecurityProps) {
   const [isAddPatternOpen, setIsAddPatternOpen] = useState(false)
   const [newPattern, setNewPattern] = useState('')
@@ -58,17 +58,13 @@ export function SettingsSecurity({
     }
 
     // Check for duplicates
-    const allPatterns = [
-      ...DEFAULT_DANGEROUS_PATTERNS,
-      ...customDangerousPatterns,
-    ]
-    if (allPatterns.some((p) => p.pattern === newPattern)) {
+    if (dangerousPatterns.some((p) => p.pattern === newPattern)) {
       setPatternError('This pattern already exists')
       return
     }
 
-    onCustomDangerousPatternsChange([
-      ...customDangerousPatterns,
+    onDangerousPatternsChange([
+      ...dangerousPatterns,
       { pattern: newPattern, description: newDescription.trim() },
     ])
 
@@ -79,9 +75,13 @@ export function SettingsSecurity({
   }
 
   const handleRemovePattern = (pattern: string) => {
-    onCustomDangerousPatternsChange(
-      customDangerousPatterns.filter((p) => p.pattern !== pattern),
+    onDangerousPatternsChange(
+      dangerousPatterns.filter((p) => p.pattern !== pattern),
     )
+  }
+
+  const handleResetToDefaults = () => {
+    onDangerousPatternsChange([...DEFAULT_DANGEROUS_PATTERNS])
   }
 
   return (
@@ -160,52 +160,47 @@ export function SettingsSecurity({
               <p className="text-muted-foreground text-xs">
                 Commands matching these patterns will require approval
               </p>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setIsAddPatternOpen(true)}
-                className="h-7 cursor-pointer gap-1 px-2 text-xs"
-              >
-                <Plus className="size-3" />
-                Add
-              </Button>
+              <div className="flex gap-1.5">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleResetToDefaults}
+                  className="text-muted-foreground hover:text-foreground h-7 cursor-pointer gap-1 px-2 text-xs"
+                  title="Reset to defaults"
+                >
+                  <RotateCcw className="size-3" />
+                  Reset
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setIsAddPatternOpen(true)}
+                  className="h-7 cursor-pointer gap-1 px-2 text-xs"
+                >
+                  <Plus className="size-3" />
+                  Add
+                </Button>
+              </div>
             </div>
 
-            {/* Custom patterns */}
-            {customDangerousPatterns.length > 0 && (
-              <div className="flex flex-col gap-1.5">
-                <p className="text-muted-foreground px-1 text-[10px] font-medium uppercase tracking-wider">
-                  Custom
-                </p>
-                <div className="divide-border/50 divide-y rounded-md border">
-                  {customDangerousPatterns.map((p) => (
-                    <PatternItem
-                      key={p.pattern}
-                      pattern={p.pattern}
-                      description={p.description}
-                      onRemove={() => handleRemovePattern(p.pattern)}
-                    />
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Built-in patterns */}
-            <div className="flex flex-col gap-1.5">
-              <p className="text-muted-foreground px-1 text-[10px] font-medium uppercase tracking-wider">
-                Built-in
-              </p>
+            {/* All patterns (editable) */}
+            {dangerousPatterns.length > 0 ? (
               <div className="divide-border/50 divide-y rounded-md border">
-                {DEFAULT_DANGEROUS_PATTERNS.map((p) => (
+                {dangerousPatterns.map((p) => (
                   <PatternItem
                     key={p.pattern}
                     pattern={p.pattern}
                     description={p.description}
-                    isBuiltIn
+                    onRemove={() => handleRemovePattern(p.pattern)}
                   />
                 ))}
               </div>
-            </div>
+            ) : (
+              <div className="border-border text-muted-foreground rounded-md border border-dashed px-4 py-6 text-center text-xs">
+                No patterns configured. Click &ldquo;Reset&rdquo; to restore
+                defaults or &ldquo;Add&rdquo; to create custom patterns.
+              </div>
+            )}
           </div>
         )}
       </section>
@@ -281,13 +276,11 @@ export function SettingsSecurity({
 function PatternItem({
   pattern,
   description,
-  isBuiltIn,
   onRemove,
 }: {
   pattern: string
   description: string
-  isBuiltIn?: boolean
-  onRemove?: () => void
+  onRemove: () => void
 }) {
   return (
     <div className="flex items-center justify-between gap-2 px-3 py-2">
@@ -297,16 +290,14 @@ function PatternItem({
           {pattern}
         </code>
       </div>
-      {!isBuiltIn && onRemove && (
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onRemove}
-          className="text-muted-foreground hover:text-destructive size-6 shrink-0 cursor-pointer p-0"
-        >
-          <Trash2 className="size-3" />
-        </Button>
-      )}
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={onRemove}
+        className="text-muted-foreground hover:text-destructive size-6 shrink-0 cursor-pointer p-0"
+      >
+        <Trash2 className="size-3" />
+      </Button>
     </div>
   )
 }

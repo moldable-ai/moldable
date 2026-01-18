@@ -72,7 +72,7 @@ interface DynamicBodyStore {
   apiServerPort: number | null
   requireUnsandboxedApproval: boolean
   requireDangerousCommandApproval: boolean
-  customDangerousPatterns: string[]
+  dangerousPatterns: string[]
 }
 
 /**
@@ -99,9 +99,9 @@ export function useMoldableChat(options: UseMoldableChatOptions = {}) {
     SHARED_PREFERENCE_KEYS.REQUIRE_DANGEROUS_COMMAND_APPROVAL,
     true,
   )
-  const [customDangerousPatterns] = useSharedConfig<
+  const [dangerousPatterns] = useSharedConfig<
     Array<{ pattern: string; description: string }>
-  >(SHARED_PREFERENCE_KEYS.CUSTOM_DANGEROUS_PATTERNS, [])
+  >(SHARED_PREFERENCE_KEYS.DANGEROUS_PATTERNS, [])
 
   // Build API endpoint with dynamic port
   const apiEndpoint = useMemo(
@@ -120,7 +120,7 @@ export function useMoldableChat(options: UseMoldableChatOptions = {}) {
     apiServerPort: null,
     requireUnsandboxedApproval: true,
     requireDangerousCommandApproval: true,
-    customDangerousPatterns: [],
+    dangerousPatterns: [],
   })
 
   // Keep the ref updated with latest values
@@ -135,7 +135,7 @@ export function useMoldableChat(options: UseMoldableChatOptions = {}) {
     requireUnsandboxedApproval,
     requireDangerousCommandApproval,
     // Extract just the pattern strings for the server
-    customDangerousPatterns: customDangerousPatterns.map((p) => p.pattern),
+    dangerousPatterns: dangerousPatterns.map((p) => p.pattern),
   }
 
   // Load workspace path from config
@@ -204,7 +204,7 @@ export function useMoldableChat(options: UseMoldableChatOptions = {}) {
           requireUnsandboxedApproval: store.requireUnsandboxedApproval,
           requireDangerousCommandApproval:
             store.requireDangerousCommandApproval,
-          customDangerousPatterns: store.customDangerousPatterns,
+          dangerousPatterns: store.dangerousPatterns,
         }
       },
     })

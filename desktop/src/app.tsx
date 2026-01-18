@@ -234,9 +234,9 @@ export function App() {
       SHARED_PREFERENCE_KEYS.REQUIRE_DANGEROUS_COMMAND_APPROVAL,
       true,
     )
-  const [customDangerousPatterns, setCustomDangerousPatterns] = useSharedConfig<
+  const [dangerousPatterns, setDangerousPatterns] = useSharedConfig<
     Array<{ pattern: string; description: string }>
-  >(SHARED_PREFERENCE_KEYS.CUSTOM_DANGEROUS_PATTERNS, [])
+  >(SHARED_PREFERENCE_KEYS.DANGEROUS_PATTERNS, [])
 
   // Load user's home directory for constructing data paths
   useEffect(() => {
@@ -638,8 +638,8 @@ export function App() {
         onRequireDangerousCommandApprovalChange={
           setRequireDangerousCommandApproval
         }
-        customDangerousPatterns={customDangerousPatterns}
-        onCustomDangerousPatternsChange={setCustomDangerousPatterns}
+        dangerousPatterns={dangerousPatterns}
+        onDangerousPatternsChange={setDangerousPatterns}
       />
     </div>
   )

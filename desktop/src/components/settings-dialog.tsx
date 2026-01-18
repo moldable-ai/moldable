@@ -71,10 +71,10 @@ interface SettingsDialogProps {
   requireDangerousCommandApproval: boolean
   /** Callback to update dangerous command approval preference */
   onRequireDangerousCommandApprovalChange: (value: boolean) => void
-  /** Custom dangerous command patterns */
-  customDangerousPatterns: DangerousPattern[]
-  /** Callback to update custom dangerous patterns */
-  onCustomDangerousPatternsChange: (patterns: DangerousPattern[]) => void
+  /** Dangerous command patterns (user-editable) */
+  dangerousPatterns: DangerousPattern[]
+  /** Callback to update dangerous patterns */
+  onDangerousPatternsChange: (patterns: DangerousPattern[]) => void
 }
 
 export function SettingsDialog({
@@ -86,8 +86,8 @@ export function SettingsDialog({
   onRequireUnsandboxedApprovalChange,
   requireDangerousCommandApproval,
   onRequireDangerousCommandApprovalChange,
-  customDangerousPatterns,
-  onCustomDangerousPatternsChange,
+  dangerousPatterns,
+  onDangerousPatternsChange,
 }: SettingsDialogProps) {
   const [activeSection, setActiveSection] = useState<SettingsSection>('general')
   const { theme, resolvedTheme, setTheme } = useTheme()
@@ -147,10 +147,8 @@ export function SettingsDialog({
                   onRequireDangerousCommandApprovalChange={
                     onRequireDangerousCommandApprovalChange
                   }
-                  customDangerousPatterns={customDangerousPatterns}
-                  onCustomDangerousPatternsChange={
-                    onCustomDangerousPatternsChange
-                  }
+                  dangerousPatterns={dangerousPatterns}
+                  onDangerousPatternsChange={onDangerousPatternsChange}
                 />
               )}
 

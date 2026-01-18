@@ -159,8 +159,8 @@ export const SHARED_PREFERENCE_KEYS = {
   REQUIRE_UNSANDBOXED_APPROVAL: 'requireUnsandboxedApproval',
   /** Whether to require approval for dangerous commands (default: true) */
   REQUIRE_DANGEROUS_COMMAND_APPROVAL: 'requireDangerousCommandApproval',
-  /** Custom dangerous command patterns (regex strings) added by user */
-  CUSTOM_DANGEROUS_PATTERNS: 'customDangerousPatterns',
+  /** Dangerous command patterns (user-editable, populated with defaults on first run) */
+  DANGEROUS_PATTERNS: 'dangerousPatterns',
 } as const
 
 /**
@@ -180,12 +180,18 @@ export const WORKSPACE_PREFERENCE_KEYS = {
 /**
  * Default dangerous command patterns that require approval.
  * These are built-in and always checked (unless approval is disabled).
+ * Users can remove patterns they don't want via the Security settings.
  */
 export const DEFAULT_DANGEROUS_PATTERNS = [
+  // File operations
   {
     pattern: '\\brm\\s+(-[a-z]*r[a-z]*|-[a-z]*f[a-z]*r)\\b',
     description: 'Recursive delete (rm -rf)',
   },
+  { pattern: '\\bmv\\s+/\\s', description: 'Moving root directory' },
+  { pattern: '\\bshred\\b', description: 'Secure deletion (unrecoverable)' },
+
+  // System privileges
   { pattern: '\\bsudo\\b', description: 'Elevated privileges (sudo)' },
   {
     pattern: '\\b(mkfs|dd|fdisk|parted)\\b',
@@ -196,18 +202,37 @@ export const DEFAULT_DANGEROUS_PATTERNS = [
     description: 'Redirect to disk device',
   },
   {
-    pattern: '\\b(curl|wget)\\b.*\\|\\s*(bash|sh|zsh)\\b',
-    description: 'Remote script execution',
-  },
-  { pattern: ':\\(\\)\\s*\\{.*:\\|:.*\\}', description: 'Fork bomb' },
-  {
     pattern: '\\bchmod\\s+(-[a-z]*\\s+)?7[0-7]{2}\\b',
     description: 'Permissive chmod (7xx)',
+  },
+  {
+    pattern: '\\bchmod\\s+-R\\s+777\\b',
+    description: 'Recursive world-writable',
   },
   {
     pattern: '\\bchown\\s+(-[a-z]*\\s+)?root\\b',
     description: 'Change owner to root',
   },
+
+  // Remote execution
+  {
+    pattern: '\\b(curl|wget)\\b.*\\|\\s*(bash|sh|zsh)\\b',
+    description: 'Remote script execution',
+  },
+  { pattern: ':\\(\\)\\s*\\{.*:\\|:.*\\}', description: 'Fork bomb' },
+
+  // Process management
+  {
+    pattern: '\\bkill\\s+(-9|-KILL)\\s',
+    description: 'Aggressive process killing',
+  },
+  { pattern: '\\bpkill\\s+(-9|-KILL)\\s', description: 'Aggressive pkill' },
+  {
+    pattern: '\\b(shutdown|reboot|halt|poweroff)\\b',
+    description: 'System power commands',
+  },
+
+  // Git dangerous operations
   {
     pattern: '\\bgit\\s+push\\s+.*(-f|--force).*\\b(main|master)\\b',
     description: 'Force push to main/master',
@@ -217,8 +242,45 @@ export const DEFAULT_DANGEROUS_PATTERNS = [
     description: 'Force push to main/master',
   },
   {
+    pattern: '\\bgit\\s+reset\\s+--hard\\b',
+    description: 'Discard uncommitted changes',
+  },
+  {
+    pattern: '\\bgit\\s+clean\\s+-[a-z]*f',
+    description: 'Remove untracked files',
+  },
+  {
+    pattern: '\\bgit\\s+push\\s+.*:(?!\\s)',
+    description: 'Delete remote branch',
+  },
+  {
+    pattern: '\\bgit\\s+push\\s+--delete\\b',
+    description: 'Delete remote branch',
+  },
+
+  // Docker/container operations
+  {
+    pattern: '\\bdocker\\s+system\\s+prune\\b',
+    description: 'Remove all unused docker data',
+  },
+  {
+    pattern: '\\bdocker\\s+(rm|rmi)\\s+(-[a-z]*f|-[a-z]*a)',
+    description: 'Force remove containers/images',
+  },
+  {
+    pattern: '\\bdocker\\s+container\\s+prune\\b',
+    description: 'Remove stopped containers',
+  },
+
+  // Database operations
+  {
     pattern: '\\b(drop\\s+database|drop\\s+table)\\b',
-    description: 'Database drop commands',
+    description: 'Drop database/table',
+  },
+  { pattern: '\\btruncate\\s+table\\b', description: 'Empty table' },
+  {
+    pattern: '\\bdelete\\s+from\\s+\\w+\\s*(;|$|where\\s+1)',
+    description: 'Mass deletion without WHERE',
   },
 ] as const
 
