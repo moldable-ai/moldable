@@ -20,7 +20,8 @@
     ],
     "resources": {
       "../../scripts/lint-moldable-app.js": "",
-      "../resources/app-template/": "app-template/"
+      "../resources/app-template/": "app-template/",
+      "resources/node/": "node/"
     },
     "externalBin": [
       "binaries/moldable-ai-server",

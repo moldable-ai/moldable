@@ -135,6 +135,9 @@ jobs:
           bun build src/index.ts --compile --target=$BUN_TARGET --outfile "../../desktop/src-tauri/binaries/moldable-ai-server-${{ matrix.target }}"
           chmod +x "../../desktop/src-tauri/binaries/moldable-ai-server-${{ matrix.target }}"
 
+      - name: Download Node.js runtime for bundling
+        run: node scripts/download-node-runtime.js --target ${{ matrix.target }}
+
       - name: Build audio capture sidecar (macOS)
         if: matrix.platform == 'macos-latest'
         run: |

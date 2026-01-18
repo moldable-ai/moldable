@@ -2,11 +2,8 @@ import { useState } from 'react'
 import type { Workspace } from '../lib/workspaces'
 import type { AIServerHealth } from '../hooks/use-ai-server-health'
 import { OnboardingApiKey } from './onboarding-api-key'
-import type { DependencyStatus } from './onboarding-dependencies'
-import { OnboardingDependencies } from './onboarding-dependencies'
 import { OnboardingStarterApps } from './onboarding-starter-apps'
 import { OnboardingWorkspace } from './onboarding-workspace'
-import { invoke } from '@tauri-apps/api/core'
 import { AnimatePresence, motion } from 'framer-motion'
 
 /**
@@ -20,13 +17,14 @@ import { AnimatePresence, motion } from 'framer-motion'
  * See: prds/webkit-iframe-loading.prd.md
  *
  * Flow:
- * 1. Workspace selection (always shown first)
- * 2. Dependencies check (Node.js, pnpm) - required before installing apps
- * 3. Starter apps (optional install)
- * 4. API key setup (only if needed)
+ * 1. Workspace selection (always shown first - provides required user gesture)
+ * 2. Starter apps (first-time users only)
+ * 3. API key setup (only if needed)
+ *
+ * Note: Dependencies (Node.js, pnpm) are bundled with the app, so no setup needed.
  */
 
-type OnboardingStep = 'workspace' | 'dependencies' | 'starter-apps' | 'api-key'
+type OnboardingStep = 'workspace' | 'starter-apps' | 'api-key'
 
 interface OnboardingProps {
   workspaces: Workspace[]
@@ -54,36 +52,16 @@ export function Onboarding({
   const [step, setStep] = useState<OnboardingStep>('workspace')
 
   // Handle workspace selection
-  const handleSelectWorkspace = async (workspaceId: string) => {
+  const handleSelectWorkspace = (workspaceId: string) => {
     setSelectedWorkspaceId(workspaceId)
 
-    // Only skip if user has explicitly completed onboarding before (saved in config)
-    // First-time users always go through all steps
     if (workspaceOnboardingCompleted) {
-      onComplete(workspaceId, false) // false = don't re-mark as completed
-      return
+      // Returning user - go straight to app
+      onComplete(workspaceId, false)
+    } else {
+      // First-time user - show starter apps
+      setStep('starter-apps')
     }
-
-    // Check if deps are already installed - if so, skip to starter apps
-    try {
-      const status = await invoke<DependencyStatus>('check_dependencies')
-      const allDepsInstalled = status.nodeInstalled && status.pnpmInstalled
-
-      if (allDepsInstalled) {
-        setStep('starter-apps')
-      } else {
-        setStep('dependencies')
-      }
-    } catch (err) {
-      console.error('Failed to check dependencies:', err)
-      // On error, show dependencies step anyway
-      setStep('dependencies')
-    }
-  }
-
-  // After dependencies, go to starter apps
-  const handleDependenciesComplete = () => {
-    setStep('starter-apps')
   }
 
   // After starter apps, go to API key if needed, otherwise finish
@@ -130,13 +108,6 @@ export function Onboarding({
               workspaces={workspaces}
               onSelect={handleSelectWorkspace}
               onCreateWorkspace={onCreateWorkspace}
-            />
-          )}
-
-          {step === 'dependencies' && (
-            <OnboardingDependencies
-              key="dependencies"
-              onComplete={handleDependenciesComplete}
             />
           )}
 

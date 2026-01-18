@@ -10,6 +10,7 @@ import {
   ScrollText,
   Settings,
   Sun,
+  Terminal,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { cn, useTheme } from '@moldable-ai/ui'
@@ -33,6 +34,7 @@ import { useAppUpdate } from '../hooks/use-app-update'
 import type { AppConfig } from '../app'
 import { AddAppDialog } from './add-app-dialog'
 import { ApiKeySettingsDialog } from './api-key-settings-dialog'
+import { DeveloperToolsDialog } from './developer-tools-dialog'
 import { McpSettingsDialog } from './mcp-settings-dialog'
 import { SystemLogs } from './system-logs'
 import { toast } from 'sonner'
@@ -133,6 +135,7 @@ export function Sidebar({
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [isApiKeyDialogOpen, setIsApiKeyDialogOpen] = useState(false)
   const [isMcpDialogOpen, setIsMcpDialogOpen] = useState(false)
+  const [isDevToolsDialogOpen, setIsDevToolsDialogOpen] = useState(false)
   const [isAddAppDialogOpen, setIsAddAppDialogOpen] = useState(false)
   const [isSystemLogsOpen, setIsSystemLogsOpen] = useState(false)
   const [isOverflowOpen, setIsOverflowOpen] = useState(false)
@@ -374,6 +377,13 @@ export function Sidebar({
               MCP Servers
             </DropdownMenuItem>
             <DropdownMenuItem
+              onClick={() => setIsDevToolsDialogOpen(true)}
+              className="text-foreground hover:bg-muted flex cursor-pointer items-center gap-2 px-3 py-2 text-sm"
+            >
+              <Terminal className="size-4" />
+              Developer Tools
+            </DropdownMenuItem>
+            <DropdownMenuItem
               onClick={() => setIsSystemLogsOpen(true)}
               className="text-foreground hover:bg-muted flex cursor-pointer items-center gap-2 px-3 py-2 text-sm"
             >
@@ -404,6 +414,12 @@ export function Sidebar({
       <McpSettingsDialog
         open={isMcpDialogOpen}
         onOpenChange={setIsMcpDialogOpen}
+      />
+
+      {/* Developer Tools Dialog */}
+      <DeveloperToolsDialog
+        open={isDevToolsDialogOpen}
+        onOpenChange={setIsDevToolsDialogOpen}
       />
 
       {/* Add App Dialog */}

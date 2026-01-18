@@ -4,7 +4,7 @@
 //! and listing available apps from local development workspaces.
 
 use crate::paths::get_config_file_path;
-use crate::runtime::find_pnpm_path;
+use crate::runtime::get_pnpm_path;
 use crate::types::{AvailableApp, MoldableConfig, MoldableManifest, RegisteredApp};
 use log::error;
 use std::path::Path;
@@ -207,7 +207,7 @@ pub fn detect_app_in_folder(path: String) -> Result<Option<RegisteredApp>, Strin
                 // Use manifest command or find pnpm
                 let command = manifest
                     .command
-                    .or_else(find_pnpm_path)
+                    .or_else(get_pnpm_path)
                     .unwrap_or_else(|| "pnpm".to_string());
 
                 // Use manifest args or default dev args

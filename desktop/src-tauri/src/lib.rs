@@ -79,16 +79,6 @@ fn check_dependencies() -> DependencyStatus {
     runtime::check_dependencies()
 }
 
-#[tauri::command]
-async fn install_node() -> Result<String, String> {
-    runtime::install_node(None).await
-}
-
-#[tauri::command]
-async fn install_pnpm() -> Result<String, String> {
-    runtime::install_pnpm().await
-}
-
 // ============================================================================
 // HELLO MOLDABLES SETUP
 // ============================================================================
@@ -294,10 +284,8 @@ pub fn run() {
             logs::get_system_logs,
             logs::get_system_log_path,
             logs::clear_system_logs,
-            // Dependency checking and installation
-            check_dependencies,
-            install_node,
-            install_pnpm
+            // Runtime status (for diagnostics)
+            check_dependencies
         ])
         .setup(move |app| {
             #[cfg(debug_assertions)]

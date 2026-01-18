@@ -69,3 +69,6 @@ agent/src-tauri/target/
 
 # Tauri sidecar binaries
 desktop/src-tauri/binaries/
+
+# Bundled Node.js runtime (downloaded by scripts/download-node-runtime.js)
+desktop/src-tauri/resources/node/
