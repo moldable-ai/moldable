@@ -1,5 +1,11 @@
 # @moldable-ai/typescript-config
 
+## 0.1.1
+
+### Patch Changes
+
+- Improved support for Moldable desktop
+
 ## 0.0.1
 
 ### Patch Changes

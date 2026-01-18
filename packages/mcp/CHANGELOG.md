@@ -1,5 +1,11 @@
 # @moldable-ai/mcp
 
+## 0.1.2
+
+### Patch Changes
+
+- Improved support for Moldable desktop
+
 ## 0.1.1
 
 ### Patch Changes

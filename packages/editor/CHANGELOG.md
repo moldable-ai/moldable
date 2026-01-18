@@ -1,5 +1,14 @@
 # @moldable-ai/editor
 
+## 0.1.4
+
+### Patch Changes
+
+- Improved support for Moldable desktop
+
+- Updated dependencies []:
+  - @moldable-ai/ui@0.2.4
+
 ## 0.1.3
 
 ### Patch Changes

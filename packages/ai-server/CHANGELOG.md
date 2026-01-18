@@ -1,5 +1,15 @@
 # @moldable-ai/ai-server
 
+## 0.1.2
+
+### Patch Changes
+
+- Improved support for Moldable desktop
+
+- Updated dependencies []:
+  - @moldable-ai/ai@0.1.2
+  - @moldable-ai/mcp@0.1.2
+
 ## 0.1.1
 
 ### Patch Changes
