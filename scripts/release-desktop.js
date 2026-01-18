@@ -179,20 +179,36 @@ Examples:
 
     if (dryRun) {
       console.log(`\n[DRY RUN] Would perform the following:`)
-      console.log(`  1. Delete GitHub release ${targetTag} (if exists)`)
-      console.log(`  2. Delete remote tag ${targetTag}`)
-      console.log(`  3. Re-push tag ${targetTag} to trigger workflow`)
+      console.log(`  1. Move tag ${targetTag} to HEAD`)
+      console.log(`  2. Delete GitHub release ${targetTag} (if exists)`)
+      console.log(`  3. Delete remote tag ${targetTag}`)
+      console.log(`  4. Push tag ${targetTag} to trigger workflow`)
       process.exit(0)
     }
 
     // Check if tag exists locally
+    let tagExists = false
     try {
       execSync(`git rev-parse ${targetTag}`, { cwd: rootDir, stdio: 'pipe' })
+      tagExists = true
     } catch {
+      // Tag doesn't exist locally
+    }
+
+    if (!tagExists) {
       console.error(`\nError: Tag ${targetTag} does not exist locally.`)
       console.error(`Run a normal release first, or check out the tag.`)
       process.exit(1)
     }
+
+    // Move the tag to HEAD so the release includes latest changes
+    console.log(`\nMoving tag to HEAD...`)
+    const headCommit = execSync('git rev-parse --short HEAD', {
+      cwd: rootDir,
+      encoding: 'utf8',
+    }).trim()
+    exec(`git tag -f ${targetTag} HEAD`)
+    console.log(`  Tag ${targetTag} now points to ${headCommit}`)
 
     console.log(`\nDeleting existing GitHub release (if any)...`)
     try {
