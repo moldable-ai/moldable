@@ -149,17 +149,20 @@ jobs:
 
           # Determine which architecture to keep
           if [ "${{ matrix.target }}" = "aarch64-apple-darwin" ]; then
-            KEEP_ARCH="arm64"
-            REMOVE_ARCH="x64"
+            KEEP_PATTERN="darwin-arm64"
           else
-            KEEP_ARCH="x64"
-            REMOVE_ARCH="arm64"
+            KEEP_PATTERN="darwin-x64"
           fi
 
-          # Remove native modules for the other architecture to reduce bundle size
-          echo "Removing $REMOVE_ARCH native modules..."
-          find "$NODE_RUNTIME_DIR" -name "*darwin-$REMOVE_ARCH*.node" -delete 2>/dev/null || true
-          find "$NODE_RUNTIME_DIR" -name "*darwin-$REMOVE_ARCH*.dylib" -delete 2>/dev/null || true
+          # Remove ALL native modules except the target macOS architecture
+          # pnpm bundles binaries for all platforms (win32, linux, darwin) and architectures
+          echo "Removing non-$KEEP_PATTERN native modules..."
+          find "$NODE_RUNTIME_DIR" -type f -name "*.node" | while read -r file; do
+            if [[ "$file" != *"$KEEP_PATTERN"* ]]; then
+              echo "  Removing: $file"
+              rm -f "$file"
+            fi
+          done
 
           # Find all remaining native modules that need signing
           NATIVE_FILES=$(find "$NODE_RUNTIME_DIR" -type f \( -name "*.node" -o -name "*.dylib" \) 2>/dev/null || true)
@@ -177,9 +180,9 @@ jobs:
           KEYCHAIN_PATH="$HOME/Library/Keychains/$KEYCHAIN_NAME.keychain-db"
           KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
 
-          # Decode certificate
-          CERT_PATH=$(mktemp)
-          echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+          # Decode certificate to a .p12 file
+          CERT_PATH=$(mktemp).p12
+          echo "$APPLE_CERTIFICATE" | base64 -d > "$CERT_PATH"
 
           # Create and configure keychain
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
