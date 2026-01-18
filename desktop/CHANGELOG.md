@@ -4,6 +4,19 @@ All notable changes to Moldable Desktop will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Tool approvals for dangerous commands and unsandboxing
+- Automatic AI & API server port discovery
+- Bundled Node / pnpm for consistent runtime
+
+### Improved
+
+- Simplified app creation flow
+- Refined onboarding experience
+- Settings UI and tool approval dialogs
+- Log clearing and API key management
+
 ## [0.1.6] - 2026-01-16
 
 ## [0.1.5] - 2026-01-16
