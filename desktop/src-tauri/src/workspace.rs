@@ -65,6 +65,33 @@ pub fn ensure_workspace_dirs(workspace_id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Get config.json paths for all workspaces (used for migrations)
+pub fn get_all_workspace_config_paths() -> Result<Vec<PathBuf>, String> {
+    let moldable_root = get_moldable_root()?;
+    let workspaces_dir = moldable_root.join("workspaces");
+
+    if !workspaces_dir.exists() {
+        return Ok(vec![]);
+    }
+
+    let mut config_paths = Vec::new();
+
+    let entries = std::fs::read_dir(&workspaces_dir)
+        .map_err(|e| format!("Failed to read workspaces directory: {}", e))?;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let config_path = path.join("config.json");
+            if config_path.exists() {
+                config_paths.push(config_path);
+            }
+        }
+    }
+
+    Ok(config_paths)
+}
+
 // ============================================================================
 // DEFAULT WORKSPACE SETUP
 // ============================================================================

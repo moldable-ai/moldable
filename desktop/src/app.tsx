@@ -13,7 +13,12 @@ import { cn } from './lib/utils'
 import { useAIServerHealth } from './hooks/use-ai-server-health'
 import { useAppStatus } from './hooks/use-app-status'
 import { useHotReloadNotification } from './hooks/use-hot-reload-notification'
-import { PREFERENCE_KEYS, useMoldableConfig } from './hooks/use-moldable-config'
+import {
+  SHARED_PREFERENCE_KEYS,
+  WORKSPACE_PREFERENCE_KEYS,
+  useSharedConfig,
+  useWorkspaceConfig,
+} from './hooks/use-workspace-config'
 import { useWorkspaces } from './hooks/use-workspaces'
 import { ApiKeyDialog } from './components/api-key-dialog'
 import { AppLogs } from './components/app-logs'
@@ -23,6 +28,7 @@ import { Canvas } from './components/canvas'
 import { ChatContainer } from './components/chat-container'
 import { GlobalCommandMenu } from './components/global-command-menu'
 import { Onboarding } from './components/onboarding'
+import { SettingsDialog } from './components/settings-dialog'
 import { Sidebar } from './components/sidebar'
 import { UpdateNotification } from './components/update-notification'
 import { WorkspaceSelector } from './components/workspace-selector'
@@ -203,7 +209,7 @@ export function App() {
 
   // Persisted preference - remember if onboarding was completed for this workspace
   const [workspaceOnboardingCompleted, setWorkspaceOnboardingCompleted] =
-    useMoldableConfig(PREFERENCE_KEYS.ONBOARDING_COMPLETED, false)
+    useWorkspaceConfig(WORKSPACE_PREFERENCE_KEYS.ONBOARDING_COMPLETED, false)
 
   const { apps, addApp, deleteApp, reloadApps } = useAppConfigs(
     activeWorkspace?.id,
@@ -218,6 +224,19 @@ export function App() {
   const [isLogsOpen, setIsLogsOpen] = useState(false)
   const [userHomeDir, setUserHomeDir] = useState<string | null>(null)
   const [showApiKeySetup, setShowApiKeySetup] = useState(false)
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false)
+
+  // Security approval settings (global/shared, default: true = require approval)
+  const [requireUnsandboxedApproval, setRequireUnsandboxedApproval] =
+    useSharedConfig(SHARED_PREFERENCE_KEYS.REQUIRE_UNSANDBOXED_APPROVAL, true)
+  const [requireDangerousCommandApproval, setRequireDangerousCommandApproval] =
+    useSharedConfig(
+      SHARED_PREFERENCE_KEYS.REQUIRE_DANGEROUS_COMMAND_APPROVAL,
+      true,
+    )
+  const [customDangerousPatterns, setCustomDangerousPatterns] = useSharedConfig<
+    Array<{ pattern: string; description: string }>
+  >(SHARED_PREFERENCE_KEYS.CUSTOM_DANGEROUS_PATTERNS, [])
 
   // Load user's home directory for constructing data paths
   useEffect(() => {
@@ -501,8 +520,7 @@ export function App() {
           onDeleteApp={deleteApp}
           onChatToggle={handleChatToggle}
           isChatActive={isChatExpanded}
-          onHealthRefresh={checkHealth}
-          aiServerPort={health.port}
+          onOpenSettings={() => setIsSettingsOpen(true)}
         />
 
         {/* Main content area */}
@@ -607,6 +625,22 @@ export function App() {
 
       {/* Toast notifications */}
       <Toaster position="bottom-right" />
+
+      {/* Settings dialog */}
+      <SettingsDialog
+        open={isSettingsOpen}
+        onOpenChange={setIsSettingsOpen}
+        onHealthRefresh={checkHealth}
+        aiServerPort={health.port}
+        requireUnsandboxedApproval={requireUnsandboxedApproval}
+        onRequireUnsandboxedApprovalChange={setRequireUnsandboxedApproval}
+        requireDangerousCommandApproval={requireDangerousCommandApproval}
+        onRequireDangerousCommandApprovalChange={
+          setRequireDangerousCommandApproval
+        }
+        customDangerousPatterns={customDangerousPatterns}
+        onCustomDangerousPatternsChange={setCustomDangerousPatterns}
+      />
     </div>
   )
 }

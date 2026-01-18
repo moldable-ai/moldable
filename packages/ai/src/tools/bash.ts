@@ -78,6 +78,58 @@ export function getAugmentedPath(): string {
   return paths.join(':')
 }
 
+/**
+ * Built-in dangerous command patterns.
+ * These match the DEFAULT_DANGEROUS_PATTERNS in the frontend config.
+ */
+export const BUILTIN_DANGEROUS_PATTERNS = [
+  '\\brm\\s+(-[a-z]*r[a-z]*|-[a-z]*f[a-z]*r)\\b', // Recursive delete (rm -rf)
+  '\\bsudo\\b', // Elevated privileges (sudo)
+  '\\b(mkfs|dd|fdisk|parted)\\b', // Disk formatting/operations
+  '>\\s*/dev/(sd|hd|nvme|disk)', // Redirect to disk device
+  '\\b(curl|wget)\\b.*\\|\\s*(bash|sh|zsh)\\b', // Remote script execution
+  ':\\(\\)\\s*\\{.*:\\|:.*\\}', // Fork bomb
+  '\\bchmod\\s+(-[a-z]*\\s+)?7[0-7]{2}\\b', // Permissive chmod (7xx)
+  '\\bchown\\s+(-[a-z]*\\s+)?root\\b', // Change owner to root
+  '\\bgit\\s+push\\s+.*(-f|--force).*\\b(main|master)\\b', // Force push to main/master
+  '\\bgit\\s+push\\s+.*\\b(main|master)\\b.*(-f|--force)', // Force push to main/master
+  '\\b(drop\\s+database|drop\\s+table)\\b', // Database drop commands
+]
+
+/**
+ * Detect dangerous commands that should require user approval.
+ * These commands can cause data loss, system damage, or security issues.
+ * @param command - The command to check
+ * @param customPatterns - Additional regex patterns to check (strings)
+ * @internal Exported for testing
+ */
+export function isDangerousCommand(
+  command: string,
+  customPatterns: string[] = [],
+): boolean {
+  const cmd = command.toLowerCase()
+
+  // Check built-in patterns
+  for (const pattern of BUILTIN_DANGEROUS_PATTERNS) {
+    try {
+      if (new RegExp(pattern, 'i').test(cmd)) return true
+    } catch {
+      // Invalid pattern, skip
+    }
+  }
+
+  // Check custom patterns
+  for (const pattern of customPatterns) {
+    try {
+      if (new RegExp(pattern, 'i').test(cmd)) return true
+    } catch {
+      // Invalid pattern, skip
+    }
+  }
+
+  return false
+}
+
 // Default sandbox configuration for Moldable
 // Philosophy: Network is the moat (prevents exfiltration), filesystem writes are the walls.
 // Let the AI read what it needs to do its job, but control where it can write and what it can talk to.
@@ -522,6 +574,12 @@ export function createBashTools(
     disableSandbox?: boolean
     /** Callback for streaming stdout/stderr to the UI as commands execute */
     onProgress?: CommandProgressCallback
+    /** Whether to require user approval for unsandboxed commands (default: true) */
+    requireUnsandboxedApproval?: boolean
+    /** Whether to require user approval for dangerous commands (default: true) */
+    requireDangerousCommandApproval?: boolean
+    /** Custom dangerous command patterns (regex strings) to check in addition to built-in patterns */
+    customDangerousPatterns?: string[]
   } = {},
 ) {
   const {
@@ -530,6 +588,9 @@ export function createBashTools(
     sandboxConfig,
     disableSandbox = false,
     onProgress,
+    requireUnsandboxedApproval = true,
+    requireDangerousCommandApproval = true,
+    customDangerousPatterns = [],
   } = options
 
   // Build config with workspace path added to allowWrite (with /** for nested paths)
@@ -579,8 +640,23 @@ export function createBashTools(
   return {
     runCommand: tool({
       description:
-        'Execute a bash command. By default runs in a sandboxed environment with filesystem and network restrictions. For package manager installs (pnpm/npm/yarn/bun install/add), set sandbox=false to allow network access to package registries.',
+        'Execute a bash command. By default runs in a sandboxed environment with filesystem and network restrictions. For package manager installs (pnpm/npm/yarn/bun install/add), set sandbox=false to allow network access. Dangerous commands (rm -rf, sudo, etc.) may prompt for user approval.',
       inputSchema: zodSchema(runCommandSchema),
+      // Require user approval for unsandboxed commands and/or dangerous commands based on settings
+      needsApproval:
+        requireUnsandboxedApproval || requireDangerousCommandApproval
+          ? async ({ sandbox, command }) => {
+              // Check unsandboxed approval
+              if (requireUnsandboxedApproval && sandbox === false) return true
+              // Check dangerous command approval
+              if (
+                requireDangerousCommandApproval &&
+                isDangerousCommand(command, customDangerousPatterns)
+              )
+                return true
+              return false
+            }
+          : undefined,
       execute: async (input, { abortSignal, toolCallId }) => {
         // Default sandbox=true, but allow explicit override for package installs
         const useSandbox = input.sandbox !== false && !disableSandbox

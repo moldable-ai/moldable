@@ -1,28 +1,7 @@
+import { Grid2x2, MessageSquare, Plus, Settings } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { cn } from '@moldable-ai/ui'
 import {
-  Download,
-  Grid2x2,
-  Key,
-  MessageSquare,
-  Monitor,
-  Moon,
-  Plug,
-  Plus,
-  ScrollText,
-  Settings,
-  Sun,
-  Terminal,
-} from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { cn, useTheme } from '@moldable-ai/ui'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
-  DropdownMenuTrigger,
   Popover,
   PopoverContent,
   PopoverTrigger,
@@ -30,14 +9,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@moldable-ai/ui'
-import { useAppUpdate } from '../hooks/use-app-update'
 import type { AppConfig } from '../app'
 import { AddAppDialog } from './add-app-dialog'
-import { ApiKeySettingsDialog } from './api-key-settings-dialog'
-import { DeveloperToolsDialog } from './developer-tools-dialog'
-import { McpSettingsDialog } from './mcp-settings-dialog'
-import { SystemLogs } from './system-logs'
-import { toast } from 'sonner'
 
 // Icon dimensions for calculating overflow
 const ICON_SIZE = 36 // size-9 = 36px
@@ -52,10 +25,7 @@ interface SidebarProps {
   onDeleteApp?: (appId: string) => void
   onChatToggle?: () => void
   isChatActive?: boolean
-  /** Called when API keys change to refresh health status */
-  onHealthRefresh?: () => void
-  /** AI server port (may be fallback port if default was unavailable) */
-  aiServerPort?: number
+  onOpenSettings?: () => void
 }
 
 function AppIcon({
@@ -107,40 +77,9 @@ export function Sidebar({
   onDeleteApp: _onDeleteApp,
   onChatToggle,
   isChatActive = false,
-  onHealthRefresh,
-  aiServerPort,
+  onOpenSettings,
 }: SidebarProps) {
-  const { theme, resolvedTheme, setTheme } = useTheme()
-  const { checking: checkingForUpdates, checkForUpdate } = useAppUpdate({
-    checkOnMount: false, // Don't duplicate the check from AppUpdateDialog
-  })
-
-  const handleCheckForUpdate = useCallback(async () => {
-    const toastId = toast.loading('Checking for updates...')
-    const { update, error } = await checkForUpdate()
-
-    if (error) {
-      toast.error('Failed to check for updates', {
-        id: toastId,
-      })
-    } else if (update) {
-      // Got an Update object = update available
-      toast.success(`Update available: v${update.version}`, {
-        id: toastId,
-        description: 'Check the notification in the bottom left corner.',
-      })
-    } else {
-      // null = no update available
-      toast.success("You're on the latest version", { id: toastId })
-    }
-  }, [checkForUpdate])
-
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false)
-  const [isApiKeyDialogOpen, setIsApiKeyDialogOpen] = useState(false)
-  const [isMcpDialogOpen, setIsMcpDialogOpen] = useState(false)
-  const [isDevToolsDialogOpen, setIsDevToolsDialogOpen] = useState(false)
   const [isAddAppDialogOpen, setIsAddAppDialogOpen] = useState(false)
-  const [isSystemLogsOpen, setIsSystemLogsOpen] = useState(false)
   const [isOverflowOpen, setIsOverflowOpen] = useState(false)
   const [maxVisibleApps, setMaxVisibleApps] = useState(10) // Start high, will be calculated
   const appsContainerRef = useRef<HTMLDivElement>(null)
@@ -297,134 +236,14 @@ export function Sidebar({
         <Plus className="size-4" />
       </button>
 
-      {/* Settings */}
-      <div className="relative mt-2">
-        <DropdownMenu open={isSettingsOpen} onOpenChange={setIsSettingsOpen}>
-          <DropdownMenuTrigger asChild>
-            <button
-              className={cn(
-                'flex size-8 cursor-pointer items-center justify-center rounded-lg outline-none transition-all',
-                isSettingsOpen
-                  ? 'bg-muted text-foreground'
-                  : 'text-muted-foreground hover:bg-muted hover:text-foreground',
-              )}
-              title="Settings"
-            >
-              <Settings className="size-4" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent side="right" sideOffset={4} align="end">
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger className="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm">
-                {theme === 'system' ? (
-                  <Monitor className="size-4" />
-                ) : resolvedTheme === 'dark' ? (
-                  <Moon className="size-4" />
-                ) : (
-                  <Sun className="size-4" />
-                )}
-                Theme
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent>
-                <DropdownMenuItem
-                  onClick={() => setTheme('light')}
-                  className={cn(
-                    'flex cursor-pointer items-center gap-2 px-3 py-2 text-sm',
-                    theme === 'light'
-                      ? 'bg-muted text-foreground'
-                      : 'text-muted-foreground hover:bg-muted hover:text-foreground',
-                  )}
-                >
-                  <Sun className="size-4" />
-                  Light
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => setTheme('dark')}
-                  className={cn(
-                    'flex cursor-pointer items-center gap-2 px-3 py-2 text-sm',
-                    theme === 'dark'
-                      ? 'bg-muted text-foreground'
-                      : 'text-muted-foreground hover:bg-muted hover:text-foreground',
-                  )}
-                >
-                  <Moon className="size-4" />
-                  Dark
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => setTheme('system')}
-                  className={cn(
-                    'flex cursor-pointer items-center gap-2 px-3 py-2 text-sm',
-                    theme === 'system'
-                      ? 'bg-muted text-foreground'
-                      : 'text-muted-foreground hover:bg-muted hover:text-foreground',
-                  )}
-                >
-                  <Monitor className="size-4" />
-                  System
-                </DropdownMenuItem>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              onClick={() => setIsApiKeyDialogOpen(true)}
-              className="text-foreground hover:bg-muted flex cursor-pointer items-center gap-2 px-3 py-2 text-sm"
-            >
-              <Key className="size-4" />
-              API Keys
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={() => setIsMcpDialogOpen(true)}
-              className="text-foreground hover:bg-muted flex cursor-pointer items-center gap-2 px-3 py-2 text-sm"
-            >
-              <Plug className="size-4" />
-              MCP Servers
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={() => setIsDevToolsDialogOpen(true)}
-              className="text-foreground hover:bg-muted flex cursor-pointer items-center gap-2 px-3 py-2 text-sm"
-            >
-              <Terminal className="size-4" />
-              Developer Tools
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={() => setIsSystemLogsOpen(true)}
-              className="text-foreground hover:bg-muted flex cursor-pointer items-center gap-2 px-3 py-2 text-sm"
-            >
-              <ScrollText className="size-4" />
-              System Logs
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              onClick={handleCheckForUpdate}
-              disabled={checkingForUpdates}
-              className="text-foreground hover:bg-muted flex cursor-pointer items-center gap-2 px-3 py-2 text-sm"
-            >
-              <Download className="size-4" />
-              Check for Updates
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
-
-      {/* API Key Settings Dialog */}
-      <ApiKeySettingsDialog
-        open={isApiKeyDialogOpen}
-        onOpenChange={setIsApiKeyDialogOpen}
-        onKeysChanged={onHealthRefresh}
-      />
-
-      {/* MCP Settings Dialog */}
-      <McpSettingsDialog
-        open={isMcpDialogOpen}
-        onOpenChange={setIsMcpDialogOpen}
-        aiServerPort={aiServerPort}
-      />
-
-      {/* Developer Tools Dialog */}
-      <DeveloperToolsDialog
-        open={isDevToolsDialogOpen}
-        onOpenChange={setIsDevToolsDialogOpen}
-      />
+      {/* Settings button */}
+      <button
+        onClick={onOpenSettings}
+        className="text-muted-foreground hover:bg-muted hover:text-foreground mt-2 flex size-8 cursor-pointer items-center justify-center rounded-lg outline-none transition-all"
+        title="Settings"
+      >
+        <Settings className="size-4" />
+      </button>
 
       {/* Add App Dialog */}
       <AddAppDialog
@@ -432,12 +251,6 @@ export function Sidebar({
         onOpenChange={setIsAddAppDialogOpen}
         onAddFromFolder={() => onAddApp?.()}
         onAppInstalled={() => onRefreshApps?.()}
-      />
-
-      {/* System Logs Dialog */}
-      <SystemLogs
-        isOpen={isSystemLogsOpen}
-        onClose={() => setIsSystemLogsOpen(false)}
       />
     </aside>
   )

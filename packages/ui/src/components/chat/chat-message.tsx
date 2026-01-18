@@ -14,6 +14,12 @@ import {
   type ThinkingTimelineItem,
   ThinkingTimelineMarker,
 } from './thinking-timeline'
+import {
+  ToolApproval,
+  ToolApprovalHeader,
+  ToolApprovalRejected,
+} from './tool-approval'
+import { useToolApprovalResponse } from './tool-approval-context'
 import { getToolHandler } from './tool-handlers'
 import { useToolProgress } from './tool-progress-context'
 import { AnimatePresence, motion } from 'framer-motion'
@@ -34,6 +40,11 @@ export type ChatMessagePart =
       state: string
       args?: unknown
       output?: unknown
+      // Approval info for tools that require user confirmation
+      approval?: {
+        id: string
+        approved?: boolean
+      }
     }
 
 export type ChatMessage = {
@@ -68,6 +79,8 @@ function PureMessage({
 }: MessageProps) {
   // Get tool progress for streaming stdout/stderr
   const toolProgress = useToolProgress()
+  // Get approval response handler
+  const onApprovalResponse = useToolApprovalResponse()
 
   // Track open state for each thinking group independently
   const [thinkingGroupStates, setThinkingGroupStates] = useState<
@@ -138,11 +151,21 @@ function PureMessage({
           // Close any open thinking group first
           closeThinkingGroup()
 
+          // Check for approval states
+          const isApprovalRequested = part.state === 'approval-requested'
+          const isApprovalResponded =
+            part.state === 'approval-responded' ||
+            part.state === 'output-denied'
+          const wasRejected = part.approval?.approved === false
+          const wasApproved = part.approval?.approved === true
+
           // Render inline tool
+          // Also treat approval-responded (when approved) as loading until output arrives
           const isToolLoading =
             part.state === 'partial-call' ||
             part.state === 'call' ||
-            part.state === 'pending'
+            part.state === 'pending' ||
+            (isApprovalResponded && wasApproved && part.output === undefined)
 
           // Check for streaming progress (stdout/stderr from command execution)
           const progress = part.toolCallId
@@ -152,7 +175,34 @@ function PureMessage({
             progress && (progress.stdout || progress.stderr)
 
           let toolContent: ReactNode
-          if (hasStreamingOutput && toolHandler.renderStreaming) {
+
+          // Handle approval request state
+          if (
+            isApprovalRequested &&
+            toolHandler.renderApproval &&
+            part.approval?.id &&
+            onApprovalResponse
+          ) {
+            toolContent = toolHandler.renderApproval(
+              {
+                approvalId: part.approval.id,
+                toolCallId: part.toolCallId || key,
+                args: part.args,
+              },
+              onApprovalResponse,
+            )
+          } else if (isApprovalResponded && wasRejected) {
+            // Show rejection message
+            toolContent = (
+              <ToolApproval state="output-denied" approved={false}>
+                <ToolApprovalHeader>
+                  <ToolApprovalRejected>
+                    Command execution was rejected
+                  </ToolApprovalRejected>
+                </ToolApprovalHeader>
+              </ToolApproval>
+            )
+          } else if (hasStreamingOutput && toolHandler.renderStreaming) {
             // Show streaming output (live stdout/stderr)
             toolContent = toolHandler.renderStreaming(part.args, progress)
           } else if (isToolLoading) {
@@ -273,7 +323,13 @@ function PureMessage({
       contentItems: items,
       hasFinalAssistantText: state.hasText,
     }
-  }, [message.id, message.parts, message.content, toolProgress])
+  }, [
+    message.id,
+    message.parts,
+    message.content,
+    toolProgress,
+    onApprovalResponse,
+  ])
 
   // Determine if last thinking group is streaming
   const lastThinkingGroup = contentItems
@@ -438,9 +494,10 @@ function PureMessage({
                 return (
                   <div
                     key={item.id}
-                    className={cn('flex flex-col gap-4', {
+                    className={cn('flex min-w-0 flex-col gap-4', {
                       'bg-secondary text-secondary-foreground w-fit rounded-2xl px-4 py-2.5':
                         message.role === 'user',
+                      'w-full': message.role === 'assistant',
                     })}
                   >
                     <Markdown

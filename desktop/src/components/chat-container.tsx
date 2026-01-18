@@ -82,6 +82,7 @@ export function ChatContainer({
     selectedReasoningEffort,
     setSelectedReasoningEffort,
     toolProgress,
+    addToolApprovalResponse,
   } = useMoldableChat({
     activeWorkspaceId: workspaceId,
     registeredApps,
@@ -196,6 +197,20 @@ export function ChatContainer({
     [deleteConversation, currentConversationId, setMessages, clearError],
   )
 
+  // Handle tool approval responses
+  // Note: useChat is configured with sendAutomaticallyWhen to auto-continue after approval
+  const handleApprovalResponse = useCallback(
+    (params: { approvalId: string; approved: boolean; reason?: string }) => {
+      console.log('[Chat] Tool approval response:', params)
+      addToolApprovalResponse?.({
+        id: params.approvalId,
+        approved: params.approved,
+        reason: params.reason,
+      })
+    },
+    [addToolApprovalResponse],
+  )
+
   // Convert AI SDK messages to our ChatMessage format
   const chatMessages: ChatMessage[] = messages.map((m) => {
     // Convert parts to our format
@@ -230,6 +245,7 @@ export function ChatContainer({
           state?: string
           input?: unknown
           output?: unknown
+          approval?: { id: string; approved?: boolean }
         }
         parts.push({
           type: 'tool-invocation',
@@ -238,6 +254,7 @@ export function ChatContainer({
           state: toolPart.state || 'pending',
           args: toolPart.input,
           output: toolPart.output,
+          approval: toolPart.approval,
         })
       }
     }
@@ -310,6 +327,7 @@ export function ChatContainer({
       missingApiKey={missingApiKey}
       onAddApiKey={onAddApiKey}
       toolProgress={toolProgress}
+      onApprovalResponse={handleApprovalResponse}
     />
   )
 }

@@ -467,7 +467,7 @@ fn collect_created_files(dir: &PathBuf) -> Vec<String> {
 fn acquire_api_server_port() -> Result<u16, String> {
     let config = PortAcquisitionConfig {
         preferred_port: API_SERVER_PORT,
-        max_retries: 5,
+        max_retries: 2,
         initial_delay_ms: 200,
         max_delay_ms: 2000,
         allow_fallback: true,

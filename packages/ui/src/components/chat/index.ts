@@ -36,3 +36,18 @@ export {
   useToolProgress,
   useToolCallProgress,
 } from './tool-progress-context'
+export {
+  ToolApprovalProvider,
+  useToolApprovalResponse,
+  type ApprovalResponseHandler,
+} from './tool-approval-context'
+export {
+  ToolApproval,
+  ToolApprovalHeader,
+  ToolApprovalRequest,
+  ToolApprovalAccepted,
+  ToolApprovalRejected,
+  ToolApprovalActions,
+  ToolApprovalAction,
+  type ToolApprovalState,
+} from './tool-approval'

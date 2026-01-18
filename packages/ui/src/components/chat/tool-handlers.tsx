@@ -21,6 +21,16 @@ import {
 import { type ReactNode, useState } from 'react'
 import { cn } from '../../lib/utils'
 import { ThinkingTimelineMarker } from './thinking-timeline'
+import {
+  ToolApproval,
+  ToolApprovalAction,
+  ToolApprovalActions,
+  ToolApprovalDangerousHelp,
+  ToolApprovalHeader,
+  ToolApprovalRequest,
+  ToolApprovalSandboxHelp,
+} from './tool-approval'
+import { type ApprovalResponseHandler } from './tool-approval-context'
 
 /**
  * Progress data for streaming tool execution (e.g., command stdout/stderr)
@@ -31,6 +41,15 @@ export interface ToolStreamingProgress {
   stdout: string
   stderr: string
   status: 'running' | 'complete'
+}
+
+/**
+ * Approval info passed to renderApproval
+ */
+export interface ToolApprovalInfo {
+  approvalId: string
+  toolCallId: string
+  args: unknown
 }
 
 /**
@@ -53,6 +72,12 @@ export type ToolHandler = {
   renderStreaming?: (
     args: unknown,
     progress: ToolStreamingProgress,
+  ) => ReactNode
+  // Render function for approval request (optional)
+  // Called when tool requires user approval before execution
+  renderApproval?: (
+    approval: ToolApprovalInfo,
+    onRespond: ApprovalResponseHandler,
   ) => ReactNode
 }
 
@@ -677,14 +702,22 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
         command?: string
         sandbox?: boolean
       }
-      const { stdout, stderr } = progress
+      const { stdout, stderr, status } = progress
       const hasOutput = stdout || stderr
+      const isComplete = status === 'complete'
 
       return (
         <div className="border-terminal-border bg-terminal my-2 min-w-0 max-w-full overflow-hidden rounded-lg border">
           {/* Terminal header */}
           <div className="border-terminal-border bg-terminal-header flex min-w-0 items-center gap-2 border-b px-3 py-1.5">
-            <Terminal className="text-terminal-muted size-3.5 shrink-0 animate-pulse" />
+            <Terminal
+              className={cn(
+                'size-3.5 shrink-0',
+                isComplete
+                  ? 'text-terminal-muted'
+                  : 'text-terminal-muted animate-pulse',
+              )}
+            />
             <code className="text-terminal-foreground min-w-0 flex-1 truncate font-mono text-xs">
               {command ? summarizeCommand(command) : 'Running...'}
             </code>
@@ -693,9 +726,13 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
                 unsandboxed
               </span>
             )}
-            <span className="text-terminal-muted shrink-0 animate-pulse text-[10px]">
-              Running...
-            </span>
+            {isComplete ? (
+              <Check className="text-terminal-stdout size-3.5 shrink-0" />
+            ) : (
+              <span className="text-terminal-muted shrink-0 animate-pulse text-[10px]">
+                Running...
+              </span>
+            )}
           </div>
           {/* Terminal body - command + streaming output */}
           <div className="max-h-[300px] overflow-auto p-3">
@@ -761,6 +798,66 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
             sandboxed={result.sandboxed}
           />
         </div>
+      )
+    },
+    // Render approval request for unsandboxed or dangerous commands
+    renderApproval: (approval, onRespond) => {
+      const { command, sandbox } = (approval.args ?? {}) as {
+        command?: string
+        sandbox?: boolean
+      }
+
+      // Determine the reason for approval
+      const isUnsandboxed = sandbox === false
+      const approvalReason = isUnsandboxed
+        ? 'This command requires running outside the sandbox.'
+        : 'This command has been flagged as potentially dangerous.'
+
+      return (
+        <ToolApproval state="approval-requested">
+          <ToolApprovalHeader>
+            <ToolApprovalRequest>
+              <div className="mb-1 text-xs font-medium">
+                Command requires approval
+              </div>
+              <div className="text-muted-foreground mb-2 text-[10px]">
+                {approvalReason}
+              </div>
+              <code className="bg-muted block rounded px-2 py-1.5 font-mono text-[10px]">
+                {command}
+              </code>
+              {isUnsandboxed ? (
+                <ToolApprovalSandboxHelp className="mt-2" />
+              ) : (
+                <ToolApprovalDangerousHelp className="mt-2" />
+              )}
+            </ToolApprovalRequest>
+          </ToolApprovalHeader>
+          <ToolApprovalActions>
+            <ToolApprovalAction
+              variant="outline"
+              onClick={() =>
+                onRespond({
+                  approvalId: approval.approvalId,
+                  approved: false,
+                  reason: 'User rejected command execution',
+                })
+              }
+            >
+              Reject
+            </ToolApprovalAction>
+            <ToolApprovalAction
+              onClick={() =>
+                onRespond({
+                  approvalId: approval.approvalId,
+                  approved: true,
+                })
+              }
+            >
+              Approve
+            </ToolApprovalAction>
+          </ToolApprovalActions>
+        </ToolApproval>
       )
     },
   },

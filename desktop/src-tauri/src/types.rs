@@ -104,10 +104,14 @@ pub struct MoldableConfig {
 /// Shared config stored in ~/.moldable/shared/config.json
 /// Used for preferences that should persist across all workspaces
 #[derive(Serialize, Deserialize, Default, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct SharedConfig {
     /// Whether the Hello Moldables tutorial app has been installed
     #[serde(default)]
     pub hello_moldables_installed: bool,
+    /// Global preferences (security settings, etc.)
+    #[serde(default)]
+    pub preferences: serde_json::Map<String, serde_json::Value>,
 }
 
 // ============================================================================

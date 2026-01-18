@@ -40,7 +40,7 @@ pub mod conversations;
 
 // Preferences
 pub mod preferences;
-use preferences::{load_shared_config, save_shared_config};
+use preferences::{load_shared_config, save_shared_config, migrate_security_preferences};
 
 // System logs
 pub mod logs;
@@ -266,6 +266,10 @@ pub fn run() {
             preferences::get_preference,
             preferences::set_preference,
             preferences::get_all_preferences,
+            // Shared preferences (global settings like security)
+            preferences::get_shared_preference,
+            preferences::set_shared_preference,
+            preferences::get_all_shared_preferences,
             // Workspace commands (from workspace module)
             workspace::get_workspaces_config,
             workspace::set_active_workspace,
@@ -377,6 +381,9 @@ pub fn run() {
             if let Err(e) = ensure_default_workspace() {
                 warn!("Failed to create default workspace: {}", e);
             }
+
+            // Migrate security preferences to default true for existing workspaces
+            migrate_security_preferences();
 
             // Install bundled scripts to ~/.moldable/shared/scripts/
             if let Err(e) = ensure_bundled_scripts(app.handle()) {

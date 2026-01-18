@@ -6,8 +6,13 @@ import {
   type AvailableKeys,
   useMoldablePreferences,
 } from './use-moldable-preferences'
+import { SHARED_PREFERENCE_KEYS, useSharedConfig } from './use-workspace-config'
 import { invoke } from '@tauri-apps/api/core'
-import { DefaultChatTransport, type UIMessage } from 'ai'
+import {
+  DefaultChatTransport,
+  type UIMessage,
+  lastAssistantMessageIsCompleteWithApprovalResponses,
+} from 'ai'
 
 const DEFAULT_AI_SERVER_PORT = 39100
 
@@ -65,6 +70,9 @@ interface DynamicBodyStore {
   registeredApps: RegisteredAppInfo[]
   activeApp: ActiveAppContext | null
   apiServerPort: number | null
+  requireUnsandboxedApproval: boolean
+  requireDangerousCommandApproval: boolean
+  customDangerousPatterns: string[]
 }
 
 /**
@@ -82,6 +90,19 @@ export function useMoldableChat(options: UseMoldableChatOptions = {}) {
   const preferences = useMoldablePreferences({ availableKeys })
   const [workspacePath, setWorkspacePath] = useState<string | null>(null)
 
+  // Load security preferences (global/shared, default: true = require approval)
+  const [requireUnsandboxedApproval] = useSharedConfig(
+    SHARED_PREFERENCE_KEYS.REQUIRE_UNSANDBOXED_APPROVAL,
+    true,
+  )
+  const [requireDangerousCommandApproval] = useSharedConfig(
+    SHARED_PREFERENCE_KEYS.REQUIRE_DANGEROUS_COMMAND_APPROVAL,
+    true,
+  )
+  const [customDangerousPatterns] = useSharedConfig<
+    Array<{ pattern: string; description: string }>
+  >(SHARED_PREFERENCE_KEYS.CUSTOM_DANGEROUS_PATTERNS, [])
+
   // Build API endpoint with dynamic port
   const apiEndpoint = useMemo(
     () => `http://127.0.0.1:${aiServerPort}/api/chat`,
@@ -97,6 +118,9 @@ export function useMoldableChat(options: UseMoldableChatOptions = {}) {
     registeredApps: [],
     activeApp: null,
     apiServerPort: null,
+    requireUnsandboxedApproval: true,
+    requireDangerousCommandApproval: true,
+    customDangerousPatterns: [],
   })
 
   // Keep the ref updated with latest values
@@ -108,6 +132,10 @@ export function useMoldableChat(options: UseMoldableChatOptions = {}) {
     registeredApps,
     activeApp,
     apiServerPort: apiServerPort ?? null,
+    requireUnsandboxedApproval,
+    requireDangerousCommandApproval,
+    // Extract just the pattern strings for the server
+    customDangerousPatterns: customDangerousPatterns.map((p) => p.pattern),
   }
 
   // Load workspace path from config
@@ -172,6 +200,11 @@ export function useMoldableChat(options: UseMoldableChatOptions = {}) {
           }),
           // Pass API server port for scaffold tools (handles multi-user on same machine)
           ...(store.apiServerPort && { apiServerPort: store.apiServerPort }),
+          // Pass security preferences
+          requireUnsandboxedApproval: store.requireUnsandboxedApproval,
+          requireDangerousCommandApproval:
+            store.requireDangerousCommandApproval,
+          customDangerousPatterns: store.customDangerousPatterns,
         }
       },
     })
@@ -180,6 +213,8 @@ export function useMoldableChat(options: UseMoldableChatOptions = {}) {
   const chat = useChat({
     transport,
     onData: handleData,
+    // Auto-continue after tool approval responses are added
+    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
   })
 
   return {
@@ -195,6 +230,8 @@ export function useMoldableChat(options: UseMoldableChatOptions = {}) {
     toolProgress,
     /** Clear progress for a tool when it completes */
     clearToolProgress,
+    /** Respond to tool approval requests (from AI SDK useChat) */
+    addToolApprovalResponse: chat.addToolApprovalResponse,
   }
 }
 

@@ -361,7 +361,8 @@ const TOOL_INSTRUCTIONS: Record<string, string> = {
 - Runs in sandboxed shell environment by default
 - **Use \`sandbox: false\` for package manager installs** (pnpm install, npm install, yarn add, bun install) - sandbox blocks network access needed to download packages
 - 30s default timeout (may vary)
-- Sensitive paths are protected`,
+- Sensitive paths are protected
+- **User approval required for dangerous commands**: rm -rf, sudo, git push --force to main/master, DROP DATABASE, and other destructive operations will prompt the user for approval before executing`,
 
   grep: `
 ### grep

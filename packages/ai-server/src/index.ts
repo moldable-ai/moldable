@@ -167,27 +167,79 @@ function sendError(res: ServerResponse, message: string, status = 500): void {
  * The Anthropic API requires every tool_use to have a matching tool_result.
  *
  * This function:
- * 1. Collects all tool call IDs from tool messages
- * 2. Removes tool calls that don't have matching results
- * 3. Removes assistant messages that become empty after removing dangling calls
+ * 1. Collects all tool call IDs that have responses (tool-result or tool-approval-response)
+ * 2. Also keeps tool calls that have pending approval requests (awaiting user response)
+ * 3. Removes tool calls that don't have matching results/responses/requests
+ * 4. Removes assistant messages that become empty after removing dangling calls
+ *
+ * Note: Tool calls with approval requests OR responses are NOT dangling.
  */
 function removeDanglingToolCalls<T extends { role: string; content: unknown }>(
   messages: T[],
 ): T[] {
-  // First pass: collect all tool result IDs
-  const toolResultIds = new Set<string>()
+  // First pass: collect all tool call IDs that have responses
+  // This includes both tool-result (executed) and tool-approval-response (pending execution after approval)
+  const toolResponseIds = new Set<string>()
+  const approvalResponseApprovalIds = new Set<string>()
+
   for (const msg of messages) {
     if (msg.role === 'tool' && Array.isArray(msg.content)) {
       for (const part of msg.content as Array<{
         type: string
         toolCallId?: string
+        approvalId?: string
       }>) {
         if (part.type === 'tool-result' && part.toolCallId) {
-          toolResultIds.add(part.toolCallId)
+          toolResponseIds.add(part.toolCallId)
+        }
+        // Also track approval responses - these mean the tool call is valid (pending execution)
+        if (part.type === 'tool-approval-response' && part.approvalId) {
+          approvalResponseApprovalIds.add(part.approvalId)
         }
       }
     }
   }
+
+  // Collect tool calls that have approval requests (pending user input)
+  // AND tool calls that have approval responses
+  const approvalRequestToolCallIds = new Map<string, string>() // approvalId -> toolCallId
+  const toolCallsWithPendingApproval = new Set<string>() // Tool calls awaiting user approval
+
+  for (const msg of messages) {
+    if (msg.role === 'assistant' && Array.isArray(msg.content)) {
+      for (const part of msg.content as Array<{
+        type: string
+        toolCallId?: string
+        approvalId?: string
+      }>) {
+        if (
+          part.type === 'tool-approval-request' &&
+          part.approvalId &&
+          part.toolCallId
+        ) {
+          approvalRequestToolCallIds.set(part.approvalId, part.toolCallId)
+          // Mark this tool call as having a pending approval request
+          toolCallsWithPendingApproval.add(part.toolCallId)
+        }
+      }
+    }
+  }
+
+  // Mark tool calls that have approval responses as having responses
+  for (const approvalId of approvalResponseApprovalIds) {
+    const toolCallId = approvalRequestToolCallIds.get(approvalId)
+    if (toolCallId) {
+      toolResponseIds.add(toolCallId)
+      // Remove from pending since it's been responded to
+      toolCallsWithPendingApproval.delete(toolCallId)
+    }
+  }
+
+  // Combine: tool calls are valid if they have a response OR have a pending approval
+  const validToolCallIds = new Set([
+    ...toolResponseIds,
+    ...toolCallsWithPendingApproval,
+  ])
 
   // Second pass: filter out dangling tool calls
   const result: T[] = []
@@ -204,16 +256,16 @@ function removeDanglingToolCalls<T extends { role: string; content: unknown }>(
       const hasToolCalls = content.some((part) => part.type === 'tool-call')
 
       if (hasToolCalls) {
-        // Filter out tool calls that don't have matching results
+        // Filter out tool calls that don't have matching results, approval responses, or pending approvals
         const filteredContent = content.filter((part) => {
           if (part.type === 'tool-call' && part.toolCallId) {
-            const hasResult = toolResultIds.has(part.toolCallId)
-            if (!hasResult) {
+            const isValid = validToolCallIds.has(part.toolCallId)
+            if (!isValid) {
               console.log(
-                `   ⚠️ Removing dangling tool call: ${part.toolCallId} (no matching tool_result)`,
+                `   ⚠️ Removing dangling tool call: ${part.toolCallId} (no matching tool_result, approval response, or pending approval)`,
               )
             }
-            return hasResult
+            return isValid
           }
           return true // Keep non-tool-call parts
         })
@@ -286,6 +338,9 @@ async function handleChat(
       basePath?: string // Workspace root for file operations
       activeWorkspaceId?: string // Active workspace ID (e.g., "personal", "work")
       apiServerPort?: number // API server port for scaffold tools (handles multi-user on same machine)
+      requireUnsandboxedApproval?: boolean // Whether to require user approval for unsandboxed commands
+      requireDangerousCommandApproval?: boolean // Whether to require user approval for dangerous commands
+      customDangerousPatterns?: string[] // Custom dangerous command patterns (regex strings)
       registeredApps?: Array<{
         // All registered apps in Moldable
         id: string
@@ -578,6 +633,14 @@ async function handleChat(
               basePath: toolsBasePath,
               // Pass API server port for scaffold tools (handles multi-user on same machine)
               apiServerPort: body.apiServerPort,
+              // Whether to require user approval for unsandboxed commands (default: true)
+              requireUnsandboxedApproval:
+                body.requireUnsandboxedApproval ?? true,
+              // Whether to require user approval for dangerous commands (default: true)
+              requireDangerousCommandApproval:
+                body.requireDangerousCommandApproval ?? true,
+              // Custom dangerous command patterns (regex strings)
+              customDangerousPatterns: body.customDangerousPatterns ?? [],
               // Stream command progress (stdout/stderr) to the UI as data parts
               onCommandProgress: (
                 toolCallId: string,

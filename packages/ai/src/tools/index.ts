@@ -35,6 +35,12 @@ export type MoldableToolsOptions = {
   onCommandProgress?: CommandProgressCallback
   /** API server port for scaffold tools (passed from frontend) */
   apiServerPort?: number
+  /** Whether to require user approval for unsandboxed commands (default: true) */
+  requireUnsandboxedApproval?: boolean
+  /** Whether to require user approval for dangerous commands (default: true) */
+  requireDangerousCommandApproval?: boolean
+  /** Custom dangerous command patterns (regex strings) */
+  customDangerousPatterns?: string[]
 }
 
 /**
@@ -49,6 +55,9 @@ export function createMoldableTools(options: MoldableToolsOptions = {}) {
     googleSearchEngineId,
     onCommandProgress,
     apiServerPort,
+    requireUnsandboxedApproval,
+    requireDangerousCommandApproval,
+    customDangerousPatterns,
   } = options
 
   return {
@@ -57,6 +66,9 @@ export function createMoldableTools(options: MoldableToolsOptions = {}) {
       cwd: basePath,
       maxBuffer,
       onProgress: onCommandProgress,
+      requireUnsandboxedApproval,
+      requireDangerousCommandApproval,
+      customDangerousPatterns,
     }),
     ...createSearchTools({
       basePath,

@@ -25,7 +25,7 @@ const AI_SERVER_FALLBACK_END: u16 = DEFAULT_AI_SERVER_PORT + 99;
 fn acquire_ai_server_port() -> Result<PortAcquisitionResult, String> {
     let config = PortAcquisitionConfig {
         preferred_port: AI_SERVER_PORT,
-        max_retries: 5,
+        max_retries: 2,
         initial_delay_ms: 200,
         max_delay_ms: 2000,
         allow_fallback: true,
@@ -224,7 +224,7 @@ mod tests {
                 }
                 
                 // retries_used should be reasonable
-                assert!(result.retries_used <= 5);
+                assert!(result.retries_used <= 2);
             }
         }
     }

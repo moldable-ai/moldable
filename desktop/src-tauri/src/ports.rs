@@ -399,7 +399,7 @@ impl Default for PortAcquisitionConfig {
     fn default() -> Self {
         Self {
             preferred_port: 0,
-            max_retries: 5,
+            max_retries: 2,
             initial_delay_ms: 200,
             max_delay_ms: 2000,
             allow_fallback: true,
@@ -664,7 +664,7 @@ mod tests {
     #[test]
     fn test_port_acquisition_config_default() {
         let config = PortAcquisitionConfig::default();
-        assert_eq!(config.max_retries, 5);
+        assert_eq!(config.max_retries, 2);
         assert_eq!(config.initial_delay_ms, 200);
         assert!(config.allow_fallback);
     }

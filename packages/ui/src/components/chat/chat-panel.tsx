@@ -31,6 +31,10 @@ import {
   type ReasoningEffortOption,
   ReasoningEffortSelector,
 } from './reasoning-effort-selector'
+import {
+  type ApprovalResponseHandler,
+  ToolApprovalProvider,
+} from './tool-approval-context'
 import { ToolProgressProvider } from './tool-progress-context'
 import { AnimatePresence, motion } from 'framer-motion'
 
@@ -104,6 +108,8 @@ export interface ChatPanelProps {
   onAddApiKey?: () => void
   /** Progress data for running tools (streaming stdout/stderr) */
   toolProgress?: Record<string, ToolProgressData>
+  /** Callback for tool approval responses */
+  onApprovalResponse?: ApprovalResponseHandler
 }
 
 /**
@@ -138,6 +144,7 @@ export function ChatPanel({
   missingApiKey,
   onAddApiKey,
   toolProgress = {},
+  onApprovalResponse,
 }: ChatPanelProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -415,7 +422,11 @@ export function ChatPanel({
                   </div>
                 )}
                 <ToolProgressProvider value={toolProgress}>
-                  <Messages messages={messages} status={status} />
+                  <ToolApprovalProvider
+                    onApprovalResponse={onApprovalResponse ?? null}
+                  >
+                    <Messages messages={messages} status={status} />
+                  </ToolApprovalProvider>
                 </ToolProgressProvider>
                 {/* Missing API key prompt */}
                 {(missingApiKey ||
