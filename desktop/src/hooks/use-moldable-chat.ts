@@ -9,7 +9,7 @@ import {
 import { invoke } from '@tauri-apps/api/core'
 import { DefaultChatTransport, type UIMessage } from 'ai'
 
-const API_ENDPOINT = 'http://127.0.0.1:3100/api/chat'
+const API_ENDPOINT = 'http://127.0.0.1:39100/api/chat'
 
 /**
  * Basic info about a registered app

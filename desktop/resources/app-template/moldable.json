@@ -1,0 +1,16 @@
+{
+  "name": "__APP_NAME__",
+  "version": "0.1.0",
+  "visibility": "private",
+  "description": "__APP_DESCRIPTION__",
+  "author": "",
+  "license": "MIT",
+  "icon": "__APP_ICON__",
+  "widgetSize": "__WIDGET_SIZE__",
+  "category": "custom",
+  "tags": [],
+  "moldableDependencies": {
+    "@moldable-ai/ui": "^0.1.0"
+  },
+  "env": []
+}

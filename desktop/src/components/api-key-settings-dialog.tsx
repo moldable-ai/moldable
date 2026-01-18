@@ -41,11 +41,14 @@ const providerUrls: Record<string, string> = {
 interface ApiKeySettingsDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
+  /** Called when API keys are added or removed - use to refresh health status */
+  onKeysChanged?: () => void
 }
 
 export function ApiKeySettingsDialog({
   open,
   onOpenChange,
+  onKeysChanged,
 }: ApiKeySettingsDialogProps) {
   const [apiKeys, setApiKeys] = useState<ApiKeyInfo[]>([])
   const [isLoading, setIsLoading] = useState(true)
@@ -90,13 +93,14 @@ export function ApiKeySettingsDialog({
       setNewApiKey('')
       setShowAddForm(false)
       await loadApiKeys()
+      onKeysChanged?.()
     } catch (error) {
       console.error('Failed to save API key:', error)
       toast.error(error instanceof Error ? error.message : String(error))
     } finally {
       setSaving(false)
     }
-  }, [newApiKey, isValidKey, loadApiKeys])
+  }, [newApiKey, isValidKey, loadApiKeys, onKeysChanged])
 
   const handleRemoveKey = useCallback(
     async (envVar: string, provider: string) => {
@@ -105,6 +109,7 @@ export function ApiKeySettingsDialog({
         await invoke('remove_api_key', { envVar })
         toast.success(`${provider} API key removed`)
         await loadApiKeys()
+        onKeysChanged?.()
       } catch (error) {
         console.error('Failed to remove API key:', error)
         toast.error(error instanceof Error ? error.message : String(error))
@@ -112,7 +117,7 @@ export function ApiKeySettingsDialog({
         setRemovingKey(null)
       }
     },
-    [loadApiKeys],
+    [loadApiKeys, onKeysChanged],
   )
 
   const handleOpenUrl = useCallback(async (url: string) => {

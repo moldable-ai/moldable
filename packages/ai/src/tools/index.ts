@@ -1,5 +1,6 @@
 import { createBashTools } from './bash'
 import { createFilesystemTools } from './filesystem'
+import { createScaffoldTools } from './scaffold'
 import { createSearchTools } from './search'
 import { createSkillsTools } from './skills'
 import { createWebSearchTools } from './web-search'
@@ -9,6 +10,7 @@ export { createBashTools } from './bash'
 export { createSearchTools } from './search'
 export { createWebSearchTools, type WebSearchResult } from './web-search'
 export { createSkillsTools, SKILLS_TOOL_DESCRIPTIONS } from './skills'
+export { createScaffoldTools, SCAFFOLD_TOOL_DESCRIPTIONS } from './scaffold'
 
 export type MoldableToolsOptions = {
   /** Base path for file operations (security boundary) */
@@ -50,6 +52,7 @@ export function createMoldableTools(options: MoldableToolsOptions = {}) {
       searchEngineId: googleSearchEngineId,
     }),
     ...createSkillsTools(),
+    ...createScaffoldTools(),
   }
 }
 
@@ -75,6 +78,9 @@ export const TOOL_DESCRIPTIONS = {
   // Web
   webSearch: 'Search the internet via Google',
 
+  // App scaffolding
+  scaffoldApp: 'Create a new Moldable app from the standard template',
+
   // Skills management
   listSkillRepos: 'List registered skill repositories',
   listAvailableSkills: 'Show available skills from repositories',
@@ -99,6 +105,7 @@ export const TOOL_CATEGORIES = {
   terminal: ['runCommand'],
   search: ['grep', 'globFileSearch'],
   web: ['webSearch'],
+  scaffold: ['scaffoldApp'],
   skills: [
     'listSkillRepos',
     'listAvailableSkills',

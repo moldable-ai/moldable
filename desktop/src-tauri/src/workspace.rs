@@ -164,6 +164,69 @@ pub fn ensure_bundled_scripts(app_handle: &tauri::AppHandle) -> Result<(), Strin
     Ok(())
 }
 
+/// Ensure bundled app template is installed in ~/.moldable/cache/app-template/
+pub fn ensure_bundled_app_template(app_handle: &tauri::AppHandle) -> Result<(), String> {
+    let home = std::env::var("HOME").map_err(|_| "Could not get HOME directory")?;
+    let template_dest = PathBuf::from(format!("{}/.moldable/cache/app-template", home));
+
+    // Try to get from bundled resources first (production)
+    let resource_dir = app_handle
+        .path()
+        .resource_dir()
+        .map_err(|e| format!("Failed to get resource dir: {}", e))?;
+    let template_source = resource_dir.join("app-template");
+
+    if template_source.exists() {
+        copy_dir_recursive(&template_source, &template_dest)?;
+        info!("Installed app-template to ~/.moldable/cache/app-template/");
+    } else {
+        // In development, copy from desktop/resources/app-template
+        if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+            let dev_template_path = PathBuf::from(&manifest_dir)
+                .parent() // desktop
+                .map(|p| p.join("resources").join("app-template"));
+
+            if let Some(dev_path) = dev_template_path {
+                if dev_path.exists() {
+                    copy_dir_recursive(&dev_path, &template_dest)?;
+                    info!("Installed app-template to ~/.moldable/cache/app-template/ (dev)");
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Recursively copy a directory
+pub fn copy_dir_recursive(src: &PathBuf, dst: &PathBuf) -> Result<(), String> {
+    // Remove existing destination to ensure clean copy
+    if dst.exists() {
+        std::fs::remove_dir_all(dst)
+            .map_err(|e| format!("Failed to remove existing template: {}", e))?;
+    }
+
+    std::fs::create_dir_all(dst)
+        .map_err(|e| format!("Failed to create directory {:?}: {}", dst, e))?;
+
+    for entry in std::fs::read_dir(src)
+        .map_err(|e| format!("Failed to read directory {:?}: {}", src, e))?
+    {
+        let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path)
+                .map_err(|e| format!("Failed to copy {:?} to {:?}: {}", src_path, dst_path, e))?;
+        }
+    }
+
+    Ok(())
+}
+
 // ============================================================================
 // TAURI COMMANDS
 // ============================================================================
@@ -1169,5 +1232,235 @@ mod tests {
         let port: u16 = content.trim().parse().unwrap();
 
         assert_eq!(port, 3001);
+    }
+
+    // ==================== COPY DIR RECURSIVE TESTS ====================
+
+    #[test]
+    fn test_copy_dir_recursive_basic() {
+        let src_dir = TempDir::new().unwrap();
+        let dst_dir = TempDir::new().unwrap();
+        let dst_path = dst_dir.path().join("copied");
+
+        // Create source files
+        fs::write(src_dir.path().join("file1.txt"), "content1").unwrap();
+        fs::write(src_dir.path().join("file2.txt"), "content2").unwrap();
+
+        // Copy
+        let result = copy_dir_recursive(&src_dir.path().to_path_buf(), &dst_path);
+        assert!(result.is_ok());
+
+        // Verify
+        assert!(dst_path.exists());
+        assert_eq!(fs::read_to_string(dst_path.join("file1.txt")).unwrap(), "content1");
+        assert_eq!(fs::read_to_string(dst_path.join("file2.txt")).unwrap(), "content2");
+    }
+
+    #[test]
+    fn test_copy_dir_recursive_nested() {
+        let src_dir = TempDir::new().unwrap();
+        let dst_dir = TempDir::new().unwrap();
+        let dst_path = dst_dir.path().join("copied");
+
+        // Create nested structure
+        fs::create_dir_all(src_dir.path().join("src/app/api")).unwrap();
+        fs::write(src_dir.path().join("package.json"), r#"{"name":"test"}"#).unwrap();
+        fs::write(src_dir.path().join("src/app/page.tsx"), "export default function Page() {}").unwrap();
+        fs::write(src_dir.path().join("src/app/api/route.ts"), "export async function GET() {}").unwrap();
+
+        // Copy
+        let result = copy_dir_recursive(&src_dir.path().to_path_buf(), &dst_path);
+        assert!(result.is_ok());
+
+        // Verify nested structure preserved
+        assert!(dst_path.join("src/app/api").exists());
+        assert_eq!(
+            fs::read_to_string(dst_path.join("package.json")).unwrap(),
+            r#"{"name":"test"}"#
+        );
+        assert_eq!(
+            fs::read_to_string(dst_path.join("src/app/page.tsx")).unwrap(),
+            "export default function Page() {}"
+        );
+        assert_eq!(
+            fs::read_to_string(dst_path.join("src/app/api/route.ts")).unwrap(),
+            "export async function GET() {}"
+        );
+    }
+
+    #[test]
+    fn test_copy_dir_recursive_overwrites_existing() {
+        let src_dir = TempDir::new().unwrap();
+        let dst_dir = TempDir::new().unwrap();
+        let dst_path = dst_dir.path().join("copied");
+
+        // Create existing destination with different content
+        fs::create_dir_all(&dst_path).unwrap();
+        fs::write(dst_path.join("old_file.txt"), "old content").unwrap();
+        fs::write(dst_path.join("file1.txt"), "old version").unwrap();
+
+        // Create source files
+        fs::write(src_dir.path().join("file1.txt"), "new content").unwrap();
+        fs::write(src_dir.path().join("file2.txt"), "brand new").unwrap();
+
+        // Copy (should overwrite)
+        let result = copy_dir_recursive(&src_dir.path().to_path_buf(), &dst_path);
+        assert!(result.is_ok());
+
+        // Verify old file removed and new content present
+        assert!(!dst_path.join("old_file.txt").exists());
+        assert_eq!(fs::read_to_string(dst_path.join("file1.txt")).unwrap(), "new content");
+        assert_eq!(fs::read_to_string(dst_path.join("file2.txt")).unwrap(), "brand new");
+    }
+
+    #[test]
+    fn test_copy_dir_recursive_empty_dir() {
+        let src_dir = TempDir::new().unwrap();
+        let dst_dir = TempDir::new().unwrap();
+        let dst_path = dst_dir.path().join("copied");
+
+        // Create empty subdirectories
+        fs::create_dir_all(src_dir.path().join("empty_subdir")).unwrap();
+
+        // Copy
+        let result = copy_dir_recursive(&src_dir.path().to_path_buf(), &dst_path);
+        assert!(result.is_ok());
+
+        // Verify empty dir copied
+        assert!(dst_path.join("empty_subdir").exists());
+        assert!(dst_path.join("empty_subdir").is_dir());
+    }
+
+    // ==================== APP TEMPLATE TESTS ====================
+
+    #[test]
+    fn test_app_template_cache_directory_structure() {
+        let env = TempMoldableEnv::new();
+
+        // Create cache directory with app template
+        let cache_dir = env.moldable_root.join("cache/app-template");
+        fs::create_dir_all(&cache_dir).unwrap();
+
+        // Create mock template files
+        fs::create_dir_all(cache_dir.join("src/app/widget")).unwrap();
+        fs::create_dir_all(cache_dir.join("src/app/api/moldable/health")).unwrap();
+        fs::create_dir_all(cache_dir.join("scripts")).unwrap();
+
+        fs::write(
+            cache_dir.join("moldable.json"),
+            r#"{"name":"__APP_NAME__","icon":"__APP_ICON__"}"#,
+        ).unwrap();
+        fs::write(
+            cache_dir.join("package.json"),
+            r#"{"name":"__APP_ID__","version":"0.1.0"}"#,
+        ).unwrap();
+        fs::write(
+            cache_dir.join("scripts/moldable-dev.mjs"),
+            "const appId = '__APP_ID__'",
+        ).unwrap();
+        fs::write(
+            cache_dir.join("src/app/widget/page.tsx"),
+            "const GHOST_EXAMPLES = []",
+        ).unwrap();
+        fs::write(
+            cache_dir.join("src/app/api/moldable/health/route.ts"),
+            "export async function GET() { return Response.json({ status: 'ok' }) }",
+        ).unwrap();
+
+        // Verify structure
+        assert!(cache_dir.join("moldable.json").exists());
+        assert!(cache_dir.join("package.json").exists());
+        assert!(cache_dir.join("scripts/moldable-dev.mjs").exists());
+        assert!(cache_dir.join("src/app/widget/page.tsx").exists());
+        assert!(cache_dir.join("src/app/api/moldable/health/route.ts").exists());
+    }
+
+    #[test]
+    fn test_app_template_to_new_app() {
+        let env = TempMoldableEnv::new();
+        env.create_shared_dir();
+
+        // Create template in cache
+        let template_dir = env.moldable_root.join("cache/app-template");
+        fs::create_dir_all(template_dir.join("src/app")).unwrap();
+        fs::create_dir_all(template_dir.join("scripts")).unwrap();
+
+        fs::write(
+            template_dir.join("moldable.json"),
+            r#"{"name":"__APP_NAME__","icon":"__APP_ICON__","widgetSize":"__WIDGET_SIZE__"}"#,
+        ).unwrap();
+        fs::write(
+            template_dir.join("package.json"),
+            r#"{"name":"__APP_ID__"}"#,
+        ).unwrap();
+        fs::write(
+            template_dir.join("src/app/page.tsx"),
+            "<h1>__APP_NAME__</h1>",
+        ).unwrap();
+
+        // Copy to new app location
+        let new_app_dir = env.moldable_root.join("shared/apps/my-new-app");
+        let result = copy_dir_recursive(&template_dir, &new_app_dir);
+        assert!(result.is_ok());
+
+        // Verify copied
+        assert!(new_app_dir.join("moldable.json").exists());
+        assert!(new_app_dir.join("package.json").exists());
+        assert!(new_app_dir.join("src/app/page.tsx").exists());
+
+        // Content should still have placeholders (replacement is done by AI tool)
+        let manifest = fs::read_to_string(new_app_dir.join("moldable.json")).unwrap();
+        assert!(manifest.contains("__APP_NAME__"));
+    }
+
+    #[test]
+    fn test_multiple_apps_from_same_template() {
+        let env = TempMoldableEnv::new();
+        env.create_shared_dir();
+
+        // Create template
+        let template_dir = env.moldable_root.join("cache/app-template");
+        fs::create_dir_all(&template_dir).unwrap();
+        fs::write(template_dir.join("package.json"), r#"{"name":"__APP_ID__"}"#).unwrap();
+
+        // Create multiple apps from template
+        let app1_dir = env.moldable_root.join("shared/apps/app1");
+        let app2_dir = env.moldable_root.join("shared/apps/app2");
+
+        copy_dir_recursive(&template_dir, &app1_dir).unwrap();
+        copy_dir_recursive(&template_dir, &app2_dir).unwrap();
+
+        // Both should exist independently
+        assert!(app1_dir.join("package.json").exists());
+        assert!(app2_dir.join("package.json").exists());
+
+        // Modifying one shouldn't affect the other
+        fs::write(app1_dir.join("package.json"), r#"{"name":"app1"}"#).unwrap();
+        
+        let app2_content = fs::read_to_string(app2_dir.join("package.json")).unwrap();
+        assert!(app2_content.contains("__APP_ID__")); // Still has placeholder
+    }
+
+    #[test]
+    fn test_template_with_hidden_files() {
+        let src_dir = TempDir::new().unwrap();
+        let dst_dir = TempDir::new().unwrap();
+        let dst_path = dst_dir.path().join("copied");
+
+        // Create files including hidden ones
+        fs::write(src_dir.path().join(".gitignore"), "node_modules/\n.next/").unwrap();
+        fs::write(src_dir.path().join(".eslintrc.json"), r#"{"extends":"next"}"#).unwrap();
+        fs::write(src_dir.path().join("package.json"), "{}").unwrap();
+
+        // Copy
+        copy_dir_recursive(&src_dir.path().to_path_buf(), &dst_path).unwrap();
+
+        // Hidden files should be copied
+        assert!(dst_path.join(".gitignore").exists());
+        assert!(dst_path.join(".eslintrc.json").exists());
+        assert_eq!(
+            fs::read_to_string(dst_path.join(".gitignore")).unwrap(),
+            "node_modules/\n.next/"
+        );
     }
 }

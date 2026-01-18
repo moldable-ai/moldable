@@ -1,0 +1,32 @@
+{
+  "name": "__APP_ID__",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "node ./scripts/moldable-dev.mjs",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@moldable-ai/storage": "^0.1.1",
+    "@moldable-ai/ui": "^0.2.2",
+    "@tanstack/react-query": "^5.62.8",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.468.0",
+    "next": "16.1.1",
+    "react": "19.0.0",
+    "react-dom": "19.0.0",
+    "tailwind-merge": "^3.4.0"
+  },
+  "devDependencies": {
+    "@moldable-ai/typescript-config": "0.1.0",
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20.17.10",
+    "@types/react": "^19.2.8",
+    "@types/react-dom": "^19.0.4",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^4.0.0-alpha.30",
+    "typescript": "^5.7.2"
+  }
+}

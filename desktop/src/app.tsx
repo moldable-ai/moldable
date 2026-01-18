@@ -501,6 +501,7 @@ export function App() {
           onDeleteApp={deleteApp}
           onChatToggle={handleChatToggle}
           isChatActive={isChatExpanded}
+          onHealthRefresh={checkHealth}
         />
 
         {/* Main content area */}

@@ -18,7 +18,10 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": ["../../scripts/lint-moldable-app.js"],
+    "resources": {
+      "../../scripts/lint-moldable-app.js": "",
+      "../resources/app-template/": "app-template/"
+    },
     "externalBin": [
       "binaries/moldable-ai-server",
       "binaries/moldable-audio-capture"

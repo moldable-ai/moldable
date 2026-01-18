@@ -9,8 +9,8 @@ use tauri::AppHandle;
 use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::ShellExt;
 
-/// Default port for the AI server
-const AI_SERVER_PORT: u16 = 3100;
+/// Default port for the AI server (high port to avoid conflicts)
+const AI_SERVER_PORT: u16 = 39100;
 
 // ============================================================================
 // AI SERVER LIFECYCLE
@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn test_ai_server_port_constant() {
-        assert_eq!(AI_SERVER_PORT, 3100);
+        assert_eq!(AI_SERVER_PORT, 39100);
     }
 
     #[test]
@@ -156,7 +156,7 @@ mod tests {
 
     #[test]
     fn test_ensure_port_available_returns_ok_when_free() {
-        // If port 3100 happens to be free (common in test environments),
+        // If port 39100 happens to be free (common in test environments),
         // ensure_port_available should return Ok immediately
         let result = ensure_port_available();
         // Either it succeeds (port free) or fails with a message (port in use)
@@ -165,7 +165,7 @@ mod tests {
             Ok(()) => assert!(true),
             Err(msg) => {
                 // Error message should mention the port
-                assert!(msg.contains("3100"));
+                assert!(msg.contains("39100"));
             }
         }
     }

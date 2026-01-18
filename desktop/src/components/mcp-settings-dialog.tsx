@@ -33,7 +33,7 @@ import {
 } from '@moldable-ai/ui'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 
-const AI_SERVER_URL = 'http://127.0.0.1:3100'
+const AI_SERVER_URL = 'http://127.0.0.1:39100'
 
 interface McpServerConfig {
   type?: 'stdio' | 'http' | 'sse'

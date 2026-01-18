@@ -1078,8 +1078,8 @@ describe('AI Server', () => {
 
   describe('Default Configuration Values', () => {
     it('should have correct default port', () => {
-      const DEFAULT_PORT = 3100
-      expect(DEFAULT_PORT).toBe(3100)
+      const DEFAULT_PORT = 39100
+      expect(DEFAULT_PORT).toBe(39100)
     })
 
     it('should have correct default host', () => {

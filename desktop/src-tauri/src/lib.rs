@@ -46,7 +46,7 @@ pub mod logs;
 
 // Workspace management
 pub mod workspace;
-use workspace::{ensure_default_workspace, ensure_bundled_scripts};
+use workspace::{ensure_default_workspace, ensure_bundled_scripts, ensure_bundled_app_template};
 
 // App process management
 pub mod process;
@@ -59,6 +59,9 @@ use audio::AudioCaptureState;
 // AI server sidecar
 pub mod ai_server;
 use ai_server::{start_ai_server, cleanup_ai_server};
+
+// HTTP API server for AI tools
+pub mod api_server;
 
 // App registration and detection
 pub mod apps;
@@ -381,8 +384,21 @@ pub fn run() {
                 warn!("Failed to install bundled scripts: {}", e);
             }
 
+            // Install bundled app template to ~/.moldable/cache/app-template/
+            if let Err(e) = ensure_bundled_app_template(app.handle()) {
+                warn!("Failed to install bundled app template: {}", e);
+            }
+
             // Install Hello Moldables tutorial app on first launch
             ensure_hello_moldables_app(app.handle());
+
+            // Start API server for AI tools
+            let api_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = api_server::start_api_server(api_handle).await {
+                    error!("Failed to start API server: {}", e);
+                }
+            });
 
             // Start AI server sidecar
             if let Err(e) = start_ai_server(app.handle(), ai_server_for_setup) {

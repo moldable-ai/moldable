@@ -50,6 +50,8 @@ interface SidebarProps {
   onDeleteApp?: (appId: string) => void
   onChatToggle?: () => void
   isChatActive?: boolean
+  /** Called when API keys change to refresh health status */
+  onHealthRefresh?: () => void
 }
 
 function AppIcon({
@@ -101,6 +103,7 @@ export function Sidebar({
   onDeleteApp: _onDeleteApp,
   onChatToggle,
   isChatActive = false,
+  onHealthRefresh,
 }: SidebarProps) {
   const { theme, resolvedTheme, setTheme } = useTheme()
   const { checking: checkingForUpdates, checkForUpdate } = useAppUpdate({
@@ -394,6 +397,7 @@ export function Sidebar({
       <ApiKeySettingsDialog
         open={isApiKeyDialogOpen}
         onOpenChange={setIsApiKeyDialogOpen}
+        onKeysChanged={onHealthRefresh}
       />
 
       {/* MCP Settings Dialog */}

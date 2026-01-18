@@ -10,6 +10,7 @@ import {
   FileText,
   FolderOpen,
   Globe,
+  Package,
   Plus,
   Search,
   Sparkles,
@@ -1249,6 +1250,87 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
               Added: {result.repositories.map((r) => r.name).join(', ')}
             </div>
           )}
+        </div>
+      )
+    },
+  },
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // App Scaffolding
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  scaffoldApp: {
+    loadingLabel: 'Creating app...',
+    marker: ThinkingTimelineMarker.Default,
+    inline: true,
+    renderLoading: (args?: unknown) => {
+      const { name, appId } = (args ?? {}) as { name?: string; appId?: string }
+      return (
+        <div className="bg-muted text-muted-foreground inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs">
+          <Package className="size-3.5 shrink-0 animate-pulse" />
+          <span className="truncate">Creating {name || appId || 'app'}...</span>
+        </div>
+      )
+    },
+    renderOutput: (output, toolCallId) => {
+      const result = (output ?? {}) as {
+        success?: boolean
+        appId?: string
+        name?: string
+        icon?: string
+        port?: number
+        path?: string
+        files?: string[]
+        pnpmInstalled?: boolean
+        registered?: boolean
+        message?: string
+        error?: string
+      }
+
+      if (result.success === false) {
+        return (
+          <div
+            key={toolCallId}
+            className="bg-destructive/10 text-destructive my-1 inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs"
+          >
+            <Package className="size-3.5 shrink-0" />
+            <span className="truncate">
+              {result.error || 'Failed to create app'}
+            </span>
+          </div>
+        )
+      }
+
+      return (
+        <div
+          key={toolCallId}
+          className="bg-muted text-muted-foreground my-1 min-w-0 rounded-md"
+        >
+          <div className="flex items-center gap-2 px-2 py-1.5 text-xs">
+            <Package className="size-3.5 shrink-0" />
+            <span className="font-medium">
+              {result.icon} {result.name || result.appId}
+            </span>
+            <Check className="size-3 shrink-0 text-green-600" />
+          </div>
+          <div className="border-border/50 flex flex-wrap gap-x-3 gap-y-0.5 border-t px-2 py-1 text-[10px]">
+            {result.port && (
+              <span>
+                Port: <code className="font-mono">{result.port}</code>
+              </span>
+            )}
+            {result.pnpmInstalled && (
+              <span className="text-green-600">deps installed</span>
+            )}
+            {result.registered && (
+              <span className="text-green-600">registered</span>
+            )}
+            {result.files && (
+              <span className="text-muted-foreground/70">
+                {result.files.length} files
+              </span>
+            )}
+          </div>
         </div>
       )
     },

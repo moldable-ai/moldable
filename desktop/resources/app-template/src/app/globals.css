@@ -1,0 +1,17 @@
+@import 'tailwindcss';
+@import '@moldable-ai/ui/styles';
+@source '../**/*.{js,jsx,ts,tsx}';
+@source '../../node_modules/@moldable-ai/ui/**/*.{js,jsx,ts,tsx}';
+
+@theme {
+  --font-sans: Inter, system-ui, -apple-system, sans-serif;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}

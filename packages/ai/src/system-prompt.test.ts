@@ -1,24 +1,7 @@
-import {
-  DEFAULT_SYSTEM_PROMPT,
-  buildSystemPrompt,
-  readAgentsFile,
-} from './system-prompt'
-import { promises as fs } from 'fs'
-import os from 'os'
-import path from 'path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { DEFAULT_SYSTEM_PROMPT, buildSystemPrompt } from './system-prompt'
+import { describe, expect, it } from 'vitest'
 
 describe('system-prompt', () => {
-  let tempDir: string
-
-  beforeEach(async () => {
-    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'moldable-test-'))
-  })
-
-  afterEach(async () => {
-    await fs.rm(tempDir, { recursive: true, force: true })
-  })
-
   describe('DEFAULT_SYSTEM_PROMPT', () => {
     it('contains core identity', () => {
       expect(DEFAULT_SYSTEM_PROMPT).toContain('Moldable')
@@ -36,40 +19,15 @@ describe('system-prompt', () => {
       expect(DEFAULT_SYSTEM_PROMPT).toContain('Search Strategy')
       expect(DEFAULT_SYSTEM_PROMPT).toContain('Command Execution')
     })
-  })
 
-  describe('readAgentsFile', () => {
-    it('reads AGENTS.md when present', async () => {
-      const content = '# Test Guidelines\n\nSome instructions.'
-      await fs.writeFile(path.join(tempDir, 'AGENTS.md'), content)
-
-      const result = await readAgentsFile(tempDir)
-
-      expect(result).toBe(content)
+    it('contains app creation guidance', () => {
+      expect(DEFAULT_SYSTEM_PROMPT).toContain('scaffoldApp')
+      expect(DEFAULT_SYSTEM_PROMPT).toContain('~/.moldable/shared/apps/')
     })
 
-    it('reads lowercase agents.md', async () => {
-      const content = '# lowercase test'
-      await fs.writeFile(path.join(tempDir, 'agents.md'), content)
-
-      const result = await readAgentsFile(tempDir)
-
-      expect(result).toBe(content)
-    })
-
-    it('returns null when file does not exist', async () => {
-      const result = await readAgentsFile(tempDir)
-
-      expect(result).toBeNull()
-    })
-
-    it('reads mixed case Agents.md', async () => {
-      const content = '# Mixed case test'
-      await fs.writeFile(path.join(tempDir, 'Agents.md'), content)
-
-      const result = await readAgentsFile(tempDir)
-
-      expect(result).toBe(content)
+    it('contains workspace-aware data isolation guidance', () => {
+      expect(DEFAULT_SYSTEM_PROMPT).toContain('WorkspaceProvider')
+      expect(DEFAULT_SYSTEM_PROMPT).toContain('workspace-aware')
     })
   })
 
@@ -96,15 +54,6 @@ describe('system-prompt', () => {
       expect(result).toContain('Operating system')
     })
 
-    it('includes development workspace when provided', async () => {
-      const result = await buildSystemPrompt({
-        developmentWorkspace: '/home/user/moldable',
-      })
-
-      expect(result).toContain('/home/user/moldable')
-      expect(result).toContain('Development workspace')
-    })
-
     it('includes tool instructions for available tools', async () => {
       const result = await buildSystemPrompt({
         availableTools: ['readFile', 'writeFile', 'grep'],
@@ -115,29 +64,6 @@ describe('system-prompt', () => {
       expect(result).toContain('### grep')
     })
 
-    it('includes agents file content from development workspace', async () => {
-      const agentsContent = '# My Project Rules\n\nAlways use TypeScript.'
-      await fs.writeFile(path.join(tempDir, 'AGENTS.md'), agentsContent)
-
-      const result = await buildSystemPrompt({ developmentWorkspace: tempDir })
-
-      expect(result).toContain('Workspace Guidelines')
-      expect(result).toContain('My Project Rules')
-      expect(result).toContain('Always use TypeScript')
-    })
-
-    it('skips agents file when includeAgentsFile is false', async () => {
-      const agentsContent = '# Should not appear'
-      await fs.writeFile(path.join(tempDir, 'AGENTS.md'), agentsContent)
-
-      const result = await buildSystemPrompt({
-        developmentWorkspace: tempDir,
-        includeAgentsFile: false,
-      })
-
-      expect(result).not.toContain('Should not appear')
-    })
-
     it('includes additional context when provided', async () => {
       const result = await buildSystemPrompt({
         additionalContext: 'User prefers verbose output.',
@@ -145,6 +71,59 @@ describe('system-prompt', () => {
 
       expect(result).toContain('Additional Context')
       expect(result).toContain('User prefers verbose output')
+    })
+
+    it('includes moldable home path when provided', async () => {
+      const result = await buildSystemPrompt({
+        moldableHome: '/Users/test/.moldable',
+      })
+
+      expect(result).toContain('MOLDABLE_HOME: /Users/test/.moldable')
+      expect(result).toContain(
+        'App source code directory: /Users/test/.moldable/shared/apps/',
+      )
+    })
+
+    it('includes active workspace ID when provided', async () => {
+      const result = await buildSystemPrompt({
+        activeWorkspaceId: 'personal',
+        moldableHome: '/Users/test/.moldable',
+      })
+
+      expect(result).toContain('Active workspace ID: personal')
+      expect(result).toContain(
+        'Workspace config path: /Users/test/.moldable/workspaces/personal/config.json',
+      )
+    })
+
+    it('includes registered apps when provided', async () => {
+      const result = await buildSystemPrompt({
+        registeredApps: [
+          { id: 'notes', name: 'Notes', icon: '📝' },
+          { id: 'todo', name: 'Todo', icon: '✅' },
+        ],
+      })
+
+      expect(result).toContain('Registered Apps')
+      expect(result).toContain('📝 **Notes**')
+      expect(result).toContain('✅ **Todo**')
+    })
+
+    it('includes active app context when provided', async () => {
+      const result = await buildSystemPrompt({
+        activeApp: {
+          id: 'notes',
+          name: 'Notes',
+          icon: '📝',
+          workingDir: '/Users/test/.moldable/shared/apps/notes',
+          dataDir: '/Users/test/.moldable/workspaces/personal/apps/notes/data',
+        },
+      })
+
+      expect(result).toContain('Active App Context')
+      expect(result).toContain('📝 Notes')
+      expect(result).toContain('Working Directory')
+      expect(result).toContain('Data Directory')
     })
   })
 })

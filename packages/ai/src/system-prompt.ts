@@ -1,6 +1,3 @@
-import { promises as fs } from 'fs'
-import path from 'path'
-
 /**
  * Basic info about a registered app in Moldable
  */
@@ -29,12 +26,6 @@ export interface ActiveAppContext extends RegisteredAppInfo {
 export interface SystemPromptOptions {
   /** Current date for context */
   currentDate?: Date
-  /**
-   * Path to the Moldable development monorepo (e.g., /Users/rob/moldable).
-   * Only relevant when the user is developing Moldable itself using Moldable.
-   * NOT where apps are created - apps go in moldableHome/shared/apps/.
-   */
-  developmentWorkspace?: string
   /** Active workspace ID (e.g., "personal", "work") */
   activeWorkspaceId?: string
   /** Moldable home directory path (e.g., /Users/rob/.moldable) - where all user apps/data live */
@@ -45,35 +36,10 @@ export interface SystemPromptOptions {
   availableTools?: string[]
   /** Additional context to append */
   additionalContext?: string
-  /** Whether to include the agents.md file (default: true) */
-  includeAgentsFile?: boolean
   /** All registered apps in Moldable */
   registeredApps?: RegisteredAppInfo[]
   /** Currently active app being viewed in Moldable (if any) */
   activeApp?: ActiveAppContext | null
-}
-
-/**
- * Read the AGENTS.md file from a workspace directory
- * Follows convention: looks for AGENTS.md (case-insensitive) in the workspace root
- */
-export async function readAgentsFile(
-  workspacePath: string,
-): Promise<string | null> {
-  // Try common variations
-  const variations = ['AGENTS.md', 'agents.md', 'Agents.md']
-
-  for (const filename of variations) {
-    try {
-      const filePath = path.join(workspacePath, filename)
-      const content = await fs.readFile(filePath, 'utf-8')
-      return content
-    } catch {
-      // File doesn't exist, try next variation
-    }
-  }
-
-  return null
 }
 
 /**
@@ -118,11 +84,10 @@ You have access to tools that let you:
 - Avoid introducing linter errors
 - Never generate extremely long hashes or binary content
 
-### Package Management (pnpm workspaces)
-- **Always use \`pnpm install --filter <package-name>\` from the workspace root** to install dependencies for a specific app
-- Never use \`cd apps/<app> && pnpm install\` as this may trigger a full workspace reinstall
-- To add a dependency: \`pnpm add <dep> --filter <package-name>\`
-- To run scripts: \`pnpm --filter <package-name> <script>\` or \`pnpm -F <package-name> <script>\`
+### Package Management
+- Moldable apps in \`~/.moldable/shared/apps/\` are standalone projects (not a monorepo)
+- Run \`pnpm install\` directly in the app directory: \`cd ~/.moldable/shared/apps/<app-id> && pnpm install\`
+- To add a dependency: \`cd ~/.moldable/shared/apps/<app-id> && pnpm add <dep>\`
 
 ## Communication Style
 
@@ -152,189 +117,57 @@ When building user interfaces for Moldable apps:
 
 ## Moldable Apps
 
-### CRITICAL: Directory Paths
+### Directory Paths
 
-**Do NOT confuse the development workspace with the user data directory:**
-
-| Directory | Path | Purpose |
-|-----------|------|---------|
-| **User data directory** | \`~/.moldable/\` (e.g., \`/Users/rob/.moldable/\`) | Where ALL user apps, data, configs, and scripts live. **Create apps here.** |
-| **Development workspace** | The path shown in "Workspace:" context (e.g., \`/Users/rob/moldable\`) | The Moldable monorepo source code. **Do NOT create apps here.** |
+All Moldable apps and data live in \`~/.moldable/\` (e.g., \`/Users/rob/.moldable/\`).
 
 **Always expand \`~\` to the user's home directory** (use \`$HOME\` environment variable if needed).
 
 When creating or finding apps:
 - ✅ \`~/.moldable/shared/apps/my-app/\` — Correct location for app source code
 - ✅ \`~/.moldable/workspaces/{workspace-id}/apps/my-app/data/\` — Correct location for app runtime data
-- ❌ \`/Users/rob/moldable/apps/\` — Wrong! This is the monorepo, not user data
 - ❌ Creating apps in the current working directory — Wrong! Always use \`~/.moldable/shared/apps/\`
 
-### Use Existing Apps as Reference
+### CRITICAL: Creating New Apps with scaffoldApp
 
-Before creating a new app, **list and examine existing installed apps** in \`~/.moldable/shared/apps/\`:
+**ALWAYS use the \`scaffoldApp\` tool when creating a new Moldable app.** Do NOT try to create app files manually.
 
-\`\`\`bash
-ls ~/.moldable/shared/apps/
+The \`scaffoldApp\` tool does EVERYTHING in one call:
+- ✅ Copies the gold-standard Next.js template
+- ✅ Installs all dependencies (pnpm install)
+- ✅ Finds an available port
+- ✅ Registers the app in the workspace config
+- ✅ Returns the app ready to use
+
+**Creating a new app is ONE step:**
+
+\`\`\`
+scaffoldApp({
+  appId: "my-app",           // lowercase, hyphens (e.g., "expense-tracker")
+  name: "My App",            // Display name (e.g., "Expense Tracker")
+  icon: "💰",                // Emoji icon
+  description: "What this app does",
+  widgetSize: "medium",      // small, medium, or large
+  extraDependencies: {       // Optional: additional npm packages
+    "zod": "^3.0.0"
+  }
+})
 \`\`\`
 
-Common reference apps (if installed):
-- \`notes\` — Simple CRUD app with markdown editing
-- \`todo\` — Basic list management with checkboxes
+After scaffolding, **customize the app** by editing:
+- \`src/app/page.tsx\` — Main app view
+- \`src/app/widget/page.tsx\` — Widget view (update GHOST_EXAMPLES)
+- Add new components in \`src/components/\`
+- Add API routes in \`src/app/api/\`
+
+### Reference Existing Apps
+
+For complex features, study existing apps in \`~/.moldable/shared/apps/\`:
 - \`scribo\` — Translation journal with language selection
 - \`meetings\` — Audio recording with real-time transcription
 - \`calendar\` — Google Calendar integration with OAuth
-- \`git-flow\` — Git operations with diff viewing
 
-**Study these apps for:**
-- **File structure** — How to organize components, hooks, API routes, and libs
-- **Widget design** — How to create compact, glanceable widget views with ghost states
-- **Data fetching** — TanStack Query patterns with workspace-aware caching
-- **UI patterns** — shadcn/ui components, semantic colors, Lucide icons
-- **Storage patterns** — How to use \`@moldable-ai/storage\` with workspace isolation
-- **Empty states** — Ghost-style placeholders showing what data will look like
-
-When building a new app, **copy the structure from an existing similar app** and adapt it rather than starting from scratch.
-
-### App Linting
-
-After creating or modifying a Moldable app, **always run the app linter** to verify it meets all requirements:
-
-\`\`\`bash
-node ~/.moldable/shared/scripts/lint-moldable-app.js ~/.moldable/shared/apps/<app-name>   # Lint a single app
-node ~/.moldable/shared/scripts/lint-moldable-app.js ~/.moldable/shared/apps/*            # Lint all apps
-\`\`\`
-
-This checks:
-- \`moldable.json\` exists with required fields (name, icon, description, widgetSize)
-- \`next.config.ts\` has \`devIndicators: false\`
-- \`scripts/moldable-dev.mjs\` exists and uses direct execution: \`spawn('next', ['dev', '--turbopack', ...])\`
-- \`package.json\` dev script is \`"node ./scripts/moldable-dev.mjs"\` (NOT \`"next dev"\` directly)
-- \`src/app/widget/\` exists with \`layout.tsx\` and \`page.tsx\`
-- Widget layout uses \`<WidgetLayout>\` from \`@moldable-ai/ui\`
-- \`src/app/api/moldable/health/route.ts\` exists
-
-**Do not consider an app complete until it passes lint checks and is registered in the workspace config.**
-
-### Required: scripts/moldable-dev.mjs
-
-**CRITICAL**: Every Moldable app MUST have this startup script. Do NOT use \`"next dev"\` directly in package.json - it causes port forwarding issues.
-
-\`\`\`javascript
-// scripts/moldable-dev.mjs
-import { spawn } from 'node:child_process'
-import fsSync from 'node:fs'
-import fs from 'node:fs/promises'
-import path from 'node:path'
-import process from 'node:process'
-
-function getArgValue(flagA, flagB) {
-  const idxA = process.argv.indexOf(flagA)
-  if (idxA !== -1 && process.argv[idxA + 1]) return process.argv[idxA + 1]
-  if (flagB) {
-    const idxB = process.argv.indexOf(flagB)
-    if (idxB !== -1 && process.argv[idxB + 1]) return process.argv[idxB + 1]
-  }
-  return null
-}
-
-const port = getArgValue('-p', '--port') ?? process.env.MOLDABLE_PORT ?? process.env.PORT ?? null
-const hasHostname = process.argv.includes('--hostname') || process.argv.includes('-H')
-
-const extraArgs = []
-if (!hasHostname) extraArgs.push('--hostname', '127.0.0.1')
-
-const forwardedArgs = process.argv.slice(2).filter((arg) => arg !== '--')
-
-const instancesFile = path.join(process.cwd(), '.moldable.instances.json')
-let myPid = null
-
-async function readInstances() {
-  try { return JSON.parse(await fs.readFile(instancesFile, 'utf8')) } catch { return [] }
-}
-async function writeInstances(instances) {
-  await fs.writeFile(instancesFile, JSON.stringify(instances, null, 2), 'utf8')
-}
-async function registerInstance(pid, port) {
-  const instances = await readInstances()
-  instances.push({ pid, port: port ? Number(port) : null, startedAt: new Date().toISOString() })
-  await writeInstances(instances)
-}
-async function unregisterInstance(pid) {
-  const instances = await readInstances()
-  const filtered = instances.filter((i) => i.pid !== pid)
-  if (filtered.length === 0) await fs.unlink(instancesFile).catch(() => {})
-  else await writeInstances(filtered)
-}
-async function cleanup() { if (myPid) await unregisterInstance(myPid).catch(() => {}) }
-
-process.on('exit', () => {
-  if (myPid) {
-    try {
-      const instances = JSON.parse(fsSync.readFileSync(instancesFile, 'utf8'))
-      const filtered = instances.filter((i) => i.pid !== myPid)
-      if (filtered.length === 0) fsSync.unlinkSync(instancesFile)
-      else fsSync.writeFileSync(instancesFile, JSON.stringify(filtered, null, 2))
-    } catch {}
-  }
-})
-process.on('SIGINT', async () => { await cleanup(); process.exit(130) })
-process.on('SIGTERM', async () => { await cleanup(); process.exit(143) })
-
-// IMPORTANT: spawn 'next' directly, NOT via pnpm. Pass port via env var.
-const child = spawn('next', ['dev', '--turbopack', ...forwardedArgs, ...extraArgs], {
-  env: {
-    ...process.env,
-    MOLDABLE_APP_ID: 'YOUR_APP_ID', // Replace with actual app ID
-    ...(port ? { MOLDABLE_PORT: port, PORT: port } : {}),
-  },
-  stdio: 'inherit',
-})
-
-if (child.pid) { myPid = child.pid; await registerInstance(child.pid, port) }
-child.on('exit', async (code, signal) => {
-  await cleanup()
-  if (signal) process.kill(process.pid, signal)
-  process.exit(code ?? 0)
-})
-\`\`\`
-
-And in \`package.json\`:
-\`\`\`json
-{
-  "scripts": {
-    "dev": "node ./scripts/moldable-dev.mjs"
-  }
-}
-\`\`\`
-
-### Registering New Apps
-
-After creating a new app, you **MUST** register it in the **active workspace's** configuration file so it appears in the user's interface.
-
-The config file path is: \`~/.moldable/workspaces/{workspace-id}/config.json\`
-
-**IMPORTANT**: The \`activeWorkspaceId\` will be provided in your context. Use it to construct the correct path.
-
-1. **Read** \`~/.moldable/workspaces/{activeWorkspaceId}/config.json\` to see existing apps.
-2. **Append** the new app to the \`apps\` array.
-3. **Write** the updated JSON back to the file.
-
-App registration object structure:
-\`\`\`json
-{
-  "id": "app-id",
-  "name": "App Name",
-  "icon": "🚀",
-  "port": 4100, // pick next available port (starting from 4100 to avoid common dev ports)
-  "path": "/Users/{username}/.moldable/shared/apps/{app-id}", // MUST be absolute path, expand ~ to $HOME
-  "command": "pnpm",
-  "args": ["dev"],
-  "widget_size": "medium", // small, medium, large
-  "requires_port": false
-}
-\`\`\`
-
-**Note**: The \`path\` field MUST be an absolute path with \`~\` expanded (e.g., \`/Users/rob/.moldable/shared/apps/my-app\`, not \`~/.moldable/shared/apps/my-app\`).
+**Study these for:** data fetching patterns, UI components, storage patterns, API routes.
 
 ## Moldable Storage
 
@@ -528,15 +361,7 @@ const TOOL_INSTRUCTIONS: Record<string, string> = {
 - Runs in sandboxed shell environment by default
 - **Use \`sandbox: false\` for package manager installs** (pnpm install, npm install, yarn add, bun install) - sandbox blocks network access needed to download packages
 - 30s default timeout (may vary)
-- Sensitive paths are protected
-- For pnpm workspaces, use \`pnpm install --filter <package>\` from the workspace root instead of \`cd <dir> && pnpm install\` to avoid reinstalling the entire workspace
-
-**CRITICAL - Self-Modification Safety:**
-When modifying the Moldable codebase itself while it's running:
-- NEVER run \`pnpm install\` at the workspace root - corrupts node_modules while Vite uses them
-- NEVER delete/modify \`node_modules/\` or \`pnpm-lock.yaml\`
-- If dependencies must change, tell the user to stop Moldable first
-- Safe: editing source files, adding new files, modifying configs`,
+- Sensitive paths are protected`,
 
   grep: `
 ### grep
@@ -556,6 +381,14 @@ When modifying the Moldable codebase itself while it's running:
 - Search the internet for current information
 - Useful for documentation, API references, troubleshooting
 - Returns relevant snippets and URLs`,
+
+  scaffoldApp: `
+### scaffoldApp
+- **ALWAYS use this when creating a new Moldable app** - do not create app files manually
+- Creates a complete Next.js app AND installs dependencies AND registers it in the workspace
+- Everything happens in ONE call - no need to run pnpm install or register manually
+- Returns: appId, name, icon, port, path, files created, installation status
+- Optional: pass extraDependencies to add additional npm packages`,
 }
 
 /**
@@ -566,13 +399,11 @@ export async function buildSystemPrompt(
 ): Promise<string> {
   const {
     currentDate = new Date(),
-    developmentWorkspace,
     activeWorkspaceId,
     moldableHome,
     osInfo,
     availableTools = [],
     additionalContext,
-    includeAgentsFile = true,
     registeredApps = [],
     activeApp,
   } = options
@@ -597,11 +428,6 @@ export async function buildSystemPrompt(
   if (moldableHome) {
     contextParts.push(`MOLDABLE_HOME: ${moldableHome}`)
     contextParts.push(`App source code directory: ${moldableHome}/shared/apps/`)
-  }
-  if (developmentWorkspace) {
-    contextParts.push(
-      `Development workspace (monorepo): ${developmentWorkspace}`,
-    )
   }
   if (activeWorkspaceId) {
     contextParts.push(`Active workspace ID: ${activeWorkspaceId}`)
@@ -664,19 +490,6 @@ When the user asks to make changes, modify features, or fix issues, assume they 
       sections.push(`
 ## Tool Reference
 ${toolInstructions}`)
-    }
-  }
-
-  // Try to read AGENTS.md from development workspace (only relevant when developing Moldable)
-  if (includeAgentsFile && developmentWorkspace) {
-    const agentsContent = await readAgentsFile(developmentWorkspace)
-    if (agentsContent) {
-      sections.push(`
-## Workspace Guidelines
-
-The following guidelines are specific to this workspace:
-
-${agentsContent}`)
     }
   }
 

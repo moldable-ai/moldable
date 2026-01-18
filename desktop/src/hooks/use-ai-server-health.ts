@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 
-const HEALTH_ENDPOINT = 'http://127.0.0.1:3100/health'
+const HEALTH_ENDPOINT = 'http://127.0.0.1:39100/health'
 const POLL_INTERVAL = 5000 // 5 seconds
 
 export interface AIServerHealth {

@@ -23,7 +23,6 @@ export { createChatStream, type ChatLogger } from './chat'
 // System prompt
 export {
   buildSystemPrompt,
-  readAgentsFile,
   DEFAULT_SYSTEM_PROMPT,
   type SystemPromptOptions,
   type ActiveAppContext,

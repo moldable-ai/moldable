@@ -61,7 +61,7 @@ for (const envPath of envPaths) {
   }
 }
 
-const PORT = process.env.MOLDABLE_AI_PORT || 3100
+const PORT = process.env.MOLDABLE_AI_PORT || 39100
 const HOST = process.env.MOLDABLE_AI_HOST || '127.0.0.1'
 const DEBUG_CHAT_REQUESTS =
   process.env.MOLDABLE_DEBUG_CHAT_REQUESTS === '1' ||
