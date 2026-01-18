@@ -1,6 +1,6 @@
 [package]
 name = "Moldable"
-version = "0.1.9"
+version = "0.1.10"
 description = "Your Personal Software Factory"
 authors = ["you"]
 edition = "2021"
