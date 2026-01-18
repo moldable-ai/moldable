@@ -1,11 +1,6 @@
 import { AlertCircle, Play, RefreshCw } from 'lucide-react'
 import { useState } from 'react'
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-  useTheme,
-} from '@moldable-ai/ui'
+import { useTheme } from '@moldable-ai/ui'
 import { cn } from '@/lib/utils'
 import { type AppState, useAppStatus } from '@/hooks/use-app-status'
 import type { AppConfig } from '../app'
@@ -54,14 +49,44 @@ export function WidgetCard({ app, workspaceId, onClick }: WidgetCardProps) {
   return (
     <div
       className={cn(
-        'border-border bg-card hover:border-primary/50 hover:shadow-primary/5 group relative flex h-full flex-col overflow-hidden rounded-2xl border transition-all hover:shadow-lg',
+        'group relative flex h-full flex-col overflow-hidden rounded-2xl transition-all',
+        // Base background color
+        'bg-card',
+        // Outer shadow for depth - softer shadows
+        'shadow-[0_2px_12px_rgba(0,0,0,0.08)]',
+        'hover:shadow-[0_4px_20px_rgba(0,0,0,0.12)]',
         WIDGET_SIZES[app.widgetSize],
       )}
     >
-      {/* Header bar */}
+      {/* Background Sheen - glossy volume effect */}
+      <div
+        className="pointer-events-none absolute inset-0 z-0"
+        style={{
+          background:
+            'linear-gradient(134deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.02) 50%, transparent 55%)',
+        }}
+      />
+
+      {/* Specular Highlight Border */}
+      <div
+        className="pointer-events-none absolute inset-0 z-50 rounded-2xl"
+        style={{
+          padding: '1px',
+          // Subtle white on top-left AND bottom-right, dimmed white in middle
+          background:
+            'linear-gradient(135deg, rgba(255,255,255,0.25) 0%, rgba(255,255,255,0.1) 20%, rgba(255,255,255,0.05) 45%, rgba(255,255,255,0.05) 55%, rgba(255,255,255,0.1) 80%, rgba(255,255,255,0.25) 100%)',
+          mask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
+          WebkitMask:
+            'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
+          maskComposite: 'exclude',
+          WebkitMaskComposite: 'xor',
+        }}
+      />
+
+      {/* Header bar - floating pill */}
       <button
         onClick={onClick}
-        className="border-border bg-muted/50 hover:bg-muted/70 flex h-8 w-full shrink-0 cursor-pointer items-center justify-between border-b px-3 transition-colors"
+        className="relative z-40 mx-0.5 my-0.5 flex h-7 shrink-0 cursor-pointer items-center justify-between rounded-xl px-3 transition-colors hover:bg-black/5 dark:hover:bg-white/5"
       >
         <div className="flex items-center gap-2">
           {app.iconPath ? (
@@ -82,24 +107,18 @@ export function WidgetCard({ app, workspaceId, onClick }: WidgetCardProps) {
             {app.name}
           </span>
         </div>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <div className="flex items-center">
-              <span
-                className={cn('size-2 rounded-full', STATUS_BG_COLORS[state])}
-              />
-            </div>
-          </TooltipTrigger>
-          <TooltipContent side="bottom" sideOffset={4}>
-            {STATUS_LABELS[state]}
-          </TooltipContent>
-        </Tooltip>
+        <div className="flex items-center">
+          <span
+            className={cn('size-2 rounded-full', STATUS_BG_COLORS[state])}
+            title={STATUS_LABELS[state]}
+          />
+        </div>
       </button>
 
       {/* Widget content - always navigate to app view */}
       <button
         onClick={onClick}
-        className="bg-background relative flex-1 cursor-pointer overflow-hidden"
+        className="bg-background relative z-10 mx-1 mb-1 flex-1 cursor-pointer overflow-hidden rounded-xl"
       >
         {/* Stopped/Starting state */}
         {!isRunning && !isError && (

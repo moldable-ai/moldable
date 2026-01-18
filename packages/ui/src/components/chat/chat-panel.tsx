@@ -306,12 +306,40 @@ export function ChatPanel({
       >
         <div
           className={cn(
-            'bg-background pointer-events-auto relative w-full border shadow-lg',
-            'supports-[backdrop-filter]:bg-background/95 backdrop-blur',
-            'rounded-4xl',
+            'bg-background/80 pointer-events-auto relative w-full shadow-[0_8px_40px_-12px_rgba(0,0,0,0.15)]',
+            isExpanded
+              ? 'bg-background'
+              : 'bg-background/80 supports-[backdrop-filter]:backdrop-blur-xl',
+            'rounded-[28px]',
             isExpanded ? 'overflow-hidden' : 'overflow-visible',
           )}
         >
+          {/* Background Sheen - only when collapsed/minimized for glossy effect */}
+          {!isExpanded && (
+            <div
+              className="pointer-events-none absolute inset-0 z-0 rounded-[inherit]"
+              style={{
+                background:
+                  'linear-gradient(134deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.02) 50%, transparent 55%)',
+              }}
+            />
+          )}
+
+          {/* Specular Highlight Border */}
+          <div
+            className="pointer-events-none absolute inset-0 z-50 rounded-[inherit]"
+            style={{
+              padding: '1px',
+              background:
+                'linear-gradient(135deg, rgba(255,255,255,0.25) 0%, rgba(255,255,255,0.1) 20%, rgba(255,255,255,0.05) 45%, rgba(255,255,255,0.05) 55%, rgba(255,255,255,0.1) 80%, rgba(255,255,255,0.25) 100%)',
+              mask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
+              WebkitMask:
+                'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
+              maskComposite: 'exclude',
+              WebkitMaskComposite: 'xor',
+            }}
+          />
+
           {/* Radiating Glow when collapsed */}
           {!isExpanded && (
             <motion.div
