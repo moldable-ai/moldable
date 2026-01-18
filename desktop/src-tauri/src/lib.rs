@@ -33,6 +33,7 @@ pub mod env;
 
 // Port management
 pub mod ports;
+use ports::{cleanup_stale_moldable_instances, create_instance_lock, delete_lock_file};
 
 // Conversations
 pub mod conversations;
@@ -285,13 +286,23 @@ pub fn run() {
             logs::get_system_log_path,
             logs::clear_system_logs,
             // Runtime status (for diagnostics)
-            check_dependencies
+            check_dependencies,
+            // Server ports (for frontend to connect)
+            ports::get_ai_server_port,
+            ports::get_api_server_port
         ])
         .setup(move |app| {
             #[cfg(debug_assertions)]
             {
                 let window = app.get_webview_window("main").unwrap();
                 window.open_devtools();
+            }
+            
+            // CRITICAL: Clean up any stale instances from previous runs FIRST
+            // This must happen before we try to start our servers
+            let killed = cleanup_stale_moldable_instances();
+            if killed > 0 {
+                info!("Cleaned up {} stale process(es) from previous run", killed);
             }
 
             // Create custom menu to override Cmd+M (which normally minimizes on macOS)
@@ -380,18 +391,54 @@ pub fn run() {
             // Install Hello Moldables tutorial app on first launch
             ensure_hello_moldables_app(app.handle());
 
+            // Start AI server sidecar first (it uses the API server, so needs to start first)
+            let ai_server_port = match start_ai_server(app.handle(), ai_server_for_setup) {
+                Ok(port) => {
+                    info!("AI server started on port {}", port);
+                    // Store the actual port for frontend to read
+                    ports::set_ai_server_actual_port(port);
+                    port
+                }
+                Err(e) => {
+                    error!("Failed to start AI server: {}", e);
+                    // Use default port for lock file even if we failed
+                    ai_server::AI_SERVER_PORT
+                }
+            };
+
             // Start API server for AI tools
             let api_handle = app.handle().clone();
+            let api_server_port_holder = std::sync::Arc::new(std::sync::atomic::AtomicU16::new(
+                api_server::API_SERVER_PORT,
+            ));
+            let api_port_for_lock = api_server_port_holder.clone();
+            
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = api_server::start_api_server(api_handle).await {
-                    error!("Failed to start API server: {}", e);
+                match api_server::start_api_server(api_handle).await {
+                    Ok(port) => {
+                        info!("API server started on port {}", port);
+                        api_port_for_lock.store(port, std::sync::atomic::Ordering::SeqCst);
+                        // Store in static for frontend access
+                        ports::set_api_server_actual_port(port);
+                    }
+                    Err(e) => {
+                        error!("Failed to start API server: {}", e);
+                    }
                 }
             });
-
-            // Start AI server sidecar
-            if let Err(e) = start_ai_server(app.handle(), ai_server_for_setup) {
-                error!("Failed to start AI server: {}", e);
-            }
+            
+            // Create the lock file to track our instance
+            // Give the API server a moment to start, then create lock file
+            let ai_port_for_lock = ai_server_port;
+            std::thread::spawn(move || {
+                // Wait a bit for API server to start and update port
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                let api_port = api_server_port_holder.load(std::sync::atomic::Ordering::SeqCst);
+                
+                if let Err(e) = create_instance_lock(ai_port_for_lock, api_port) {
+                    warn!("Failed to create instance lock file: {}", e);
+                }
+            });
 
             // Start watching config file for changes
             start_config_watcher(app.handle().clone());
@@ -414,6 +461,10 @@ pub fn run() {
 
                 // Cleanup audio capture
                 audio::cleanup_audio_capture(&audio_capture_for_exit);
+                
+                // Delete the lock file so next instance knows we're gone
+                delete_lock_file();
+                info!("Lock file deleted");
             }
         })
         .run(tauri::generate_context!())

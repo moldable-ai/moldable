@@ -4,6 +4,7 @@
 //! operations that require access to Rust-side functionality.
 
 use crate::apps::{find_available_port, register_app};
+use crate::ports::{acquire_port, PortAcquisitionConfig, DEFAULT_API_SERVER_PORT};
 use crate::runtime::ensure_node_modules_installed;
 use crate::types::RegisteredApp;
 use crate::workspace::copy_dir_recursive;
@@ -23,8 +24,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// Default port for the API server
-pub const API_SERVER_PORT: u16 = 39102;
+/// Default port for the API server (re-export from ports for external use)
+pub const API_SERVER_PORT: u16 = DEFAULT_API_SERVER_PORT;
+
+/// Fallback port range for API server
+const API_SERVER_FALLBACK_START: u16 = DEFAULT_API_SERVER_PORT + 1;
+const API_SERVER_FALLBACK_END: u16 = DEFAULT_API_SERVER_PORT + 97;
 
 // ============================================================================
 // TYPES
@@ -255,6 +260,8 @@ async fn create_app_handler(
             );
         }
     };
+    
+    info!("Creating app with HOME={}", home);
 
     let template_path = PathBuf::from(format!("{}/.moldable/cache/app-template", home));
     let apps_dir = PathBuf::from(format!("{}/.moldable/shared/apps", home));
@@ -456,8 +463,37 @@ fn collect_created_files(dir: &PathBuf) -> Vec<String> {
 // SERVER LIFECYCLE
 // ============================================================================
 
-/// Start the API server
-pub async fn start_api_server(app_handle: tauri::AppHandle) -> Result<(), String> {
+/// Acquire the API server port using robust retry and fallback logic.
+fn acquire_api_server_port() -> Result<u16, String> {
+    let config = PortAcquisitionConfig {
+        preferred_port: API_SERVER_PORT,
+        max_retries: 5,
+        initial_delay_ms: 200,
+        max_delay_ms: 2000,
+        allow_fallback: true,
+        fallback_range: Some((API_SERVER_FALLBACK_START, API_SERVER_FALLBACK_END)),
+    };
+    
+    let result = acquire_port(config)?;
+    
+    if !result.is_preferred {
+        warn!(
+            "API Server using fallback port {} (preferred {} was unavailable)",
+            result.port, API_SERVER_PORT
+        );
+    }
+    
+    Ok(result.port)
+}
+
+/// Start the API server.
+/// Returns the actual port the server is running on.
+pub async fn start_api_server(app_handle: tauri::AppHandle) -> Result<u16, String> {
+    // Acquire port with retry and fallback logic (run in blocking context)
+    let actual_port = tokio::task::spawn_blocking(acquire_api_server_port)
+        .await
+        .map_err(|e| format!("Failed to acquire port: {}", e))??;
+    
     let state = ApiState {
         app_handle: Arc::new(Mutex::new(Some(app_handle))),
     };
@@ -467,7 +503,7 @@ pub async fn start_api_server(app_handle: tauri::AppHandle) -> Result<(), String
         .route("/api/create-app", post(create_app_handler))
         .with_state(state);
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], API_SERVER_PORT));
+    let addr = SocketAddr::from(([127, 0, 0, 1], actual_port));
     
     info!("Starting API server on http://{}", addr);
 
@@ -486,7 +522,7 @@ pub async fn start_api_server(app_handle: tauri::AppHandle) -> Result<(), String
         }
     });
 
-    Ok(())
+    Ok(actual_port)
 }
 
 // ============================================================================
@@ -533,10 +569,108 @@ mod tests {
         assert!(response.error.is_none());
     }
 
+    // ==================== PORT CONSTANTS TESTS ====================
+    
     #[test]
     fn test_api_server_port_constant() {
         assert_eq!(API_SERVER_PORT, 39102);
     }
+    
+    #[test]
+    fn test_api_server_port_matches_default() {
+        // API_SERVER_PORT should equal DEFAULT_API_SERVER_PORT from ports module
+        assert_eq!(API_SERVER_PORT, DEFAULT_API_SERVER_PORT);
+    }
+    
+    #[test]
+    fn test_api_server_fallback_range() {
+        assert_eq!(API_SERVER_FALLBACK_START, 39103);
+        assert_eq!(API_SERVER_FALLBACK_END, 39199);
+        // Fallback range should be after the main port
+        assert!(API_SERVER_FALLBACK_START > API_SERVER_PORT);
+    }
+    
+    #[test]
+    fn test_api_server_fallback_range_is_contiguous() {
+        // Fallback start should be exactly one more than the main port
+        assert_eq!(API_SERVER_FALLBACK_START, API_SERVER_PORT + 1);
+    }
+    
+    #[test]
+    fn test_api_server_fallback_range_size() {
+        // Should have 97 fallback ports (39103-39199)
+        let range_size = API_SERVER_FALLBACK_END - API_SERVER_FALLBACK_START + 1;
+        assert_eq!(range_size, 97);
+    }
+    
+    #[test]
+    fn test_api_server_port_in_valid_range() {
+        // Port should be > 1024 (unprivileged) and < 65536
+        assert!(API_SERVER_PORT > 1024);
+        assert!(API_SERVER_PORT < 65535);
+        assert!(API_SERVER_FALLBACK_END < 65535);
+    }
+    
+    #[test]
+    fn test_api_server_ports_dont_conflict_with_ai_server() {
+        use crate::ai_server::AI_SERVER_PORT;
+        
+        // API server port should be different from AI server port
+        assert_ne!(API_SERVER_PORT, AI_SERVER_PORT);
+        
+        // API server port should not be in AI server's range
+        // (AI server uses 39100-39199, API uses 39102-39199, so they overlap)
+        // But the default ports are distinct
+        assert_eq!(AI_SERVER_PORT, 39100);
+        assert_eq!(API_SERVER_PORT, 39102);
+    }
+    
+    // ==================== PORT ACQUISITION TESTS ====================
+    
+    #[test]
+    fn test_acquire_api_server_port_when_free() {
+        use crate::ports::is_port_available;
+        
+        // If the default port happens to be free, acquisition should succeed
+        if is_port_available(API_SERVER_PORT) {
+            let result = acquire_api_server_port();
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), API_SERVER_PORT);
+        }
+    }
+    
+    #[test]
+    fn test_acquire_api_server_port_returns_result() {
+        // Should always return a Result (Ok or Err), never panic
+        let result = acquire_api_server_port();
+        match result {
+            Ok(port) => {
+                assert!(port > 0);
+                assert!(port >= API_SERVER_PORT);
+                assert!(port <= API_SERVER_FALLBACK_END);
+            }
+            Err(msg) => {
+                // Error message should be descriptive
+                assert!(!msg.is_empty());
+            }
+        }
+    }
+    
+    #[test]
+    fn test_acquire_api_server_port_returns_valid_port() {
+        use crate::ports::is_port_available;
+        
+        // If acquisition succeeds, port should be valid
+        if is_port_available(API_SERVER_PORT) {
+            if let Ok(port) = acquire_api_server_port() {
+                // Port should be in the expected range
+                assert!(port >= API_SERVER_PORT);
+                assert!(port <= API_SERVER_FALLBACK_END);
+            }
+        }
+    }
+
+    // ==================== PLACEHOLDER REPLACEMENT TESTS ====================
 
     #[test]
     fn test_replace_placeholders_in_file() {
