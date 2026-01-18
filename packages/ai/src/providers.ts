@@ -36,8 +36,10 @@ const MODEL_CONFIG: Record<LLMProvider, ModelConfig> = {
 /**
  * Map Anthropic reasoning effort to budget tokens
  * Based on Anthropic's extended thinking documentation
+ * 'none' maps to 0 but is handled specially (no thinking config sent)
  */
 const ANTHROPIC_BUDGET_TOKENS: Record<AnthropicReasoningEffort, number> = {
+  none: 0,
   low: 5000,
   medium: 10000,
   high: 20000,
@@ -95,13 +97,17 @@ function buildOpenRouterConfig(
   apiKey: string,
   modelId: string,
   config: ModelConfig,
+  reasoningEffort: ReasoningEffort = 'medium',
 ): ProviderConfig {
   const client = getOpenRouterClient(apiKey)
+  // Use reasoning if model supports it AND user hasn't disabled it
+  const reasoningDisabled = reasoningEffort === 'none'
+  const useReasoning = config.isReasoning && !reasoningDisabled
   return {
     model: client(modelId),
     temperature: config.temperature,
-    isReasoning: config.isReasoning,
-    providerOptions: config.isReasoning
+    isReasoning: useReasoning,
+    providerOptions: useReasoning
       ? { reasoning: { enabled: true } }
       : undefined,
   }
@@ -130,18 +136,24 @@ export function getProviderConfig(
     if (apiKeys.anthropicApiKey) {
       const client = getAnthropicClient(apiKeys.anthropicApiKey)
       const modelId = provider.replace('anthropic/', '')
+
+      // Check if reasoning is disabled
+      const reasoningDisabled = reasoningEffort === 'none'
       const anthropicEffort = (
         ['low', 'medium', 'high', 'xhigh'].includes(reasoningEffort)
           ? reasoningEffort
           : 'medium'
       ) as AnthropicReasoningEffort
 
+      // Use reasoning if model supports it AND user hasn't disabled it
+      const useReasoning = config.isReasoning && !reasoningDisabled
+
       return {
         model: client(modelId),
         // Anthropic doesn't allow temperature when thinking is enabled
-        temperature: config.isReasoning ? undefined : config.temperature,
-        isReasoning: config.isReasoning,
-        providerOptions: config.isReasoning
+        temperature: useReasoning ? undefined : config.temperature,
+        isReasoning: useReasoning,
+        providerOptions: useReasoning
           ? {
               anthropic: {
                 thinking: {
@@ -157,7 +169,12 @@ export function getProviderConfig(
     if (apiKeys.openrouterApiKey) {
       // Map internal ID to OpenRouter format: 'anthropic/claude-opus-4-5' -> 'anthropic/claude-opus-4.5'
       const modelId = provider.replace(/-(\d+)-(\d+)$/, '-$1.$2')
-      return buildOpenRouterConfig(apiKeys.openrouterApiKey, modelId, config)
+      return buildOpenRouterConfig(
+        apiKeys.openrouterApiKey,
+        modelId,
+        config,
+        reasoningEffort,
+      )
     }
 
     throw new Error('Anthropic API key or OpenRouter API key is required')
@@ -170,7 +187,12 @@ export function getProviderConfig(
     }
     // Strip 'openrouter/' prefix: 'openrouter/minimax/minimax-m2.1' -> 'minimax/minimax-m2.1'
     const modelId = provider.replace('openrouter/', '')
-    return buildOpenRouterConfig(apiKeys.openrouterApiKey, modelId, config)
+    return buildOpenRouterConfig(
+      apiKeys.openrouterApiKey,
+      modelId,
+      config,
+      reasoningEffort,
+    )
   }
 
   // OpenAI models: prefer direct API, fall back to OpenRouter
@@ -178,14 +200,18 @@ export function getProviderConfig(
     const client = getOpenAIClient(apiKeys.openaiApiKey)
     const modelId = provider.replace('openai/', '')
 
+    // Check if reasoning is disabled (user hasn't verified org, etc.)
+    const reasoningDisabled = reasoningEffort === 'none'
+    const useReasoning = config.isReasoning && !reasoningDisabled
+
     return {
       model: client.responses(modelId),
       temperature: config.temperature,
-      isReasoning: config.isReasoning,
+      isReasoning: useReasoning,
       providerOptions: {
         openai: {
           store: false,
-          ...(config.isReasoning
+          ...(useReasoning
             ? {
                 reasoningSummary: 'auto',
                 reasoningEffort: reasoningEffort as OpenAIReasoningEffort,
@@ -198,7 +224,12 @@ export function getProviderConfig(
 
   if (apiKeys.openrouterApiKey) {
     // OpenRouter uses full model ID for OpenAI models: 'openai/gpt-5.2'
-    return buildOpenRouterConfig(apiKeys.openrouterApiKey, provider, config)
+    return buildOpenRouterConfig(
+      apiKeys.openrouterApiKey,
+      provider,
+      config,
+      reasoningEffort,
+    )
   }
 
   throw new Error('OpenAI API key or OpenRouter API key is required')

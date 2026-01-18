@@ -12,6 +12,7 @@ All notable changes to Moldable Desktop will be documented in this file.
 
 ### Improved
 
+- Option to disable reasoning in chat
 - Simplified app creation flow
 - Refined onboarding experience
 - Settings UI and tool approval dialogs

@@ -71,13 +71,20 @@ export const DEFAULT_MODEL = LLMProvider.Anthropic_Claude_Opus_4_5
 /**
  * Reasoning effort levels for Claude (Anthropic)
  * Maps to budget tokens for extended thinking
+ * 'none' disables extended thinking entirely
  */
-export type AnthropicReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh'
+export type AnthropicReasoningEffort =
+  | 'none'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
 
 /**
  * Reasoning effort levels for OpenAI (GPT-5.2, o-series)
+ * 'none' disables reasoning summaries (useful if org isn't verified)
  */
-export type OpenAIReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh'
+export type OpenAIReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh'
 
 /**
  * Union type for all reasoning effort levels
@@ -92,18 +99,21 @@ export const REASONING_EFFORT_OPTIONS: Record<
   { value: ReasoningEffort; label: string }[]
 > = {
   anthropic: [
+    { value: 'none', label: 'None' },
     { value: 'low', label: 'Low' },
     { value: 'medium', label: 'Medium' },
     { value: 'high', label: 'High' },
     { value: 'xhigh', label: 'Extra high' },
   ],
   openai: [
+    { value: 'none', label: 'None' },
     { value: 'low', label: 'Low' },
     { value: 'medium', label: 'Medium' },
     { value: 'high', label: 'High' },
     { value: 'xhigh', label: 'Extra high' },
   ],
   openrouter: [
+    { value: 'none', label: 'None' },
     { value: 'low', label: 'Low' },
     { value: 'medium', label: 'Medium' },
     { value: 'high', label: 'High' },
