@@ -138,6 +138,74 @@ jobs:
       - name: Download Node.js runtime for bundling
         run: node scripts/download-node-runtime.js --target ${{ matrix.target }}
 
+      - name: Sign native modules in Node runtime (macOS)
+        if: matrix.platform == 'macos-latest'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          NODE_RUNTIME_DIR="desktop/src-tauri/resources/node"
+
+          # Determine which architecture to keep
+          if [ "${{ matrix.target }}" = "aarch64-apple-darwin" ]; then
+            KEEP_ARCH="arm64"
+            REMOVE_ARCH="x64"
+          else
+            KEEP_ARCH="x64"
+            REMOVE_ARCH="arm64"
+          fi
+
+          # Remove native modules for the other architecture to reduce bundle size
+          echo "Removing $REMOVE_ARCH native modules..."
+          find "$NODE_RUNTIME_DIR" -name "*darwin-$REMOVE_ARCH*.node" -delete 2>/dev/null || true
+          find "$NODE_RUNTIME_DIR" -name "*darwin-$REMOVE_ARCH*.dylib" -delete 2>/dev/null || true
+
+          # Find all remaining native modules that need signing
+          NATIVE_FILES=$(find "$NODE_RUNTIME_DIR" -type f \( -name "*.node" -o -name "*.dylib" \) 2>/dev/null || true)
+
+          if [ -z "$NATIVE_FILES" ]; then
+            echo "No native modules found to sign"
+            exit 0
+          fi
+
+          echo "Found native modules to sign:"
+          echo "$NATIVE_FILES"
+
+          # Create a temporary keychain for signing
+          KEYCHAIN_NAME="moldable-node-signing-$RANDOM"
+          KEYCHAIN_PATH="$HOME/Library/Keychains/$KEYCHAIN_NAME.keychain-db"
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+
+          # Decode certificate
+          CERT_PATH=$(mktemp)
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+
+          # Create and configure keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -t 3600 -u "$KEYCHAIN_PATH"
+
+          # Import certificate
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Add keychain to search list
+          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychain -d user | tr -d '"')
+
+          # Sign each native module
+          echo "Signing native modules with identity: $APPLE_SIGNING_IDENTITY"
+          for file in $NATIVE_FILES; do
+            echo "  Signing: $file"
+            codesign --force --sign "$APPLE_SIGNING_IDENTITY" --options runtime --timestamp --keychain "$KEYCHAIN_PATH" "$file"
+          done
+
+          # Clean up
+          rm -f "$CERT_PATH"
+          security delete-keychain "$KEYCHAIN_PATH"
+
+          echo "Native module signing complete"
+
       - name: Build audio capture sidecar (macOS)
         if: matrix.platform == 'macos-latest'
         run: |
