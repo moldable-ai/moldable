@@ -549,8 +549,11 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
         >
           <FileText className="size-3.5 shrink-0" />
           <span className="shrink-0 font-medium">Checked</span>
-          <code className="bg-background/50 min-w-0 truncate rounded px-1 font-mono">
-            {result.path || 'file'}
+          <code
+            className="bg-background/50 min-w-0 truncate rounded px-1 font-mono"
+            title={result.path}
+          >
+            {getFileName(result.path || 'file')}
           </code>
           <span className="shrink-0">
             {result.exists ? 'exists' : 'not found'}

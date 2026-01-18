@@ -128,3 +128,111 @@ export function sendToMoldable(message: {
   }
   window.parent.postMessage(message, '*')
 }
+
+/**
+ * Options for downloading a file
+ */
+export interface DownloadFileOptions {
+  /** Suggested filename for the save dialog */
+  filename: string
+  /** File content - either a string or base64-encoded data */
+  data: string
+  /** MIME type of the file (e.g., 'text/csv', 'application/json') */
+  mimeType: string
+  /** If true, data is base64-encoded binary; if false, data is plain text */
+  isBase64?: boolean
+}
+
+/**
+ * Trigger a file download via Moldable's native save dialog.
+ * Works inside Moldable's iframe environment where browser downloads don't work.
+ *
+ * @example
+ * ```tsx
+ * // Export CSV
+ * downloadFile({
+ *   filename: 'data.csv',
+ *   data: 'name,value\nfoo,1\nbar,2',
+ *   mimeType: 'text/csv',
+ * })
+ *
+ * // Export JSON
+ * downloadFile({
+ *   filename: 'data.json',
+ *   data: JSON.stringify({ items: [...] }, null, 2),
+ *   mimeType: 'application/json',
+ * })
+ * ```
+ *
+ * @returns Promise that resolves when the save dialog completes (or rejects on error)
+ */
+export function downloadFile(options: DownloadFileOptions): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (!isInMoldable()) {
+      // Fallback for browser: use traditional blob download
+      try {
+        const blob = options.isBase64
+          ? new Blob(
+              [Uint8Array.from(atob(options.data), (c) => c.charCodeAt(0))],
+              {
+                type: options.mimeType,
+              },
+            )
+          : new Blob([options.data], { type: options.mimeType })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = options.filename
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+        resolve()
+      } catch (err) {
+        reject(err)
+      }
+      return
+    }
+
+    // Generate a unique ID for this download request
+    const requestId = `download-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+    // Listen for the response
+    const handleResponse = (event: MessageEvent) => {
+      if (event.data?.type !== 'moldable:save-file-result') return
+      if (event.data?.requestId !== requestId) return
+
+      window.removeEventListener('message', handleResponse)
+
+      if (event.data.success) {
+        resolve()
+      } else if (event.data.cancelled) {
+        // User cancelled - not an error, just resolve
+        resolve()
+      } else {
+        reject(new Error(event.data.error || 'Download failed'))
+      }
+    }
+
+    window.addEventListener('message', handleResponse)
+
+    // Send the download request to Moldable
+    sendToMoldable({
+      type: 'moldable:save-file',
+      requestId,
+      filename: options.filename,
+      data: options.data,
+      mimeType: options.mimeType,
+      isBase64: options.isBase64 ?? false,
+    })
+
+    // Timeout after 5 minutes (user might take time in save dialog)
+    setTimeout(
+      () => {
+        window.removeEventListener('message', handleResponse)
+        reject(new Error('Download timed out'))
+      },
+      5 * 60 * 1000,
+    )
+  })
+}

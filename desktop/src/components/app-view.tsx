@@ -14,7 +14,41 @@ import type { AppConfig } from '../app'
 import { AppEnvDialog } from './app-env-dialog'
 import { AppLogs } from './app-logs'
 import { PortConflictDialog } from './port-conflict-dialog'
+import { downloadDir } from '@tauri-apps/api/path'
+import { save } from '@tauri-apps/plugin-dialog'
+import { writeFile, writeTextFile } from '@tauri-apps/plugin-fs'
 import { open } from '@tauri-apps/plugin-shell'
+
+/**
+ * Get a human-readable filter name for the save dialog based on MIME type or extension
+ */
+function getFilterName(mimeType: string, ext: string): string {
+  const mimeMap: Record<string, string> = {
+    'text/csv': 'CSV Files',
+    'application/json': 'JSON Files',
+    'text/plain': 'Text Files',
+    'text/html': 'HTML Files',
+    'text/markdown': 'Markdown Files',
+    'application/pdf': 'PDF Files',
+    'image/png': 'PNG Images',
+    'image/jpeg': 'JPEG Images',
+    'image/gif': 'GIF Images',
+    'image/svg+xml': 'SVG Images',
+    'application/xml': 'XML Files',
+    'application/zip': 'ZIP Archives',
+  }
+
+  if (mimeMap[mimeType]) {
+    return mimeMap[mimeType]
+  }
+
+  // Fallback to extension-based name
+  if (ext) {
+    return `${ext.toUpperCase()} Files`
+  }
+
+  return 'All Files'
+}
 
 interface AppViewProps {
   app: AppConfig
@@ -93,7 +127,7 @@ export function AppView({
     setIsLoading(true)
   }, [app.id])
 
-  // Listen for messages from app iframes (e.g., to open external URLs)
+  // Listen for messages from app iframes (e.g., to open external URLs, save files)
   useEffect(() => {
     const handleMessage = async (event: MessageEvent) => {
       // Only handle messages from our app's origin
@@ -108,6 +142,93 @@ export function AppView({
           await open(event.data.url)
         } catch (err) {
           console.error('Failed to open URL:', err)
+        }
+      }
+
+      // Handle file download requests
+      if (event.data?.type === 'moldable:save-file') {
+        const { requestId, filename, data, mimeType, isBase64 } =
+          event.data as {
+            requestId: string
+            filename: string
+            data: string
+            mimeType: string
+            isBase64: boolean
+          }
+
+        // Get the iframe to post the response back
+        const iframe = document.querySelector(
+          'iframe[title]',
+        ) as HTMLIFrameElement | null
+
+        const sendResponse = (response: {
+          success?: boolean
+          cancelled?: boolean
+          error?: string
+        }) => {
+          iframe?.contentWindow?.postMessage(
+            {
+              type: 'moldable:save-file-result',
+              requestId,
+              ...response,
+            },
+            '*',
+          )
+        }
+
+        try {
+          // Get file extension from filename or mimeType
+          const ext = filename.split('.').pop() || ''
+          const filterName = getFilterName(mimeType, ext)
+
+          // Get default download directory
+          let defaultPath: string
+          try {
+            const downloads = await downloadDir()
+            defaultPath = `${downloads}/${filename}`
+          } catch (pathErr) {
+            console.error('Failed to get download directory:', pathErr)
+            // Fallback to just the filename
+            defaultPath = filename
+          }
+
+          // Show native save dialog
+          const filePath = await save({
+            title: 'Save File',
+            defaultPath,
+            filters: ext
+              ? [{ name: filterName, extensions: [ext] }]
+              : undefined,
+          })
+
+          if (!filePath) {
+            // User cancelled
+            sendResponse({ cancelled: true })
+            return
+          }
+
+          console.log('Saving file to:', filePath)
+
+          // Write the file
+          if (isBase64) {
+            // Decode base64 and write as binary
+            const binaryString = atob(data)
+            const bytes = new Uint8Array(binaryString.length)
+            for (let i = 0; i < binaryString.length; i++) {
+              bytes[i] = binaryString.charCodeAt(i)
+            }
+            await writeFile(filePath, bytes)
+          } else {
+            // Write as text
+            await writeTextFile(filePath, data)
+          }
+
+          sendResponse({ success: true })
+        } catch (err) {
+          console.error('Failed to save file:', err)
+          sendResponse({
+            error: err instanceof Error ? err.message : 'Failed to save file',
+          })
         }
       }
     }

@@ -1,5 +1,11 @@
 # @moldable-ai/ui
 
+## 0.2.3
+
+### Patch Changes
+
+- Add `downloadFile()` function for native file downloads in Moldable apps
+
 ## 0.2.2
 
 ### Patch Changes

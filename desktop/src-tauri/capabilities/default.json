@@ -6,11 +6,13 @@
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
+    "core:path:default",
     "shell:allow-open",
     "shell:allow-execute",
     "shell:allow-spawn",
     "shell:allow-kill",
     "dialog:allow-open",
+    "dialog:allow-save",
     {
       "identifier": "fs:allow-read-file",
       "allow": [
@@ -19,6 +21,8 @@
       ]
     },
     "fs:default",
+    "fs:allow-write-file",
+    "fs:allow-write-text-file",
     "updater:default",
     "process:default"
   ]

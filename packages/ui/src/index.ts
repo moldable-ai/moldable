@@ -17,10 +17,12 @@ export {
   useMoldableCommand,
   isInMoldable,
   sendToMoldable,
+  downloadFile,
   type AppCommand,
   type CommandAction,
   type CommandsResponse,
   type CommandMessage,
+  type DownloadFileOptions,
 } from './lib/commands'
 
 // Export UI components
