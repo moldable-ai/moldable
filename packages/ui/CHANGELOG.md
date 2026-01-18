@@ -1,5 +1,11 @@
 # @moldable-ai/ui
 
+## 0.2.5
+
+### Patch Changes
+
+- [`1c74c3b`](https://github.com/moldable-ai/moldable/commit/1c74c3b1bb973ed9f294149fff6f3aae278dcfee) Thanks [@iwasrobbed](https://github.com/iwasrobbed)! - Improved support for Moldable desktop
+
 ## 0.2.4
 
 ### Patch Changes
