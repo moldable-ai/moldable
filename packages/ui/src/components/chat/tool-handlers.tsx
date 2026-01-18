@@ -1,15 +1,18 @@
 'use client'
 
 import {
+  AlertTriangle,
   BookOpen,
   Check,
   CheckCheck,
   Copy,
+  Database,
   Download,
   FileCode,
   FileText,
   FolderOpen,
   Globe,
+  Info,
   Package,
   Plus,
   Search,
@@ -27,6 +30,7 @@ import {
   ToolApprovalActions,
   ToolApprovalDangerousHelp,
   ToolApprovalHeader,
+  ToolApprovalHelp,
   ToolApprovalRequest,
   ToolApprovalSandboxHelp,
 } from './tool-approval'
@@ -1667,6 +1671,448 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
             )}
           </div>
         </div>
+      )
+    },
+  },
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // App Management
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  getAppInfo: {
+    loadingLabel: 'Getting app info...',
+    marker: ThinkingTimelineMarker.Default,
+    inline: true,
+    renderLoading: (args?: unknown) => {
+      const { appId } = (args ?? {}) as { appId?: string }
+      return (
+        <div className="bg-muted text-muted-foreground inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs">
+          <Info className="size-3.5 shrink-0 animate-pulse" />
+          <span className="truncate">Getting info for {appId || 'app'}...</span>
+        </div>
+      )
+    },
+    renderOutput: (output, toolCallId) => {
+      const result = (output ?? {}) as {
+        success?: boolean
+        appId?: string
+        appName?: string
+        appPath?: string
+        installedInWorkspaces?: string[]
+        hasWorkspaceData?: boolean
+        error?: string
+      }
+
+      if (output === undefined || output === null) {
+        return (
+          <div
+            key={toolCallId}
+            className="bg-muted text-muted-foreground my-1 inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs"
+          >
+            <Info className="size-3.5 shrink-0 animate-pulse" />
+            <span className="truncate">Getting app info...</span>
+          </div>
+        )
+      }
+
+      if (result.success === false) {
+        return (
+          <div
+            key={toolCallId}
+            className="bg-destructive/10 text-destructive my-1 inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs"
+          >
+            <Info className="size-3.5 shrink-0" />
+            <span className="truncate">
+              {result.error || 'Failed to get app info'}
+            </span>
+          </div>
+        )
+      }
+
+      const workspaceCount = result.installedInWorkspaces?.length || 0
+
+      return (
+        <div
+          key={toolCallId}
+          className="bg-muted text-muted-foreground my-1 min-w-0 rounded-md"
+        >
+          <div className="flex items-center gap-2 px-2 py-1.5 text-xs">
+            <Info className="size-3.5 shrink-0" />
+            <span className="font-medium">
+              {result.appName || result.appId}
+            </span>
+            <Check className="size-3 shrink-0 text-green-600" />
+          </div>
+          <div className="border-border/50 flex flex-wrap gap-x-3 gap-y-0.5 border-t px-2 py-1 text-[10px]">
+            <span>
+              Installed in {workspaceCount} workspace
+              {workspaceCount !== 1 ? 's' : ''}
+            </span>
+            {result.hasWorkspaceData && (
+              <span className="text-amber-600">has workspace data</span>
+            )}
+          </div>
+        </div>
+      )
+    },
+  },
+
+  unregisterApp: {
+    loadingLabel: 'Removing app from workspace...',
+    marker: ThinkingTimelineMarker.Default,
+    inline: true,
+    renderLoading: (args?: unknown) => {
+      const { appId } = (args ?? {}) as { appId?: string }
+      return (
+        <div className="bg-muted text-muted-foreground inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs">
+          <Package className="size-3.5 shrink-0 animate-pulse" />
+          <span className="truncate">
+            Removing {appId || 'app'} from workspace...
+          </span>
+        </div>
+      )
+    },
+    renderOutput: (output, toolCallId) => {
+      const result = (output ?? {}) as {
+        success?: boolean
+        appId?: string
+        appName?: string
+        message?: string
+        error?: string
+      }
+
+      if (output === undefined || output === null) {
+        return (
+          <div
+            key={toolCallId}
+            className="bg-muted text-muted-foreground my-1 inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs"
+          >
+            <Package className="size-3.5 shrink-0 animate-pulse" />
+            <span className="truncate">Removing app from workspace...</span>
+          </div>
+        )
+      }
+
+      if (result.success === false) {
+        return (
+          <div
+            key={toolCallId}
+            className="bg-destructive/10 text-destructive my-1 inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs"
+          >
+            <Package className="size-3.5 shrink-0" />
+            <span className="truncate">
+              {result.error || 'Failed to remove app'}
+            </span>
+          </div>
+        )
+      }
+
+      return (
+        <div
+          key={toolCallId}
+          className="bg-muted text-muted-foreground my-1 inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs"
+        >
+          <Package className="size-3.5 shrink-0" />
+          <span className="font-medium">
+            {result.appName || result.appId} removed from workspace
+          </span>
+          <Check className="size-3 shrink-0 text-green-600" />
+        </div>
+      )
+    },
+    renderApproval: (approval, onRespond) => {
+      const { appId } = (approval.args ?? {}) as { appId?: string }
+
+      return (
+        <ToolApproval state="approval-requested">
+          <ToolApprovalHeader>
+            <ToolApprovalRequest>
+              <div className="mb-1 text-xs font-medium">
+                Remove app from workspace
+              </div>
+              <div className="text-muted-foreground mb-2 text-[10px]">
+                Remove <strong>{appId}</strong> from this workspace?
+              </div>
+              <div className="bg-muted/50 rounded px-2 py-1.5 text-[10px]">
+                The app&apos;s code and data will be preserved. You can add it
+                back later from the app gallery.
+              </div>
+            </ToolApprovalRequest>
+          </ToolApprovalHeader>
+          <ToolApprovalActions>
+            <ToolApprovalAction
+              variant="outline"
+              onClick={() =>
+                onRespond({
+                  approvalId: approval.approvalId,
+                  approved: false,
+                  reason: 'User cancelled',
+                })
+              }
+            >
+              Cancel
+            </ToolApprovalAction>
+            <ToolApprovalAction
+              onClick={() =>
+                onRespond({
+                  approvalId: approval.approvalId,
+                  approved: true,
+                })
+              }
+            >
+              Remove
+            </ToolApprovalAction>
+          </ToolApprovalActions>
+        </ToolApproval>
+      )
+    },
+  },
+
+  deleteAppData: {
+    loadingLabel: 'Deleting app data...',
+    marker: ThinkingTimelineMarker.Default,
+    inline: true,
+    renderLoading: (args?: unknown) => {
+      const { appId } = (args ?? {}) as { appId?: string }
+      return (
+        <div className="bg-muted text-muted-foreground inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs">
+          <Database className="size-3.5 shrink-0 animate-pulse" />
+          <span className="truncate">
+            Deleting data for {appId || 'app'}...
+          </span>
+        </div>
+      )
+    },
+    renderOutput: (output, toolCallId) => {
+      const result = (output ?? {}) as {
+        success?: boolean
+        appId?: string
+        deletedPath?: string
+        message?: string
+        error?: string
+      }
+
+      if (output === undefined || output === null) {
+        return (
+          <div
+            key={toolCallId}
+            className="bg-muted text-muted-foreground my-1 inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs"
+          >
+            <Database className="size-3.5 shrink-0 animate-pulse" />
+            <span className="truncate">Deleting app data...</span>
+          </div>
+        )
+      }
+
+      if (result.success === false) {
+        return (
+          <div
+            key={toolCallId}
+            className="bg-destructive/10 text-destructive my-1 inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs"
+          >
+            <Database className="size-3.5 shrink-0" />
+            <span className="truncate">
+              {result.error || 'Failed to delete app data'}
+            </span>
+          </div>
+        )
+      }
+
+      return (
+        <div
+          key={toolCallId}
+          className="bg-muted text-muted-foreground my-1 inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs"
+        >
+          <Database className="size-3.5 shrink-0" />
+          <span className="font-medium">Data deleted for {result.appId}</span>
+          <Check className="size-3 shrink-0 text-green-600" />
+        </div>
+      )
+    },
+    renderApproval: (approval, onRespond) => {
+      const { appId } = (approval.args ?? {}) as { appId?: string }
+
+      return (
+        <ToolApproval state="approval-requested">
+          <ToolApprovalHeader>
+            <ToolApprovalRequest>
+              <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-amber-600">
+                <AlertTriangle className="size-3.5" />
+                Delete app data
+              </div>
+              <div className="text-muted-foreground mb-2 text-[10px]">
+                Delete all data for <strong>{appId}</strong> in this workspace?
+              </div>
+              <div className="rounded bg-amber-500/10 px-2 py-1.5 text-[10px] text-amber-700">
+                This will permanently delete the app&apos;s database, files, and
+                cache. The app will remain installed but start fresh.
+              </div>
+            </ToolApprovalRequest>
+          </ToolApprovalHeader>
+          <ToolApprovalActions>
+            <ToolApprovalAction
+              variant="outline"
+              onClick={() =>
+                onRespond({
+                  approvalId: approval.approvalId,
+                  approved: false,
+                  reason: 'User cancelled',
+                })
+              }
+            >
+              Cancel
+            </ToolApprovalAction>
+            <ToolApprovalAction
+              variant="destructive"
+              onClick={() =>
+                onRespond({
+                  approvalId: approval.approvalId,
+                  approved: true,
+                })
+              }
+            >
+              Delete Data
+            </ToolApprovalAction>
+          </ToolApprovalActions>
+        </ToolApproval>
+      )
+    },
+  },
+
+  deleteApp: {
+    loadingLabel: 'Deleting app...',
+    marker: ThinkingTimelineMarker.Default,
+    inline: true,
+    renderLoading: (args?: unknown) => {
+      const { appId } = (args ?? {}) as { appId?: string }
+      return (
+        <div className="bg-muted text-muted-foreground inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs">
+          <Trash2 className="size-3.5 shrink-0 animate-pulse" />
+          <span className="truncate">
+            Deleting {appId || 'app'} permanently...
+          </span>
+        </div>
+      )
+    },
+    renderOutput: (output, toolCallId) => {
+      const result = (output ?? {}) as {
+        success?: boolean
+        appId?: string
+        appName?: string
+        deletedPath?: string
+        workspacesAffected?: string[]
+        message?: string
+        error?: string
+      }
+
+      if (output === undefined || output === null) {
+        return (
+          <div
+            key={toolCallId}
+            className="bg-muted text-muted-foreground my-1 inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs"
+          >
+            <Trash2 className="size-3.5 shrink-0 animate-pulse" />
+            <span className="truncate">Deleting app...</span>
+          </div>
+        )
+      }
+
+      if (result.success === false) {
+        return (
+          <div
+            key={toolCallId}
+            className="bg-destructive/10 text-destructive my-1 inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs"
+          >
+            <Trash2 className="size-3.5 shrink-0" />
+            <span className="truncate">
+              {result.error || 'Failed to delete app'}
+            </span>
+          </div>
+        )
+      }
+
+      const affectedCount = result.workspacesAffected?.length || 0
+
+      return (
+        <div
+          key={toolCallId}
+          className="bg-muted text-muted-foreground my-1 min-w-0 rounded-md"
+        >
+          <div className="flex items-center gap-2 px-2 py-1.5 text-xs">
+            <Trash2 className="size-3.5 shrink-0" />
+            <span className="font-medium">
+              {result.appName || result.appId} deleted permanently
+            </span>
+            <Check className="size-3 shrink-0 text-green-600" />
+          </div>
+          {affectedCount > 0 && (
+            <div className="border-border/50 border-t px-2 py-1 text-[10px]">
+              Removed from {affectedCount} workspace
+              {affectedCount !== 1 ? 's' : ''}
+            </div>
+          )}
+        </div>
+      )
+    },
+    renderApproval: (approval, onRespond) => {
+      const { appId } = (approval.args ?? {}) as { appId?: string }
+
+      return (
+        <ToolApproval state="approval-requested">
+          <ToolApprovalHeader>
+            <ToolApprovalRequest>
+              <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-red-600">
+                <AlertTriangle className="size-3.5" />
+                Delete app permanently
+              </div>
+              <div className="text-muted-foreground mb-2 text-[10px]">
+                Permanently delete <strong>{appId}</strong> from Moldable?
+              </div>
+              <div className="bg-destructive/10 text-destructive rounded px-2 py-1.5 text-[10px]">
+                <strong>This will:</strong>
+                <ul className="mt-1 list-inside list-disc space-y-0.5">
+                  <li>Remove the app from ALL workspaces</li>
+                  <li>Delete all source code from shared/apps/</li>
+                  <li>Delete all workspace data</li>
+                </ul>
+                <p className="mt-1.5 font-medium">
+                  This action cannot be undone.
+                </p>
+              </div>
+              <ToolApprovalHelp className="mt-2">
+                To just hide this app from the current workspace (keeps code and
+                data), ask to <strong>remove</strong> it instead. To clear the
+                app&apos;s data but keep it installed, ask to{' '}
+                <strong>reset</strong> it.
+              </ToolApprovalHelp>
+            </ToolApprovalRequest>
+          </ToolApprovalHeader>
+          <ToolApprovalActions>
+            <ToolApprovalAction
+              variant="outline"
+              onClick={() =>
+                onRespond({
+                  approvalId: approval.approvalId,
+                  approved: false,
+                  reason: 'User cancelled',
+                })
+              }
+            >
+              Cancel
+            </ToolApprovalAction>
+            <ToolApprovalAction
+              variant="destructive"
+              onClick={() =>
+                onRespond({
+                  approvalId: approval.approvalId,
+                  approved: true,
+                })
+              }
+            >
+              Delete Permanently
+            </ToolApprovalAction>
+          </ToolApprovalActions>
+        </ToolApproval>
       )
     },
   },

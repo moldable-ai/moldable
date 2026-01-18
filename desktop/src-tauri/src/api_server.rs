@@ -3,10 +3,12 @@
 //! Provides HTTP endpoints that the AI server can call to perform
 //! operations that require access to Rust-side functionality.
 
-use crate::apps::{find_available_port, register_app};
+use crate::apps::{find_available_port, register_app, unregister_app};
+use crate::paths::{get_shared_apps_dir, get_workspace_dir, get_workspaces_config_internal, get_config_file_path_for_workspace};
 use crate::ports::{acquire_port, PortAcquisitionConfig, DEFAULT_API_SERVER_PORT};
+use crate::registry::uninstall_app_from_shared;
 use crate::runtime::ensure_node_modules_installed;
-use crate::types::RegisteredApp;
+use crate::types::{MoldableConfig, RegisteredApp};
 use crate::workspace::copy_dir_recursive;
 use axum::{
     extract::State,
@@ -65,6 +67,101 @@ pub struct CreateAppRequest {
 
 fn default_widget_size() -> String {
     "medium".to_string()
+}
+
+// ============================================================================
+// APP MANAGEMENT TYPES
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnregisterAppRequest {
+    pub app_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnregisterAppResponse {
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteAppDataRequest {
+    pub app_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteAppDataResponse {
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deleted_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteAppRequest {
+    pub app_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteAppResponse {
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deleted_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspaces_affected: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Info about app installation across workspaces (for pre-flight check)
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppInfoRequest {
+    pub app_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppInfoResponse {
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_path: Option<String>,
+    /// List of workspace names where this app is installed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub installed_in_workspaces: Option<Vec<String>>,
+    /// Whether the app has data in the current workspace
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_workspace_data: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -460,6 +557,372 @@ fn collect_created_files(dir: &PathBuf) -> Vec<String> {
 }
 
 // ============================================================================
+// APP MANAGEMENT HANDLERS
+// ============================================================================
+
+/// Get app info including which workspaces it's installed in
+async fn get_app_info_handler(
+    Json(req): Json<AppInfoRequest>,
+) -> impl IntoResponse {
+    info!("Getting app info for: {}", req.app_id);
+
+    // Get shared apps directory
+    let shared_apps_dir = match get_shared_apps_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AppInfoResponse {
+                    success: false,
+                    error: Some(format!("Failed to get shared apps dir: {}", e)),
+                    ..Default::default()
+                }),
+            );
+        }
+    };
+
+    let app_dir = shared_apps_dir.join(&req.app_id);
+    if !app_dir.exists() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(AppInfoResponse {
+                success: false,
+                error: Some(format!("App '{}' not found in shared apps", req.app_id)),
+                ..Default::default()
+            }),
+        );
+    }
+
+    // Try to get app name from moldable.json
+    let app_name = get_app_name_from_manifest(&app_dir).unwrap_or_else(|| req.app_id.clone());
+
+    // Get workspaces config to find all workspaces
+    let workspaces_config = match get_workspaces_config_internal() {
+        Ok(config) => config,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AppInfoResponse {
+                    success: false,
+                    error: Some(format!("Failed to get workspaces config: {}", e)),
+                    ..Default::default()
+                }),
+            );
+        }
+    };
+
+    // Check which workspaces have this app registered
+    let mut installed_workspaces = Vec::new();
+    for workspace in &workspaces_config.workspaces {
+        if let Ok(config_path) = get_config_file_path_for_workspace(&workspace.id) {
+            if config_path.exists() {
+                if let Ok(content) = fs::read_to_string(&config_path) {
+                    if let Ok(config) = serde_json::from_str::<MoldableConfig>(&content) {
+                        if config.apps.iter().any(|a| a.id == req.app_id) {
+                            installed_workspaces.push(workspace.name.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Check if app has data in the current workspace
+    let has_workspace_data = if let Ok(workspace_dir) = get_workspace_dir(&workspaces_config.active_workspace) {
+        let app_data_dir = workspace_dir.join("apps").join(&req.app_id);
+        app_data_dir.exists()
+    } else {
+        false
+    };
+
+    (
+        StatusCode::OK,
+        Json(AppInfoResponse {
+            success: true,
+            app_id: Some(req.app_id),
+            app_name: Some(app_name),
+            app_path: Some(app_dir.to_string_lossy().to_string()),
+            installed_in_workspaces: Some(installed_workspaces),
+            has_workspace_data: Some(has_workspace_data),
+            error: None,
+        }),
+    )
+}
+
+/// Unregister an app from the current workspace only (keeps code and data)
+async fn unregister_app_handler(
+    State(state): State<ApiState>,
+    Json(req): Json<UnregisterAppRequest>,
+) -> impl IntoResponse {
+    info!("Unregistering app from workspace: {}", req.app_id);
+
+    let app_handle = {
+        let guard = state.app_handle.lock().await;
+        guard.clone()
+    };
+
+    let Some(handle) = app_handle else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(UnregisterAppResponse {
+                success: false,
+                error: Some("No app handle available".to_string()),
+                ..Default::default()
+            }),
+        );
+    };
+
+    // Get app name before unregistering (for display purposes)
+    let app_name = get_current_workspace_app_name(&req.app_id);
+
+    match unregister_app(handle, req.app_id.clone()) {
+        Ok(_) => {
+            info!("Unregistered {} from workspace", req.app_id);
+            (
+                StatusCode::OK,
+                Json(UnregisterAppResponse {
+                    success: true,
+                    app_id: Some(req.app_id),
+                    app_name,
+                    message: Some("App removed from workspace. Code and data are preserved.".to_string()),
+                    error: None,
+                }),
+            )
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(UnregisterAppResponse {
+                success: false,
+                error: Some(format!("Failed to unregister app: {}", e)),
+                ..Default::default()
+            }),
+        ),
+    }
+}
+
+/// Delete app data for the current workspace only (keeps app registered)
+async fn delete_app_data_handler(
+    Json(req): Json<DeleteAppDataRequest>,
+) -> impl IntoResponse {
+    info!("Deleting app data for: {}", req.app_id);
+
+    // Get the current workspace's app data directory
+    let workspaces_config = match get_workspaces_config_internal() {
+        Ok(config) => config,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(DeleteAppDataResponse {
+                    success: false,
+                    error: Some(format!("Failed to get workspaces config: {}", e)),
+                    ..Default::default()
+                }),
+            );
+        }
+    };
+
+    let workspace_dir = match get_workspace_dir(&workspaces_config.active_workspace) {
+        Ok(dir) => dir,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(DeleteAppDataResponse {
+                    success: false,
+                    error: Some(format!("Failed to get workspace dir: {}", e)),
+                    ..Default::default()
+                }),
+            );
+        }
+    };
+
+    let app_data_dir = workspace_dir.join("apps").join(&req.app_id);
+
+    if !app_data_dir.exists() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(DeleteAppDataResponse {
+                success: false,
+                error: Some(format!("No data found for app '{}' in this workspace", req.app_id)),
+                ..Default::default()
+            }),
+        );
+    }
+
+    let deleted_path = app_data_dir.to_string_lossy().to_string();
+
+    match fs::remove_dir_all(&app_data_dir) {
+        Ok(_) => {
+            info!("Deleted app data at: {}", deleted_path);
+            (
+                StatusCode::OK,
+                Json(DeleteAppDataResponse {
+                    success: true,
+                    app_id: Some(req.app_id),
+                    deleted_path: Some(deleted_path),
+                    message: Some("App data deleted. The app is still installed and will start fresh.".to_string()),
+                    error: None,
+                }),
+            )
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(DeleteAppDataResponse {
+                success: false,
+                error: Some(format!("Failed to delete app data: {}", e)),
+                ..Default::default()
+            }),
+        ),
+    }
+}
+
+/// Delete an app completely (removes from all workspaces, deletes code and data)
+async fn delete_app_handler(
+    State(state): State<ApiState>,
+    Json(req): Json<DeleteAppRequest>,
+) -> impl IntoResponse {
+    info!("Deleting app completely: {}", req.app_id);
+
+    let app_handle = {
+        let guard = state.app_handle.lock().await;
+        guard.clone()
+    };
+
+    let Some(handle) = app_handle else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(DeleteAppResponse {
+                success: false,
+                error: Some("No app handle available".to_string()),
+                ..Default::default()
+            }),
+        );
+    };
+
+    // Get shared apps directory
+    let shared_apps_dir = match get_shared_apps_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(DeleteAppResponse {
+                    success: false,
+                    error: Some(format!("Failed to get shared apps dir: {}", e)),
+                    ..Default::default()
+                }),
+            );
+        }
+    };
+
+    let app_dir = shared_apps_dir.join(&req.app_id);
+    if !app_dir.exists() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(DeleteAppResponse {
+                success: false,
+                error: Some(format!("App '{}' not found in shared apps", req.app_id)),
+                ..Default::default()
+            }),
+        );
+    }
+
+    // Get app name before deleting
+    let app_name = get_app_name_from_manifest(&app_dir);
+    let deleted_path = app_dir.to_string_lossy().to_string();
+
+    // Get all workspaces to unregister from and delete data
+    let workspaces_config = match get_workspaces_config_internal() {
+        Ok(config) => config,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(DeleteAppResponse {
+                    success: false,
+                    error: Some(format!("Failed to get workspaces config: {}", e)),
+                    ..Default::default()
+                }),
+            );
+        }
+    };
+
+    let mut affected_workspaces = Vec::new();
+
+    // Delete app data from all workspaces
+    for workspace in &workspaces_config.workspaces {
+        if let Ok(workspace_dir) = get_workspace_dir(&workspace.id) {
+            let app_data_dir = workspace_dir.join("apps").join(&req.app_id);
+            if app_data_dir.exists() {
+                if let Err(e) = fs::remove_dir_all(&app_data_dir) {
+                    warn!("Failed to delete app data for workspace {}: {}", workspace.id, e);
+                } else {
+                    info!("Deleted app data in workspace: {}", workspace.id);
+                }
+            }
+        }
+
+        // Check if app was registered in this workspace
+        if let Ok(config_path) = get_config_file_path_for_workspace(&workspace.id) {
+            if config_path.exists() {
+                if let Ok(content) = fs::read_to_string(&config_path) {
+                    if let Ok(config) = serde_json::from_str::<MoldableConfig>(&content) {
+                        if config.apps.iter().any(|a| a.id == req.app_id) {
+                            affected_workspaces.push(workspace.name.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Use the existing uninstall_app_from_shared which handles unregistering + deleting code
+    match uninstall_app_from_shared(handle, req.app_id.clone()) {
+        Ok(_) => {
+            info!("Deleted app {} completely", req.app_id);
+            (
+                StatusCode::OK,
+                Json(DeleteAppResponse {
+                    success: true,
+                    app_id: Some(req.app_id),
+                    app_name,
+                    deleted_path: Some(deleted_path),
+                    workspaces_affected: Some(affected_workspaces),
+                    message: Some("App deleted permanently from all workspaces.".to_string()),
+                    error: None,
+                }),
+            )
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(DeleteAppResponse {
+                success: false,
+                error: Some(format!("Failed to delete app: {}", e)),
+                ..Default::default()
+            }),
+        ),
+    }
+}
+
+/// Helper to get app name from moldable.json manifest
+fn get_app_name_from_manifest(app_dir: &PathBuf) -> Option<String> {
+    let manifest_path = app_dir.join("moldable.json");
+    if manifest_path.exists() {
+        if let Ok(content) = fs::read_to_string(&manifest_path) {
+            if let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&content) {
+                return manifest.get("name").and_then(|n| n.as_str()).map(|s| s.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Helper to get app name from current workspace config
+fn get_current_workspace_app_name(app_id: &str) -> Option<String> {
+    let config_path = crate::paths::get_config_file_path().ok()?;
+    let content = fs::read_to_string(&config_path).ok()?;
+    let config: MoldableConfig = serde_json::from_str(&content).ok()?;
+    config.apps.iter().find(|a| a.id == app_id).map(|a| a.name.clone())
+}
+
+// ============================================================================
 // SERVER LIFECYCLE
 // ============================================================================
 
@@ -501,6 +964,10 @@ pub async fn start_api_server(app_handle: tauri::AppHandle) -> Result<u16, Strin
     let app = Router::new()
         .route("/health", get(health_handler))
         .route("/api/create-app", post(create_app_handler))
+        .route("/api/app-info", post(get_app_info_handler))
+        .route("/api/unregister-app", post(unregister_app_handler))
+        .route("/api/delete-app-data", post(delete_app_data_handler))
+        .route("/api/delete-app", post(delete_app_handler))
         .with_state(state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], actual_port));
@@ -542,6 +1009,58 @@ impl Default for CreateAppResponse {
             pnpm_installed: None,
             registered: None,
             message: None,
+            error: None,
+        }
+    }
+}
+
+impl Default for UnregisterAppResponse {
+    fn default() -> Self {
+        Self {
+            success: false,
+            app_id: None,
+            app_name: None,
+            message: None,
+            error: None,
+        }
+    }
+}
+
+impl Default for DeleteAppDataResponse {
+    fn default() -> Self {
+        Self {
+            success: false,
+            app_id: None,
+            deleted_path: None,
+            message: None,
+            error: None,
+        }
+    }
+}
+
+impl Default for DeleteAppResponse {
+    fn default() -> Self {
+        Self {
+            success: false,
+            app_id: None,
+            app_name: None,
+            deleted_path: None,
+            workspaces_affected: None,
+            message: None,
+            error: None,
+        }
+    }
+}
+
+impl Default for AppInfoResponse {
+    fn default() -> Self {
+        Self {
+            success: false,
+            app_id: None,
+            app_name: None,
+            app_path: None,
+            installed_in_workspaces: None,
+            has_workspace_data: None,
             error: None,
         }
     }
@@ -893,5 +1412,248 @@ mod tests {
         assert!(json.contains("\"appId\":\"test-app\""));
         assert!(json.contains("\"port\":4100"));
         assert!(!json.contains("error")); // None fields should be skipped
+    }
+
+    // ==================== APP MANAGEMENT REQUEST/RESPONSE TESTS ====================
+
+    #[test]
+    fn test_unregister_app_request_deserialization() {
+        let json = r#"{"appId": "my-app"}"#;
+        let req: UnregisterAppRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.app_id, "my-app");
+    }
+
+    #[test]
+    fn test_unregister_app_response_default() {
+        let response = UnregisterAppResponse::default();
+        assert!(!response.success);
+        assert!(response.app_id.is_none());
+        assert!(response.app_name.is_none());
+        assert!(response.message.is_none());
+        assert!(response.error.is_none());
+    }
+
+    #[test]
+    fn test_unregister_app_response_serialization() {
+        let response = UnregisterAppResponse {
+            success: true,
+            app_id: Some("my-app".to_string()),
+            app_name: Some("My App".to_string()),
+            message: Some("Removed from workspace".to_string()),
+            error: None,
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"success\":true"));
+        assert!(json.contains("\"appId\":\"my-app\""));
+        assert!(json.contains("\"appName\":\"My App\""));
+        assert!(json.contains("\"message\""));
+        assert!(!json.contains("error")); // None fields should be skipped
+    }
+
+    #[test]
+    fn test_delete_app_data_request_deserialization() {
+        let json = r#"{"appId": "test-app"}"#;
+        let req: DeleteAppDataRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.app_id, "test-app");
+    }
+
+    #[test]
+    fn test_delete_app_data_response_default() {
+        let response = DeleteAppDataResponse::default();
+        assert!(!response.success);
+        assert!(response.app_id.is_none());
+        assert!(response.deleted_path.is_none());
+        assert!(response.message.is_none());
+        assert!(response.error.is_none());
+    }
+
+    #[test]
+    fn test_delete_app_data_response_serialization() {
+        let response = DeleteAppDataResponse {
+            success: true,
+            app_id: Some("test-app".to_string()),
+            deleted_path: Some("/path/to/data".to_string()),
+            message: Some("Data deleted".to_string()),
+            error: None,
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"success\":true"));
+        assert!(json.contains("\"appId\":\"test-app\""));
+        assert!(json.contains("\"deletedPath\":\"/path/to/data\""));
+        assert!(!json.contains("error"));
+    }
+
+    #[test]
+    fn test_delete_app_request_deserialization() {
+        let json = r#"{"appId": "scribo"}"#;
+        let req: DeleteAppRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.app_id, "scribo");
+    }
+
+    #[test]
+    fn test_delete_app_response_default() {
+        let response = DeleteAppResponse::default();
+        assert!(!response.success);
+        assert!(response.app_id.is_none());
+        assert!(response.app_name.is_none());
+        assert!(response.deleted_path.is_none());
+        assert!(response.workspaces_affected.is_none());
+        assert!(response.message.is_none());
+        assert!(response.error.is_none());
+    }
+
+    #[test]
+    fn test_delete_app_response_serialization() {
+        let response = DeleteAppResponse {
+            success: true,
+            app_id: Some("scribo".to_string()),
+            app_name: Some("Scribo Languages".to_string()),
+            deleted_path: Some("/Users/rob/.moldable/shared/apps/scribo".to_string()),
+            workspaces_affected: Some(vec!["Personal".to_string(), "Work".to_string()]),
+            message: Some("App deleted permanently".to_string()),
+            error: None,
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"success\":true"));
+        assert!(json.contains("\"appId\":\"scribo\""));
+        assert!(json.contains("\"appName\":\"Scribo Languages\""));
+        assert!(json.contains("\"deletedPath\""));
+        assert!(json.contains("\"workspacesAffected\""));
+        assert!(json.contains("Personal"));
+        assert!(json.contains("Work"));
+        assert!(!json.contains("error"));
+    }
+
+    #[test]
+    fn test_delete_app_response_with_error() {
+        let response = DeleteAppResponse {
+            success: false,
+            app_id: None,
+            app_name: None,
+            deleted_path: None,
+            workspaces_affected: None,
+            message: None,
+            error: Some("App not found".to_string()),
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"success\":false"));
+        assert!(json.contains("\"error\":\"App not found\""));
+        assert!(!json.contains("appId")); // None fields should be skipped
+        assert!(!json.contains("workspacesAffected"));
+    }
+
+    #[test]
+    fn test_app_info_request_deserialization() {
+        let json = r#"{"appId": "calendar"}"#;
+        let req: AppInfoRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.app_id, "calendar");
+    }
+
+    #[test]
+    fn test_app_info_response_default() {
+        let response = AppInfoResponse::default();
+        assert!(!response.success);
+        assert!(response.app_id.is_none());
+        assert!(response.app_name.is_none());
+        assert!(response.app_path.is_none());
+        assert!(response.installed_in_workspaces.is_none());
+        assert!(response.has_workspace_data.is_none());
+        assert!(response.error.is_none());
+    }
+
+    #[test]
+    fn test_app_info_response_serialization() {
+        let response = AppInfoResponse {
+            success: true,
+            app_id: Some("calendar".to_string()),
+            app_name: Some("Calendar".to_string()),
+            app_path: Some("/Users/rob/.moldable/shared/apps/calendar".to_string()),
+            installed_in_workspaces: Some(vec!["Personal".to_string(), "Work".to_string()]),
+            has_workspace_data: Some(true),
+            error: None,
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"success\":true"));
+        assert!(json.contains("\"appId\":\"calendar\""));
+        assert!(json.contains("\"appName\":\"Calendar\""));
+        assert!(json.contains("\"appPath\""));
+        assert!(json.contains("\"installedInWorkspaces\""));
+        assert!(json.contains("Personal"));
+        assert!(json.contains("Work"));
+        assert!(json.contains("\"hasWorkspaceData\":true"));
+        assert!(!json.contains("error"));
+    }
+
+    #[test]
+    fn test_app_info_response_empty_workspaces() {
+        let response = AppInfoResponse {
+            success: true,
+            app_id: Some("orphan-app".to_string()),
+            app_name: Some("Orphan App".to_string()),
+            app_path: Some("/path/to/app".to_string()),
+            installed_in_workspaces: Some(vec![]),
+            has_workspace_data: Some(false),
+            error: None,
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"installedInWorkspaces\":[]"));
+        assert!(json.contains("\"hasWorkspaceData\":false"));
+    }
+
+    // ==================== HELPER FUNCTION TESTS ====================
+
+    #[test]
+    fn test_get_app_name_from_manifest_with_valid_manifest() {
+        let temp_dir = TempDir::new().unwrap();
+        let manifest = serde_json::json!({
+            "name": "Test App",
+            "icon": "🚀",
+            "description": "A test app"
+        });
+        fs::write(
+            temp_dir.path().join("moldable.json"),
+            serde_json::to_string(&manifest).unwrap(),
+        ).unwrap();
+
+        let result = get_app_name_from_manifest(&temp_dir.path().to_path_buf());
+        assert_eq!(result, Some("Test App".to_string()));
+    }
+
+    #[test]
+    fn test_get_app_name_from_manifest_no_manifest() {
+        let temp_dir = TempDir::new().unwrap();
+        let result = get_app_name_from_manifest(&temp_dir.path().to_path_buf());
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_app_name_from_manifest_no_name_field() {
+        let temp_dir = TempDir::new().unwrap();
+        let manifest = serde_json::json!({
+            "icon": "🚀",
+            "description": "A test app without name"
+        });
+        fs::write(
+            temp_dir.path().join("moldable.json"),
+            serde_json::to_string(&manifest).unwrap(),
+        ).unwrap();
+
+        let result = get_app_name_from_manifest(&temp_dir.path().to_path_buf());
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_app_name_from_manifest_invalid_json() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(temp_dir.path().join("moldable.json"), "not valid json").unwrap();
+
+        let result = get_app_name_from_manifest(&temp_dir.path().to_path_buf());
+        assert!(result.is_none());
     }
 }

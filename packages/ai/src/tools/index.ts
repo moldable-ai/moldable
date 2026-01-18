@@ -1,3 +1,4 @@
+import { createAppManagementTools } from './app-management'
 import { type CommandProgressCallback, createBashTools } from './bash'
 import { createFilesystemTools } from './filesystem'
 import { createScaffoldTools } from './scaffold'
@@ -19,6 +20,11 @@ export {
   SCAFFOLD_TOOL_DESCRIPTIONS,
   type ScaffoldToolsOptions,
 } from './scaffold'
+export {
+  createAppManagementTools,
+  APP_MANAGEMENT_TOOL_DESCRIPTIONS,
+  type AppManagementToolsOptions,
+} from './app-management'
 
 export type MoldableToolsOptions = {
   /** Base path for file operations (security boundary) */
@@ -80,6 +86,7 @@ export function createMoldableTools(options: MoldableToolsOptions = {}) {
     }),
     ...createSkillsTools(),
     ...createScaffoldTools({ apiServerPort }),
+    ...createAppManagementTools({ apiServerPort }),
   }
 }
 
@@ -108,6 +115,14 @@ export const TOOL_DESCRIPTIONS = {
   // App scaffolding
   scaffoldApp: 'Create a new Moldable app from the standard template',
 
+  // App management
+  getAppInfo: 'Get information about an app including which workspaces use it',
+  unregisterApp:
+    'Remove an app from the current workspace (keeps code and data)',
+  deleteAppData:
+    "Delete an app's data in the current workspace (app stays installed)",
+  deleteApp: 'DANGEROUS: Permanently delete an app from all workspaces',
+
   // Skills management
   listSkillRepos: 'List registered skill repositories',
   listAvailableSkills: 'Show available skills from repositories',
@@ -133,6 +148,7 @@ export const TOOL_CATEGORIES = {
   search: ['grep', 'globFileSearch'],
   web: ['webSearch'],
   scaffold: ['scaffoldApp'],
+  appManagement: ['getAppInfo', 'unregisterApp', 'deleteAppData', 'deleteApp'],
   skills: [
     'listSkillRepos',
     'listAvailableSkills',
