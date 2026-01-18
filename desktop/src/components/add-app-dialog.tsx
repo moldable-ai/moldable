@@ -270,16 +270,10 @@ function AppCard({
             src={app.iconUrl}
             alt={app.name}
             className="size-full object-cover p-1"
-            onError={(e) => {
-              // Fallback to emoji if image fails
-              e.currentTarget.style.display = 'none'
-              e.currentTarget.nextElementSibling?.classList.remove('hidden')
-            }}
           />
-        ) : null}
-        <span className={cn('text-lg', app.iconUrl && 'hidden')}>
-          {app.icon}
-        </span>
+        ) : (
+          <span className="text-lg">{app.icon}</span>
+        )}
       </div>
 
       {/* Info */}
@@ -291,9 +285,7 @@ function AppCard({
           </Badge>
         </div>
         {app.description && (
-          <p className="text-muted-foreground line-clamp-1 text-sm">
-            {app.description}
-          </p>
+          <p className="text-muted-foreground text-sm">{app.description}</p>
         )}
         {app.requiredEnv && app.requiredEnv.length > 0 && (
           <p className="text-muted-foreground/70 mt-0.5 text-xs">
