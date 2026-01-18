@@ -146,19 +146,82 @@ Arguments:
 Options:
   --dry-run    Show what would happen without making changes
   --no-push    Create tag but don't push (manual push later)
+  --retrigger  Re-trigger release for existing version (deletes release/tag and re-pushes)
 
 Examples:
   pnpm release:desktop patch
   pnpm release:desktop 1.0.0
   pnpm release:desktop minor --dry-run
+  pnpm release:desktop 0.1.7 --retrigger   # Re-run failed release
 `)
     process.exit(0)
   }
 
   const dryRun = args.includes('--dry-run')
   const noPush = args.includes('--no-push')
+  const retrigger = args.includes('--retrigger')
   const versionArg = args.find((a) => !a.startsWith('--'))
 
+  const currentVersion = getCurrentVersion()
+
+  // Handle --retrigger for re-running a failed release
+  if (retrigger) {
+    // For retrigger, use specified version or current version
+    const targetVersion =
+      versionArg && versionArg.match(/^\d+\.\d+\.\d+$/)
+        ? versionArg
+        : currentVersion
+    const targetTag = `desktop-v${targetVersion}`
+
+    console.log(`\nRe-triggering Moldable Desktop release`)
+    console.log(`  Version: ${targetVersion}`)
+    console.log(`  Tag: ${targetTag}`)
+
+    if (dryRun) {
+      console.log(`\n[DRY RUN] Would perform the following:`)
+      console.log(`  1. Delete GitHub release ${targetTag} (if exists)`)
+      console.log(`  2. Delete remote tag ${targetTag}`)
+      console.log(`  3. Re-push tag ${targetTag} to trigger workflow`)
+      process.exit(0)
+    }
+
+    // Check if tag exists locally
+    try {
+      execSync(`git rev-parse ${targetTag}`, { cwd: rootDir, stdio: 'pipe' })
+    } catch {
+      console.error(`\nError: Tag ${targetTag} does not exist locally.`)
+      console.error(`Run a normal release first, or check out the tag.`)
+      process.exit(1)
+    }
+
+    console.log(`\nDeleting existing GitHub release (if any)...`)
+    try {
+      exec(`gh release delete ${targetTag} --yes`, { stdio: 'pipe' })
+      console.log(`  Deleted release ${targetTag}`)
+    } catch {
+      console.log(`  No existing release found (or already deleted)`)
+    }
+
+    console.log(`\nDeleting remote tag...`)
+    try {
+      exec(`git push origin :${targetTag}`, { stdio: 'pipe' })
+      console.log(`  Deleted remote tag ${targetTag}`)
+    } catch {
+      console.log(`  Remote tag not found (or already deleted)`)
+    }
+
+    console.log(`\nRe-pushing tag to trigger release workflow...`)
+    exec(`git push origin ${targetTag}`)
+
+    console.log(`\nRelease workflow triggered! Check progress at:`)
+    console.log(`  https://github.com/moldable-ai/moldable/actions`)
+    console.log(
+      `\nDone! Version ${targetVersion} release has been re-triggered.`,
+    )
+    process.exit(0)
+  }
+
+  // For normal releases, version argument is required
   if (!versionArg) {
     console.error(
       'Error: Please specify a version type (patch, minor, major) or version number',
@@ -176,9 +239,8 @@ Examples:
     process.exit(1)
   }
 
-  const currentVersion = getCurrentVersion()
   const newVersion = bumpVersion(currentVersion, versionArg)
-  const tagName = `desktop-v${newVersion}`
+  const newTagName = `desktop-v${newVersion}`
 
   // Check for release notes
   const unreleasedNotes = getUnreleasedNotes()
@@ -186,7 +248,7 @@ Examples:
   console.log(`\nReleasing Moldable Desktop`)
   console.log(`  Current version: ${currentVersion}`)
   console.log(`  New version: ${newVersion}`)
-  console.log(`  Tag: ${tagName}`)
+  console.log(`  Tag: ${newTagName}`)
 
   if (unreleasedNotes) {
     console.log(`  Release notes: Found`)
@@ -203,7 +265,7 @@ Examples:
       `  2. Update version in package.json, tauri.conf.json, Cargo.toml`,
     )
     console.log(`  3. Commit: "release: desktop v${newVersion}"`)
-    console.log(`  4. Create tag: ${tagName}`)
+    console.log(`  4. Create tag: ${newTagName}`)
     if (!noPush) {
       console.log(`  5. Push to origin (triggers release workflow)`)
     }
@@ -232,14 +294,14 @@ Examples:
   exec(`git commit -m "release: desktop v${newVersion}"`)
 
   console.log(`\nCreating tag...`)
-  exec(`git tag -a ${tagName} -m "Moldable Desktop v${newVersion}"`)
+  exec(`git tag -a ${newTagName} -m "Moldable Desktop v${newVersion}"`)
 
   if (noPush) {
     console.log(`\nTag created locally. Push manually with:`)
-    console.log(`  git push origin main ${tagName}`)
+    console.log(`  git push origin main ${newTagName}`)
   } else {
     console.log(`\nPushing to origin...`)
-    exec(`git push origin main ${tagName}`)
+    exec(`git push origin main ${newTagName}`)
     console.log(`\nRelease workflow triggered! Check progress at:`)
     console.log(`  https://github.com/moldable-ai/moldable/actions`)
   }
