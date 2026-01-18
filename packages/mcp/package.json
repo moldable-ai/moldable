@@ -1,6 +1,6 @@
 {
   "name": "@moldable-ai/mcp",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "MCP (Model Context Protocol) client management for Moldable",
   "type": "module",
   "exports": {
