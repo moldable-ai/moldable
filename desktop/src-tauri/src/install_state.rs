@@ -1,9 +1,14 @@
 use chrono::Utc;
 use log::warn;
 use serde::{Deserialize, Serialize};
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 const INSTALL_STATE_FILE: &str = ".moldable.install.json";
+const INSTALL_STATE_LOCK_FILE: &str = ".moldable.install.lock";
+const INSTALL_HISTORY_LIMIT: usize = 50;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -28,6 +33,70 @@ fn install_state_path(app_dir: &Path) -> PathBuf {
     app_dir.join(INSTALL_STATE_FILE)
 }
 
+struct InstallStateLock {
+    path: PathBuf,
+}
+
+impl Drop for InstallStateLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn acquire_install_state_lock(app_dir: &Path) -> Result<InstallStateLock, String> {
+    if !app_dir.exists() {
+        std::fs::create_dir_all(app_dir)
+            .map_err(|e| format!("Failed to create install state dir: {}", e))?;
+    }
+
+    let lock_path = app_dir.join(INSTALL_STATE_LOCK_FILE);
+    let start = Instant::now();
+    let timeout = Duration::from_secs(2);
+
+    loop {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(file) => {
+                drop(file);
+                return Ok(InstallStateLock { path: lock_path });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if start.elapsed() >= timeout {
+                    return Err("Timed out waiting for install state lock".to_string());
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(e) => {
+                return Err(format!("Failed to create install state lock: {}", e));
+            }
+        }
+    }
+}
+
+fn write_install_state_atomic(app_dir: &Path, content: &str) -> Result<(), String> {
+    let mut temp_file = tempfile::Builder::new()
+        .prefix(".moldable.install.tmp-")
+        .tempfile_in(app_dir)
+        .map_err(|e| format!("Failed to create temp install state: {}", e))?;
+
+    temp_file
+        .write_all(content.as_bytes())
+        .map_err(|e| format!("Failed to write temp install state: {}", e))?;
+    temp_file
+        .as_file()
+        .sync_all()
+        .map_err(|e| format!("Failed to sync install state: {}", e))?;
+
+    temp_file
+        .persist(install_state_path(app_dir))
+        .map_err(|e| format!("Failed to persist install state: {}", e.error))?;
+
+    Ok(())
+}
+
 pub fn read_install_state(app_dir: &Path) -> Option<InstallState> {
     let path = install_state_path(app_dir);
     let content = std::fs::read_to_string(path).ok()?;
@@ -41,6 +110,7 @@ pub fn update_install_state(
     status: &str,
     error: Option<String>,
 ) -> Result<(), String> {
+    let _lock = acquire_install_state_lock(app_dir)?;
     let timestamp = Utc::now().to_rfc3339();
     let mut state = read_install_state(app_dir).unwrap_or_default();
 
@@ -55,10 +125,14 @@ pub fn update_install_state(
         error: error.clone(),
     });
 
+    if state.history.len() > INSTALL_HISTORY_LIMIT {
+        let excess = state.history.len() - INSTALL_HISTORY_LIMIT;
+        state.history.drain(0..excess);
+    }
+
     let content = serde_json::to_string_pretty(&state)
         .map_err(|e| format!("Failed to serialize install state: {}", e))?;
-    std::fs::write(install_state_path(app_dir), content)
-        .map_err(|e| format!("Failed to write install state: {}", e))?;
+    write_install_state_atomic(app_dir, &content)?;
 
     Ok(())
 }
@@ -159,6 +233,28 @@ mod tests {
         let state = read_install_state(&temp_dir).unwrap();
         let lines = format_install_state_lines(&state);
         assert!(lines.is_empty());
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_install_state_history_capped() {
+        let temp_dir = create_temp_dir("moldable-install-state-cap");
+
+        for index in 0..(INSTALL_HISTORY_LIMIT + 10) {
+            update_install_state(
+                &temp_dir,
+                "app-id",
+                &format!("stage-{}", index),
+                "in_progress",
+                None,
+            )
+            .unwrap();
+        }
+
+        let state = read_install_state(&temp_dir).unwrap();
+        assert_eq!(state.history.len(), INSTALL_HISTORY_LIMIT);
+        assert_eq!(state.history.last().unwrap().stage, "stage-59");
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

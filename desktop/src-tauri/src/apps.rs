@@ -8,7 +8,10 @@ use crate::ports::{find_free_port, is_port_available};
 use crate::runtime::get_pnpm_path;
 use crate::types::{AvailableApp, MoldableConfig, MoldableManifest, RegisteredApp};
 use log::error;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::Path;
+use std::time::{Duration, Instant};
 use tauri::Emitter;
 
 // ============================================================================
@@ -36,7 +39,8 @@ pub fn get_registered_apps() -> Result<Vec<RegisteredApp>, String> {
             let manifest_path = Path::new(&app.path).join("moldable.json");
             if manifest_path.exists() {
                 if let Ok(manifest_content) = std::fs::read_to_string(&manifest_path) {
-                    if let Ok(manifest) = serde_json::from_str::<MoldableManifest>(&manifest_content)
+                    if let Ok(manifest) =
+                        serde_json::from_str::<MoldableManifest>(&manifest_content)
                     {
                         if let Some(icon_path) = manifest.icon_path {
                             // Resolve relative paths to absolute
@@ -59,9 +63,81 @@ pub fn get_registered_apps() -> Result<Vec<RegisteredApp>, String> {
     Ok(apps)
 }
 
+const CONFIG_LOCK_FILE: &str = ".moldable.config.lock";
+
+struct ConfigLock {
+    path: std::path::PathBuf,
+}
+
+impl Drop for ConfigLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn acquire_config_lock(config_path: &Path) -> Result<ConfigLock, String> {
+    let lock_path = config_path.with_file_name(CONFIG_LOCK_FILE);
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create config directory: {}", e))?;
+    }
+
+    let start = Instant::now();
+    let timeout = Duration::from_secs(2);
+
+    loop {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(file) => {
+                drop(file);
+                return Ok(ConfigLock { path: lock_path });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if start.elapsed() >= timeout {
+                    return Err("Timed out waiting for config lock".to_string());
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(e) => return Err(format!("Failed to create config lock: {}", e)),
+        }
+    }
+}
+
+fn write_config_atomic(config_path: &Path, config: &MoldableConfig) -> Result<(), String> {
+    let content = serde_json::to_string_pretty(config)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    let parent = config_path
+        .parent()
+        .ok_or_else(|| "Config path has no parent directory".to_string())?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| format!("Failed to create config directory: {}", e))?;
+
+    let mut temp_file = tempfile::Builder::new()
+        .prefix(".moldable.config.tmp-")
+        .tempfile_in(parent)
+        .map_err(|e| format!("Failed to create temp config: {}", e))?;
+    temp_file
+        .write_all(content.as_bytes())
+        .map_err(|e| format!("Failed to write temp config: {}", e))?;
+    temp_file
+        .as_file()
+        .sync_all()
+        .map_err(|e| format!("Failed to sync config: {}", e))?;
+    temp_file
+        .persist(config_path)
+        .map_err(|e| format!("Failed to persist config: {}", e.error))?;
+
+    Ok(())
+}
+
 /// Get registered apps for a specific workspace (used during onboarding before workspace is active)
 #[tauri::command]
-pub fn get_registered_apps_for_workspace(workspace_id: String) -> Result<Vec<RegisteredApp>, String> {
+pub fn get_registered_apps_for_workspace(
+    workspace_id: String,
+) -> Result<Vec<RegisteredApp>, String> {
     let home = std::env::var("HOME").map_err(|_| "Could not get HOME directory")?;
     let config_path = std::path::PathBuf::from(format!(
         "{}/.moldable/workspaces/{}/config.json",
@@ -87,12 +163,7 @@ pub fn register_app(
     app: RegisteredApp,
 ) -> Result<Vec<RegisteredApp>, String> {
     let config_path = get_config_file_path()?;
-
-    // Ensure directory exists
-    if let Some(parent) = config_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create config directory: {}", e))?;
-    }
+    let _lock = acquire_config_lock(&config_path)?;
 
     // Load existing config
     let mut config = if config_path.exists() {
@@ -110,9 +181,7 @@ pub fn register_app(
     config.apps.push(app);
 
     // Save config
-    let content = serde_json::to_string_pretty(&config)
-        .map_err(|e| format!("Failed to serialize config: {}", e))?;
-    std::fs::write(&config_path, content).map_err(|e| format!("Failed to write config: {}", e))?;
+    write_config_atomic(&config_path, &config)?;
 
     // Emit config-changed event to notify frontend immediately
     if let Err(e) = app_handle.emit("config-changed", ()) {
@@ -128,6 +197,7 @@ pub fn unregister_app(
     app_id: String,
 ) -> Result<Vec<RegisteredApp>, String> {
     let config_path = get_config_file_path()?;
+    let _lock = acquire_config_lock(&config_path)?;
 
     if !config_path.exists() {
         return Ok(Vec::new());
@@ -141,9 +211,7 @@ pub fn unregister_app(
 
     config.apps.retain(|a| a.id != app_id);
 
-    let content = serde_json::to_string_pretty(&config)
-        .map_err(|e| format!("Failed to serialize config: {}", e))?;
-    std::fs::write(&config_path, content).map_err(|e| format!("Failed to write config: {}", e))?;
+    write_config_atomic(&config_path, &config)?;
 
     // Emit config-changed event to notify frontend immediately
     if let Err(e) = app_handle.emit("config-changed", ()) {
@@ -163,6 +231,7 @@ fn update_registered_app_port_at_path(
     new_port: u16,
     config_path: &Path,
 ) -> Result<bool, String> {
+    let _lock = acquire_config_lock(config_path)?;
     if !config_path.exists() {
         return Ok(false);
     }
@@ -191,9 +260,7 @@ fn update_registered_app_port_at_path(
         return Ok(false);
     }
 
-    let content = serde_json::to_string_pretty(&config)
-        .map_err(|e| format!("Failed to serialize config: {}", e))?;
-    std::fs::write(&config_path, content).map_err(|e| format!("Failed to write config: {}", e))?;
+    write_config_atomic(config_path, &config)?;
 
     Ok(true)
 }
@@ -215,7 +282,8 @@ pub fn detect_app_in_folder(path: String) -> Result<Option<RegisteredApp>, Strin
     let manifest: MoldableManifest = if manifest_path.exists() {
         let content = std::fs::read_to_string(&manifest_path)
             .map_err(|e| format!("Failed to read moldable.json: {}", e))?;
-        serde_json::from_str(&content).map_err(|e| format!("Failed to parse moldable.json: {}", e))?
+        serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to parse moldable.json: {}", e))?
     } else {
         MoldableManifest::default()
     };
@@ -270,9 +338,7 @@ pub fn detect_app_in_folder(path: String) -> Result<Option<RegisteredApp>, Strin
                 });
 
                 // Use manifest widget_size or default
-                let widget_size = manifest
-                    .widget_size
-                    .unwrap_or_else(|| "medium".to_string());
+                let widget_size = manifest.widget_size.unwrap_or_else(|| "medium".to_string());
 
                 return Ok(Some(RegisteredApp {
                     id,
@@ -432,8 +498,8 @@ pub fn install_available_app(
     app_handle: tauri::AppHandle,
     path: String,
 ) -> Result<RegisteredApp, String> {
-    let detected =
-        detect_app_in_folder(path.clone())?.ok_or_else(|| "Could not detect app in folder".to_string())?;
+    let detected = detect_app_in_folder(path.clone())?
+        .ok_or_else(|| "Could not detect app in folder".to_string())?;
 
     register_app(app_handle, detected.clone())?;
 
@@ -505,7 +571,8 @@ mod tests {
         fs::write(
             dir.path().join("package.json"),
             serde_json::to_string(&package).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
 
         let result = detect_app_in_folder(dir.path().to_string_lossy().to_string());
         assert!(result.is_ok());
@@ -527,13 +594,14 @@ mod tests {
         fs::write(
             dir.path().join("package.json"),
             serde_json::to_string(&package).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
 
         let result = detect_app_in_folder(dir.path().to_string_lossy().to_string());
         assert!(result.is_ok());
         let app = result.unwrap();
         assert!(app.is_some());
-        
+
         let app = app.unwrap();
         assert!(app.port >= 4100);
         assert!(!app.id.is_empty());
@@ -543,7 +611,7 @@ mod tests {
     #[test]
     fn test_detect_app_with_moldable_manifest() {
         let dir = TempDir::new().unwrap();
-        
+
         let package = serde_json::json!({
             "name": "base-name",
             "scripts": { "dev": "vite" }
@@ -551,7 +619,8 @@ mod tests {
         fs::write(
             dir.path().join("package.json"),
             serde_json::to_string(&package).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
 
         let manifest = serde_json::json!({
             "name": "Custom App Name",
@@ -562,12 +631,13 @@ mod tests {
         fs::write(
             dir.path().join("moldable.json"),
             serde_json::to_string(&manifest).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
 
         let result = detect_app_in_folder(dir.path().to_string_lossy().to_string());
         assert!(result.is_ok());
         let app = result.unwrap().unwrap();
-        
+
         assert_eq!(app.name, "Custom App Name");
         assert_eq!(app.icon, "🚀");
         assert_eq!(app.port, 4200);
@@ -577,7 +647,7 @@ mod tests {
     #[test]
     fn test_detect_app_manifest_overrides_package() {
         let dir = TempDir::new().unwrap();
-        
+
         let package = serde_json::json!({
             "name": "package-name",
             "scripts": { "dev": "next dev" }
@@ -585,7 +655,8 @@ mod tests {
         fs::write(
             dir.path().join("package.json"),
             serde_json::to_string(&package).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
 
         let manifest = serde_json::json!({
             "name": "Manifest Name",
@@ -594,11 +665,12 @@ mod tests {
         fs::write(
             dir.path().join("moldable.json"),
             serde_json::to_string(&manifest).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
 
         let result = detect_app_in_folder(dir.path().to_string_lossy().to_string());
         let app = result.unwrap().unwrap();
-        
+
         // Manifest name should override package.json
         assert_eq!(app.name, "Manifest Name");
         assert_eq!(app.icon, "📱");
@@ -607,7 +679,7 @@ mod tests {
     #[test]
     fn test_detect_app_requires_port_from_manifest() {
         let dir = TempDir::new().unwrap();
-        
+
         let package = serde_json::json!({
             "name": "test-app",
             "scripts": { "dev": "next dev" }
@@ -615,7 +687,8 @@ mod tests {
         fs::write(
             dir.path().join("package.json"),
             serde_json::to_string(&package).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
 
         let manifest = serde_json::json!({
             "requiresPort": true
@@ -623,11 +696,12 @@ mod tests {
         fs::write(
             dir.path().join("moldable.json"),
             serde_json::to_string(&manifest).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
 
         let result = detect_app_in_folder(dir.path().to_string_lossy().to_string());
         let app = result.unwrap().unwrap();
-        
+
         assert!(app.requires_port);
     }
 
@@ -636,7 +710,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let app_dir = dir.path().join("My Cool App");
         fs::create_dir_all(&app_dir).unwrap();
-        
+
         let package = serde_json::json!({
             "name": "@scope/package-name",
             "scripts": { "dev": "next dev" }
@@ -644,11 +718,12 @@ mod tests {
         fs::write(
             app_dir.join("package.json"),
             serde_json::to_string(&package).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
 
         let result = detect_app_in_folder(app_dir.to_string_lossy().to_string());
         let app = result.unwrap().unwrap();
-        
+
         // ID should be derived from folder name, lowercase with dashes
         assert_eq!(app.id, "my-cool-app");
     }
@@ -673,14 +748,9 @@ mod tests {
             }],
             preferences: serde_json::Map::new(),
         };
-        fs::write(
-            &config_path,
-            serde_json::to_string_pretty(&config).unwrap(),
-        )
-        .unwrap();
+        fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 
-        let updated =
-            update_registered_app_port_at_path("test-app", 4200, &config_path).unwrap();
+        let updated = update_registered_app_port_at_path("test-app", 4200, &config_path).unwrap();
         assert!(updated);
 
         let content = fs::read_to_string(&config_path).unwrap();
@@ -708,14 +778,9 @@ mod tests {
             }],
             preferences: serde_json::Map::new(),
         };
-        fs::write(
-            &config_path,
-            serde_json::to_string_pretty(&config).unwrap(),
-        )
-        .unwrap();
+        fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 
-        let updated =
-            update_registered_app_port_at_path("test-app", 4200, &config_path).unwrap();
+        let updated = update_registered_app_port_at_path("test-app", 4200, &config_path).unwrap();
         assert!(!updated);
 
         let content = fs::read_to_string(&config_path).unwrap();
