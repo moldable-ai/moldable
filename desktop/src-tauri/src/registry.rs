@@ -11,6 +11,7 @@ use crate::types::{AppRegistry, MoldableConfig, RegisteredApp};
 use log::{error, info, warn};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn ensure_path_within_root(root: &Path, path: &Path) -> Result<(), String> {
     let resolved = path
@@ -22,6 +23,104 @@ fn ensure_path_within_root(root: &Path, path: &Path) -> Result<(), String> {
             resolved.display()
         ));
     }
+    Ok(())
+}
+
+fn validate_extracted_app(app_dir: &Path) -> Result<(), String> {
+    if !app_dir.exists() {
+        return Err(format!("Expected app directory to exist at {}", app_dir.display()));
+    }
+
+    let package_json = app_dir.join("package.json");
+    if !package_json.exists() {
+        return Err(format!(
+            "Expected package.json at {}",
+            package_json.display()
+        ));
+    }
+
+    let moldable_json = app_dir.join("moldable.json");
+    if moldable_json.exists() {
+        let content = std::fs::read_to_string(&moldable_json)
+            .map_err(|e| format!("Failed to read moldable.json: {}", e))?;
+        serde_json::from_str::<serde_json::Value>(&content)
+            .map_err(|e| format!("Failed to parse moldable.json: {}", e))?;
+    }
+
+    Ok(())
+}
+
+fn unique_suffix() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{}-{}", nanos, std::process::id())
+}
+
+fn create_install_staging_dir(app_id: &str) -> Result<PathBuf, String> {
+    let cache_dir = get_cache_dir()?;
+    let staging_root = cache_dir.join("install-staging");
+    std::fs::create_dir_all(&staging_root)
+        .map_err(|e| format!("Failed to create install staging dir: {}", e))?;
+
+    for attempt in 0..10 {
+        let suffix = unique_suffix();
+        let candidate = staging_root.join(format!("{}-{}-{}", app_id, suffix, attempt));
+        match std::fs::create_dir(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(format!(
+                    "Failed to create staging dir {}: {}",
+                    candidate.display(),
+                    e
+                ))
+            }
+        }
+    }
+
+    Err("Failed to create unique staging directory".to_string())
+}
+
+fn swap_app_directory(staging_dir: &Path, app_dir: &Path) -> Result<(), String> {
+    let mut backup_dir = None;
+    if app_dir.exists() {
+        let parent = app_dir
+            .parent()
+            .ok_or_else(|| "App directory has no parent".to_string())?;
+        let backup_name = format!(
+            ".{}-backup-{}",
+            app_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("app"),
+            unique_suffix()
+        );
+        let backup_path = parent.join(backup_name);
+        std::fs::rename(app_dir, &backup_path)
+            .map_err(|e| format!("Failed to backup existing app: {}", e))?;
+        backup_dir = Some(backup_path);
+    }
+
+    if let Err(e) = std::fs::rename(staging_dir, app_dir) {
+        if let Some(backup_path) = backup_dir.as_ref() {
+            if let Err(restore_err) = std::fs::rename(backup_path, app_dir) {
+                return Err(format!(
+                    "Failed to move app into place: {} (restore failed: {})",
+                    e, restore_err
+                ));
+            }
+        }
+        return Err(format!("Failed to move app into place: {}", e));
+    }
+
+    if let Some(backup_path) = backup_dir {
+        if let Err(e) = std::fs::remove_dir_all(&backup_path) {
+            warn!("Failed to remove backup dir {:?}: {}", backup_path, e);
+        }
+    }
+
     Ok(())
 }
 
@@ -191,14 +290,7 @@ pub async fn install_app_from_registry(
         return Ok(detected);
     }
 
-    // Create a temporary directory for extraction
-    let temp_dir = std::env::temp_dir().join(format!("moldable-app-{}", app_id));
-    if temp_dir.exists() {
-        std::fs::remove_dir_all(&temp_dir)
-            .map_err(|e| format!("Failed to clean temp dir: {}", e))?;
-    }
-    std::fs::create_dir_all(&temp_dir)
-        .map_err(|e| format!("Failed to create temp dir: {}", e))?;
+    let temp_dir = create_install_staging_dir(&app_id)?;
 
     update_install_state_safe(&temp_dir, &app_id, "start", "in_progress", None);
     info!("Install stage=start app={}", app_id);
@@ -516,11 +608,17 @@ pub async fn install_app_from_registry(
         "Install stage=extract_complete app={} files={}",
         app_id, extracted_count
     );
-    if let Err(e) = std::fs::rename(&temp_dir, &app_dir) {
-        let message = format!("Failed to move app into place: {}", e);
+    if let Err(e) = validate_extracted_app(&temp_dir) {
+        let message = format!("Extracted app validation failed: {}", e);
         update_install_state_safe(&temp_dir, &app_id, "extract", "error", Some(message.clone()));
         let _ = std::fs::remove_dir_all(&temp_dir);
         return Err(message);
+    }
+
+    if let Err(e) = swap_app_directory(&temp_dir, &app_dir) {
+        update_install_state_safe(&temp_dir, &app_id, "extract", "error", Some(e.clone()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        return Err(e);
     }
     update_install_state_safe(&app_dir, &app_id, "extract", "ok", None);
 
@@ -678,8 +776,9 @@ pub async fn ensure_hello_moldables_app_async(
 mod tests {
     // Note: AppRegistry type serialization tests are in types.rs
     // These tests focus on registry-specific behavior
-    use super::safe_zip_entry_relative_path;
+    use super::{safe_zip_entry_relative_path, swap_app_directory, validate_extracted_app};
     use std::io::{Cursor, Write};
+    use tempfile::TempDir;
     use zip::write::FileOptions;
 
     fn build_test_zip(entries: Vec<(&str, &str)>) -> Vec<u8> {
@@ -744,5 +843,58 @@ mod tests {
 
         let result = safe_zip_entry_relative_path(&file, "apps-abc/app/").unwrap();
         assert_eq!(result, Some(std::path::PathBuf::from("src/index.js")));
+    }
+
+    #[test]
+    fn test_validate_extracted_app_requires_package_json() {
+        let temp_dir = TempDir::new().unwrap();
+        let result = validate_extracted_app(temp_dir.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_extracted_app_rejects_invalid_moldable_json() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(temp_dir.path().join("package.json"), "{}".as_bytes()).unwrap();
+        std::fs::write(
+            temp_dir.path().join("moldable.json"),
+            "{not json}".as_bytes(),
+        )
+        .unwrap();
+
+        let result = validate_extracted_app(temp_dir.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_extracted_app_accepts_valid_manifest() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(temp_dir.path().join("package.json"), "{}".as_bytes()).unwrap();
+        std::fs::write(temp_dir.path().join("moldable.json"), "{}".as_bytes()).unwrap();
+
+        let result = validate_extracted_app(temp_dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_swap_app_directory_replaces_existing() {
+        let root = TempDir::new().unwrap();
+        let shared_apps = root.path().join("shared");
+        std::fs::create_dir_all(&shared_apps).unwrap();
+
+        let app_dir = shared_apps.join("example-app");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(app_dir.join("old.txt"), "old".as_bytes()).unwrap();
+
+        let staging_root = root.path().join("staging");
+        std::fs::create_dir_all(&staging_root).unwrap();
+        let staging_dir = staging_root.join("example-app-staging");
+        std::fs::create_dir_all(&staging_dir).unwrap();
+        std::fs::write(staging_dir.join("new.txt"), "new".as_bytes()).unwrap();
+
+        swap_app_directory(&staging_dir, &app_dir).unwrap();
+
+        assert!(app_dir.join("new.txt").exists());
+        assert!(!app_dir.join("old.txt").exists());
     }
 }
