@@ -11,7 +11,7 @@ use crate::ports::kill_process_tree;
 use crate::runtime;
 use crate::types::{AppInstance, AppStatus, RegisteredApp};
 use log::{info, warn};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader};
 use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
@@ -47,6 +47,38 @@ pub struct AppState(pub Arc<Mutex<AppStateInner>>);
 // ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
+
+const MAX_OUTPUT_LINES: usize = 100;
+
+fn push_output_line(lines: &mut Vec<String>, line: String) {
+    if lines.len() >= MAX_OUTPUT_LINES {
+        lines.remove(0);
+    }
+    lines.push(line);
+}
+
+fn append_app_logs(state: &AppState, app_id: &str, lines: Vec<String>) {
+    if lines.is_empty() {
+        return;
+    }
+
+    if let Ok(mut app_state) = state.0.lock() {
+        if let Some(proc) = app_state.processes.get_mut(app_id) {
+            for line in lines {
+                push_output_line(&mut proc.output_lines, line);
+            }
+            return;
+        }
+
+        let entry = app_state
+            .last_errors
+            .entry(app_id.to_string())
+            .or_default();
+        for line in lines {
+            push_output_line(entry, line);
+        }
+    }
+}
 
 pub fn command_basename(command: &str) -> String {
     std::path::Path::new(command)
@@ -565,11 +597,7 @@ fn start_app_internal_with_options(
             for line in reader.lines().map_while(Result::ok) {
                 if let Ok(mut state) = state_arc.lock() {
                     if let Some(proc) = state.processes.get_mut(&app_id_for_stderr) {
-                        // Keep last 100 lines
-                        if proc.output_lines.len() >= 100 {
-                            proc.output_lines.remove(0);
-                        }
-                        proc.output_lines.push(format!("[stderr] {}", line));
+                        push_output_line(&mut proc.output_lines, format!("[stderr] {}", line));
                     }
                 }
             }
@@ -585,11 +613,6 @@ fn start_app_internal_with_options(
             for line in reader.lines().map_while(Result::ok) {
                 if let Ok(mut state) = state_arc2.lock() {
                     if let Some(proc) = state.processes.get_mut(&app_id_for_stdout) {
-                        // Keep last 100 lines
-                        if proc.output_lines.len() >= 100 {
-                            proc.output_lines.remove(0);
-                        }
-
                         // Try to detect port from output
                         if proc.actual_port.is_none() {
                             if let Some(ref re) = port_regex {
@@ -604,7 +627,7 @@ fn start_app_internal_with_options(
                             }
                         }
 
-                        proc.output_lines.push(line);
+                        push_output_line(&mut proc.output_lines, line);
                     }
                 }
             }
@@ -698,38 +721,127 @@ pub fn remove_instances_file(working_dir: &str) {
 }
 
 /// Kill all orphaned app instances for a given app directory
-pub fn cleanup_orphaned_instances(working_dir: &str) -> usize {
+pub fn cleanup_orphaned_instances(working_dir: &str) -> (usize, Vec<String>) {
     let instances = read_instances_file(working_dir);
     let mut killed = 0;
+    let mut messages = Vec::new();
+    let mut killed_pids = HashSet::new();
+    let mut running_instances_left = false;
+    let working_path = Path::new(working_dir);
 
     for instance in &instances {
-        // Check if process is still running
-        let is_running = Command::new("kill")
-            .args(["-0", &instance.pid.to_string()])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-
-        if is_running {
+        if is_pid_running(instance.pid) {
             info!(
                 "Killing orphaned process {} (port {:?})",
                 instance.pid, instance.port
             );
             kill_process_tree(instance.pid);
+            std::thread::sleep(Duration::from_millis(100));
+
+            if is_pid_running(instance.pid) {
+                warn!("Failed to kill orphaned process {}", instance.pid);
+                messages.push(format!(
+                    "[moldable] Startup cleanup: failed to kill process (pid {})",
+                    instance.pid
+                ));
+                running_instances_left = true;
+                continue;
+            }
+
             killed += 1;
+            killed_pids.insert(instance.pid);
+            let port_note = instance
+                .port
+                .map(|port| format!(" on port {}", port))
+                .unwrap_or_default();
+            messages.push(format!(
+                "[moldable] Startup cleanup: killed orphaned process (pid {}{})",
+                instance.pid, port_note
+            ));
         }
     }
 
-    // Clean up the instances file
-    if !instances.is_empty() {
+    if !instances.is_empty() && !running_instances_left {
         remove_instances_file(working_dir);
+        messages.push("[moldable] Startup cleanup: cleared instance registry".to_string());
+    } else if running_instances_left {
+        messages.push(
+            "[moldable] Startup cleanup: instances still running; leaving registry intact"
+                .to_string(),
+        );
     }
 
-    killed
+    let lock_path = working_path.join(".next").join("dev").join("lock");
+    if lock_path.exists() {
+        let mut lock_pid_running = false;
+
+        if let Some(pid) = read_next_lock_pid(working_path) {
+            if is_pid_running(pid) && is_pid_for_app(pid, working_path) {
+                if !killed_pids.contains(&pid) {
+                    info!("Killing Next dev process {} from lock file", pid);
+                    kill_process_tree(pid);
+                    std::thread::sleep(Duration::from_millis(100));
+
+                    if is_pid_running(pid) {
+                        warn!("Failed to kill Next dev process {}", pid);
+                        messages.push(format!(
+                            "[moldable] Startup cleanup: failed to kill Next dev process (pid {})",
+                            pid
+                        ));
+                        lock_pid_running = true;
+                    } else {
+                        killed += 1;
+                        killed_pids.insert(pid);
+                        messages.push(format!(
+                            "[moldable] Startup cleanup: killed Next dev process (pid {})",
+                            pid
+                        ));
+                    }
+                } else if is_pid_running(pid) {
+                    lock_pid_running = true;
+                }
+            }
+        }
+
+        if !lock_pid_running {
+            match std::fs::remove_file(&lock_path) {
+                Ok(()) => {
+                    messages.push(format!(
+                        "[moldable] Startup cleanup: removed Next dev lock at {}",
+                        lock_path.display()
+                    ));
+                }
+                Err(e) => {
+                    warn!("Failed to remove Next dev lock at {:?}: {}", lock_path, e);
+                    let dev_dir = working_path.join(".next").join("dev");
+                    if dev_dir.exists() {
+                        if let Err(e2) = std::fs::remove_dir_all(&dev_dir) {
+                            warn!("Failed to remove .next/dev directory: {}", e2);
+                        } else {
+                            messages.push(
+                                "[moldable] Startup cleanup: removed .next/dev directory"
+                                    .to_string(),
+                            );
+                        }
+                    }
+                }
+            }
+        } else {
+            messages.push(
+                "[moldable] Startup cleanup: Next dev lock left in place (process still running)"
+                    .to_string(),
+            );
+        }
+    }
+
+    (killed, messages)
 }
 
 /// Clean up all orphaned instances for all registered apps
-pub fn cleanup_all_orphaned_apps(get_apps: impl Fn() -> Result<Vec<RegisteredApp>, String>) {
+pub fn cleanup_all_orphaned_apps(
+    get_apps: impl Fn() -> Result<Vec<RegisteredApp>, String>,
+    state: &AppState,
+) {
     let apps = match get_apps() {
         Ok(a) => a,
         Err(_) => return,
@@ -743,10 +855,13 @@ pub fn cleanup_all_orphaned_apps(get_apps: impl Fn() -> Result<Vec<RegisteredApp
     let mut total_killed = 0;
 
     for app in &apps {
-        let killed = cleanup_orphaned_instances(&app.path);
+        let (killed, messages) = cleanup_orphaned_instances(&app.path);
         if killed > 0 {
             info!("Cleaned up {} orphaned instance(s) for {}", killed, app.id);
             total_killed += killed;
+        }
+        if !messages.is_empty() {
+            append_app_logs(state, &app.id, messages);
         }
     }
 

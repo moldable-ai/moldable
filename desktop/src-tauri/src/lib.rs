@@ -4,6 +4,7 @@
 //! various subsystems. The actual logic is delegated to focused modules.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use log::{info, warn, error};
@@ -190,6 +191,29 @@ fn start_config_watcher(app_handle: AppHandle) {
 // MAIN ENTRY POINT
 // ============================================================================
 
+fn run_shutdown_cleanup(
+    cleanup_guard: &Arc<AtomicBool>,
+    app_state: &Arc<Mutex<AppStateInner>>,
+    ai_server_state: &Arc<Mutex<Option<CommandChild>>>,
+    audio_capture_state: &Arc<Mutex<Option<CommandChild>>>,
+    reason: &str,
+) {
+    if cleanup_guard.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
+    info!("Shutdown cleanup triggered: {}", reason);
+
+    let temp_state = AppState(app_state.clone());
+    cleanup_all_apps(&temp_state);
+
+    cleanup_ai_server(ai_server_state);
+    audio::cleanup_audio_capture(audio_capture_state);
+
+    delete_lock_file();
+    info!("Lock file deleted");
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app_state = AppState(Arc::new(Mutex::new(AppStateInner {
@@ -208,11 +232,17 @@ pub fn run() {
     let app_state_for_exit = app_state.0.clone();
     let ai_server_for_exit = ai_server_state.clone();
     let audio_capture_for_exit = audio_capture_state.0.clone();
+    let app_state_for_run_event = app_state_for_exit.clone();
+    let ai_server_for_run_event = ai_server_for_exit.clone();
+    let audio_capture_for_run_event = audio_capture_for_exit.clone();
+    let cleanup_guard = Arc::new(AtomicBool::new(false));
+    let cleanup_guard_for_window = cleanup_guard.clone();
+    let cleanup_guard_for_run_event = cleanup_guard.clone();
 
     // Clone for setup closure
     let ai_server_for_setup = ai_server_state.clone();
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(
             tauri_plugin_log::Builder::new()
                 .targets([
@@ -458,31 +488,36 @@ pub fn run() {
             start_config_watcher(app.handle().clone());
 
             // Clean up any orphaned processes from previous runs
-            cleanup_all_orphaned_apps(|| get_registered_apps());
+            let app_state_for_cleanup = app.state::<AppState>();
+            cleanup_all_orphaned_apps(|| get_registered_apps(), app_state_for_cleanup.inner());
 
             Ok(())
         })
         .on_window_event(move |_window, event| {
             if let tauri::WindowEvent::Destroyed = event {
-                info!("Window destroyed, cleaning up...");
-
-                // Create a temporary AppState wrapper for cleanup
-                let temp_state = AppState(app_state_for_exit.clone());
-                cleanup_all_apps(&temp_state);
-
-                // Cleanup AI server
-                cleanup_ai_server(&ai_server_for_exit);
-
-                // Cleanup audio capture
-                audio::cleanup_audio_capture(&audio_capture_for_exit);
-                
-                // Delete the lock file so next instance knows we're gone
-                delete_lock_file();
-                info!("Lock file deleted");
+                run_shutdown_cleanup(
+                    &cleanup_guard_for_window,
+                    &app_state_for_exit,
+                    &ai_server_for_exit,
+                    &audio_capture_for_exit,
+                    "window destroyed",
+                );
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(move |_app_handle, event| {
+        if let tauri::RunEvent::ExitRequested { .. } = event {
+            run_shutdown_cleanup(
+                &cleanup_guard_for_run_event,
+                &app_state_for_run_event,
+                &ai_server_for_run_event,
+                &audio_capture_for_run_event,
+                "exit requested",
+            );
+        }
+    });
 }
 
 // ============================================================================
