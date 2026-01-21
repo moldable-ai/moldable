@@ -99,23 +99,12 @@ fn create_install_staging_dir(app_id: &str) -> Result<PathBuf, String> {
     std::fs::create_dir_all(&staging_root)
         .map_err(|e| format!("Failed to create install staging dir: {}", e))?;
 
-    for attempt in 0..10 {
-        let suffix = unique_suffix();
-        let candidate = staging_root.join(format!("{}-{}-{}", app_id, suffix, attempt));
-        match std::fs::create_dir(&candidate) {
-            Ok(()) => return Ok(candidate),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => {
-                return Err(format!(
-                    "Failed to create staging dir {}: {}",
-                    candidate.display(),
-                    e
-                ))
-            }
-        }
-    }
+    let temp_dir = tempfile::Builder::new()
+        .prefix(&format!("{}-", app_id))
+        .tempdir_in(&staging_root)
+        .map_err(|e| format!("Failed to create staging dir: {}", e))?;
 
-    Err("Failed to create unique staging directory".to_string())
+    Ok(temp_dir.keep())
 }
 
 fn swap_app_directory(staging_dir: &Path, app_dir: &Path) -> Result<(), String> {
