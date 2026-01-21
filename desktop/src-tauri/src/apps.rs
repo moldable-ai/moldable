@@ -4,6 +4,7 @@
 //! and listing available apps from local development workspaces.
 
 use crate::paths::get_config_file_path;
+use crate::ports::{find_free_port, is_port_available};
 use crate::runtime::get_pnpm_path;
 use crate::types::{AvailableApp, MoldableConfig, MoldableManifest, RegisteredApp};
 use log::error;
@@ -301,15 +302,16 @@ pub fn find_available_port(start: u16) -> u16 {
         .map(|c| c.apps.iter().map(|a| a.port).collect())
         .unwrap_or_default();
 
-    let mut port: u32 = start as u32;
+    let start_port = find_free_port(start);
+    let mut port: u32 = start_port as u32;
     while port <= u16::MAX as u32 {
         let candidate = port as u16;
-        if !used_ports.contains(&candidate) {
+        if !used_ports.contains(&candidate) && is_port_available(candidate) {
             return candidate;
         }
         port += 1;
     }
-    start
+    start_port
 }
 
 // ============================================================================
@@ -462,6 +464,15 @@ mod tests {
         // Test with a higher start port
         let port = find_available_port(8000);
         assert!(port >= 8000);
+    }
+
+    #[test]
+    fn test_find_available_port_skips_in_use() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let candidate = find_available_port(port);
+        assert_ne!(candidate, port);
     }
 
     // ==================== DETECT APP IN FOLDER TESTS ====================
