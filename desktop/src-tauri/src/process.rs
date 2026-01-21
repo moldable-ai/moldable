@@ -2,7 +2,10 @@
 //!
 //! Handles starting, stopping, and monitoring app processes.
 
+use crate::apps::{get_registered_apps, update_registered_app_port};
+use crate::codemods::run_pending_codemods;
 use crate::env::get_merged_env_vars;
+use crate::install_state::{format_install_state_lines, read_install_state, update_install_state_safe};
 use crate::paths::get_workspaces_config_internal;
 use crate::ports::kill_process_tree;
 use crate::runtime;
@@ -10,7 +13,10 @@ use crate::types::{AppInstance, AppStatus, RegisteredApp};
 use log::{info, warn};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
+use std::net::{SocketAddr, TcpStream};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::time::Duration;
 use std::sync::{Arc, Mutex};
 use tauri::State;
 
@@ -31,6 +37,8 @@ pub struct AppStateInner {
     pub processes: HashMap<String, AppProcess>,
     /// Store last error/output for apps that have stopped
     pub last_errors: HashMap<String, Vec<String>>,
+    /// Track auto-retry attempts for Next lock errors per app
+    pub lock_retry_counts: HashMap<String, u8>,
 }
 
 /// Wrap in Arc so it can be shared across threads
@@ -101,11 +109,258 @@ pub fn with_script_args_forwarded(command: &str, args: Vec<String>, port: Option
     out
 }
 
+fn is_pid_running(pid: u32) -> bool {
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Check if a process is orphaned (PPID=1, meaning its parent died)
+fn is_pid_orphaned(pid: u32) -> bool {
+    let output = Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "ppid="])
+        .output();
+
+    match output {
+        Ok(result) if result.status.success() => {
+            let ppid_str = String::from_utf8_lossy(&result.stdout).trim().to_string();
+            ppid_str == "1"
+        }
+        _ => false,
+    }
+}
+
+fn is_pid_for_app(pid: u32, working_dir: &Path) -> bool {
+    let output = Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "command="])
+        .output();
+
+    let command = match output {
+        Ok(result) if result.status.success() => String::from_utf8_lossy(&result.stdout)
+            .trim()
+            .to_string(),
+        _ => return false,
+    };
+
+    if command.is_empty() {
+        return false;
+    }
+
+    let path = working_dir.to_string_lossy();
+    command.contains(path.as_ref())
+}
+
+fn is_port_responding(port: u16) -> bool {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    // Use 1 second timeout - 200ms was too aggressive and caused false negatives
+    TcpStream::connect_timeout(&addr, Duration::from_millis(1000)).is_ok()
+}
+
+fn find_running_instance(working_dir: &Path) -> Option<(u32, u16)> {
+    let working_dir_str = working_dir.to_string_lossy();
+    let instances = read_instances_file(working_dir_str.as_ref());
+
+    for instance in instances {
+        if !is_pid_running(instance.pid) {
+            continue;
+        }
+        if let Some(port) = instance.port {
+            if is_port_responding(port) {
+                return Some((instance.pid, port));
+            }
+        }
+    }
+
+    None
+}
+
+fn has_running_recorded_instance(working_dir: &Path) -> bool {
+    let working_dir_str = working_dir.to_string_lossy();
+    let instances = read_instances_file(working_dir_str.as_ref());
+    instances.iter().any(|instance| {
+        if !is_pid_running(instance.pid) {
+            return false;
+        }
+        if let Some(port) = instance.port {
+            if is_port_responding(port) {
+                return true;
+            }
+        }
+        is_pid_for_app(instance.pid, working_dir)
+    })
+}
+
+fn clear_stale_next_dev_lock(working_dir: &Path) -> Option<String> {
+    let lock_path = working_dir.join(".next").join("dev").join("lock");
+    if !lock_path.exists() {
+        return None;
+    }
+
+    if has_running_recorded_instance(working_dir) {
+        return None;
+    }
+
+    match std::fs::remove_file(&lock_path) {
+        Ok(()) => Some(format!(
+            "Removed stale Next dev lock at {}",
+            lock_path.display()
+        )),
+        Err(e) => {
+            warn!(
+                "Failed to remove Next dev lock at {:?}: {}",
+                lock_path, e
+            );
+            None
+        }
+    }
+}
+
+/// Force cleanup of Next.js lock and any stale/orphaned processes.
+/// Used when we hit a lock error and need to recover aggressively.
+fn force_cleanup_next_lock(working_dir: &Path) -> Vec<String> {
+    let mut messages = Vec::new();
+    let working_dir_str = working_dir.to_string_lossy();
+
+    // Kill any orphaned or non-responding processes for this app
+    let instances = read_instances_file(working_dir_str.as_ref());
+    for instance in instances {
+        if !is_pid_running(instance.pid) {
+            continue;
+        }
+
+        let port_responding = instance
+            .port
+            .map(|p| is_port_responding(p))
+            .unwrap_or(false);
+
+        // Kill if orphaned OR if it has the lock but isn't responding
+        if is_pid_orphaned(instance.pid) || !port_responding {
+            info!(
+                "Force killing stale process {} (orphaned={}, port_responding={})",
+                instance.pid,
+                is_pid_orphaned(instance.pid),
+                port_responding
+            );
+            kill_process_tree(instance.pid);
+            messages.push(format!(
+                "[moldable] Killed stale process (pid {})",
+                instance.pid
+            ));
+        }
+    }
+
+    // Clear the instances file since we're starting fresh
+    let instances_path = working_dir.join(".moldable.instances.json");
+    if instances_path.exists() {
+        if let Err(e) = std::fs::remove_file(&instances_path) {
+            warn!("Failed to remove instances file: {}", e);
+        } else {
+            messages.push("[moldable] Cleared stale instances file".to_string());
+        }
+    }
+
+    // Force delete the lock file
+    let lock_path = working_dir.join(".next").join("dev").join("lock");
+    if lock_path.exists() {
+        match std::fs::remove_file(&lock_path) {
+            Ok(()) => {
+                messages.push(format!(
+                    "[moldable] Force removed Next dev lock at {}",
+                    lock_path.display()
+                ));
+            }
+            Err(e) => {
+                warn!("Failed to force remove lock file: {}", e);
+                // As a last resort, try deleting the entire .next/dev directory
+                let dev_dir = working_dir.join(".next").join("dev");
+                if dev_dir.exists() {
+                    if let Err(e2) = std::fs::remove_dir_all(&dev_dir) {
+                        warn!("Failed to remove .next/dev directory: {}", e2);
+                    } else {
+                        messages.push("[moldable] Removed .next/dev directory".to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    messages
+}
+
+fn read_next_lock_pid(working_dir: &Path) -> Option<u32> {
+    let lock_path = working_dir.join(".next").join("dev").join("lock");
+    let content = std::fs::read_to_string(lock_path).ok()?;
+    let pid_str = content.split_whitespace().next()?;
+    pid_str.parse::<u32>().ok()
+}
+
+fn has_next_lock_error(lines: &[String]) -> bool {
+    lines.iter().any(|line| {
+        line.contains("Unable to acquire lock") && line.contains(".next/dev/lock")
+    })
+}
+
+fn install_state_lines_for_path(app_path: &Path) -> Vec<String> {
+    read_install_state(app_path)
+        .map(|state| format_install_state_lines(&state))
+        .unwrap_or_default()
+}
+
+fn handle_next_lock_before_start(
+    working_dir: &Path,
+    port: Option<u16>,
+) -> (Vec<String>, Option<AppStatus>) {
+    let mut messages = Vec::new();
+    let lock_path = working_dir.join(".next").join("dev").join("lock");
+    if !lock_path.exists() {
+        return (messages, None);
+    }
+
+    if let Some(pid) = read_next_lock_pid(working_dir) {
+        if is_pid_running(pid) && is_pid_for_app(pid, working_dir) {
+            if let Some(p) = port {
+                if is_port_responding(p) {
+                    return (
+                        vec![format!(
+                            "[moldable] Detected existing instance on port {}",
+                            p
+                        )],
+                        Some(AppStatus {
+                            running: true,
+                            pid: Some(pid),
+                            exit_code: None,
+                            recent_output: Vec::new(),
+                            actual_port: Some(p),
+                        }),
+                    );
+                }
+            }
+
+            kill_process_tree(pid);
+            messages.push(format!(
+                "[moldable] Killed stale Next dev process (pid {})",
+                pid
+            ));
+        }
+    }
+
+    if let Some(line) = clear_stale_next_dev_lock(working_dir) {
+        messages.push(format!("[moldable] {}", line));
+    }
+
+    (messages, None)
+}
+
 // ============================================================================
 // PROCESS LIFECYCLE
 // ============================================================================
 
 /// Start an app process (internal implementation)
+/// 
+/// If `force_cleanup` is true, aggressively clean up any stale locks and processes
+/// before starting. This is used on retry after lock errors.
 pub fn start_app_internal(
     app_id: String,
     working_dir: String,
@@ -113,6 +368,18 @@ pub fn start_app_internal(
     args: Vec<String>,
     port: Option<u16>,
     state: &AppState,
+) -> Result<AppStatus, String> {
+    start_app_internal_with_options(app_id, working_dir, command, args, port, state, false)
+}
+
+fn start_app_internal_with_options(
+    app_id: String,
+    working_dir: String,
+    command: String,
+    args: Vec<String>,
+    port: Option<u16>,
+    state: &AppState,
+    force_cleanup: bool,
 ) -> Result<AppStatus, String> {
     // Validate working directory exists
     let working_path = std::path::Path::new(&working_dir);
@@ -135,11 +402,37 @@ pub fn start_app_internal(
         ));
     }
 
+    // Run any pending codemods to migrate the app to current Moldable version
+    let codemod_messages = run_pending_codemods(working_path);
+    for msg in &codemod_messages {
+        info!("{}", msg);
+    }
+
+    // If force_cleanup is set, aggressively clean up stale state before proceeding
+    let mut cleanup_messages = codemod_messages;
+    if force_cleanup {
+        info!("Force cleanup enabled for {}, cleaning stale state...", app_id);
+        cleanup_messages = force_cleanup_next_lock(working_path);
+        for msg in &cleanup_messages {
+            info!("{}", msg);
+        }
+    }
+
     // Ensure node_modules exists - install dependencies if needed
     if let Err(e) = runtime::ensure_node_modules_installed(working_path) {
-        warn!("Failed to ensure node_modules for {}: {}", app_id, e);
-        // Don't fail - the app might still work, or will show a clearer error
+        update_install_state_safe(
+            working_path,
+            &app_id,
+            "dependencies",
+            "error",
+            Some(e.clone()),
+        );
+        return Err(format!(
+            "Failed to install dependencies for {}: {}",
+            app_id, e
+        ));
     }
+    update_install_state_safe(working_path, &app_id, "dependencies", "ok", None);
 
     let mut app_state = state.0.lock().map_err(|e| e.to_string())?;
 
@@ -169,8 +462,33 @@ pub fn start_app_internal(
         }
     }
 
-    // Clear any previous errors
+    // Clear any previous errors and reset retry count
     app_state.last_errors.remove(&app_id);
+    app_state.lock_retry_counts.insert(app_id.clone(), 0);
+
+    // If we did force cleanup, skip the normal lock handling (we already cleaned up)
+    let mut initial_output = cleanup_messages;
+    if !force_cleanup {
+        let (lock_messages, lock_status) = handle_next_lock_before_start(working_path, port);
+        if let Some(status) = lock_status {
+            return Ok(status);
+        }
+
+        if let Some((pid, port)) = find_running_instance(working_path) {
+            return Ok(AppStatus {
+                running: true,
+                pid: Some(pid),
+                exit_code: None,
+                recent_output: vec![format!(
+                    "[moldable] Detected existing instance on port {}",
+                    port
+                )],
+                actual_port: Some(port),
+            });
+        }
+
+        initial_output.extend(lock_messages);
+    }
 
     // Ensure port flag reaches the underlying app when using pnpm/npm/yarn/bun
     let args = with_script_args_forwarded(&command, args, port);
@@ -293,11 +611,29 @@ pub fn start_app_internal(
         });
     }
 
+    if let Some(actual_port) = port {
+        match update_registered_app_port(&app_id, actual_port) {
+            Ok(true) => {
+                initial_output.push(format!(
+                    "[moldable] Updated preferred port to {}",
+                    actual_port
+                ));
+            }
+            Ok(false) => {}
+            Err(e) => {
+                initial_output.push(format!(
+                    "[moldable] Failed to persist preferred port: {}",
+                    e
+                ));
+            }
+        }
+    }
+
     app_state.processes.insert(
         app_id,
         AppProcess {
             child,
-            output_lines: Vec::new(),
+            output_lines: initial_output,
             actual_port: port,
         },
     );
@@ -467,6 +803,8 @@ pub fn stop_app(app_id: String, state: State<AppState>) -> Result<AppStatus, Str
 
 #[tauri::command]
 pub fn get_app_status(app_id: String, state: State<AppState>) -> Result<AppStatus, String> {
+    let mut retry_plan: Option<(RegisteredApp, Option<u16>)> = None;
+    let mut immediate_status: Option<AppStatus> = None;
     let mut app_state = state.0.lock().map_err(|e| e.to_string())?;
 
     if let Some(app_proc) = app_state.processes.get_mut(&app_id) {
@@ -485,22 +823,94 @@ pub fn get_app_status(app_id: String, state: State<AppState>) -> Result<AppStatu
                 // Process ended
                 let exit_code = status.code();
                 let output = app_proc.output_lines.clone();
+                let attempted_port = app_proc.actual_port;
                 app_state.last_errors.insert(app_id.clone(), output.clone());
                 app_state.processes.remove(&app_id);
 
-                return Ok(AppStatus {
-                    running: false,
-                    pid: None,
-                    exit_code,
-                    recent_output: output,
-                    actual_port: None,
-                });
+                if exit_code.is_some() && has_next_lock_error(&output) {
+                    if let Ok(apps) = get_registered_apps() {
+                        if let Some(app) = apps.into_iter().find(|a| a.id == app_id) {
+                            if let Some((pid, port)) =
+                                find_running_instance(Path::new(&app.path))
+                            {
+                                immediate_status = Some(AppStatus {
+                                    running: true,
+                                    pid: Some(pid),
+                                    exit_code: None,
+                                    recent_output: vec![format!(
+                                        "[moldable] Detected existing instance on port {}",
+                                        port
+                                    )],
+                                    actual_port: Some(port),
+                                });
+                            } else {
+                                let attempts = app_state
+                                    .lock_retry_counts
+                                    .entry(app_id.clone())
+                                    .or_insert(0);
+                                if *attempts < 1 {
+                                    *attempts += 1;
+                                    retry_plan = Some((app, attempted_port));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if retry_plan.is_none() {
+                    immediate_status = Some(AppStatus {
+                        running: false,
+                        pid: None,
+                        exit_code,
+                        recent_output: output,
+                        actual_port: None,
+                    });
+                }
             }
             Err(_) => {
                 app_state.processes.remove(&app_id);
             }
         }
     }
+
+    drop(app_state);
+
+    if let Some(status) = immediate_status {
+        return Ok(status);
+    }
+
+    if let Some((app, port)) = retry_plan {
+        info!(
+            "Retrying app {} after Next dev lock error (with force cleanup)",
+            app_id
+        );
+        // Use force_cleanup=true to aggressively clear stale state before retry
+        match start_app_internal_with_options(
+            app_id.clone(),
+            app.path,
+            app.command,
+            app.args,
+            port,
+            state.inner(),
+            true, // force_cleanup
+        ) {
+            Ok(status) => return Ok(status),
+            Err(e) => {
+                return Ok(AppStatus {
+                    running: false,
+                    pid: None,
+                    exit_code: None,
+                    recent_output: vec![format!(
+                        "[moldable] Auto-retry failed: {}",
+                        e
+                    )],
+                    actual_port: None,
+                });
+            }
+        }
+    }
+
+    let app_state = state.0.lock().map_err(|e| e.to_string())?;
 
     // Check for stored errors from previous run
     let last_output = app_state
@@ -521,18 +931,29 @@ pub fn get_app_status(app_id: String, state: State<AppState>) -> Result<AppStatu
 #[tauri::command]
 pub fn get_app_logs(app_id: String, state: State<AppState>) -> Result<Vec<String>, String> {
     let app_state = state.0.lock().map_err(|e| e.to_string())?;
+    let install_lines = get_registered_apps()
+        .ok()
+        .and_then(|apps| apps.into_iter().find(|app| app.id == app_id))
+        .map(|app| install_state_lines_for_path(Path::new(&app.path)))
+        .unwrap_or_default();
 
     // First check running process
     if let Some(app_proc) = app_state.processes.get(&app_id) {
-        return Ok(app_proc.output_lines.clone());
+        let mut lines = install_lines;
+        lines.extend(app_proc.output_lines.clone());
+        return Ok(lines);
     }
 
     // Then check stored errors
-    Ok(app_state
-        .last_errors
-        .get(&app_id)
-        .cloned()
-        .unwrap_or_default())
+    let mut lines = install_lines;
+    lines.extend(
+        app_state
+            .last_errors
+            .get(&app_id)
+            .cloned()
+            .unwrap_or_default(),
+    );
+    Ok(lines)
 }
 
 #[tauri::command]
@@ -541,6 +962,20 @@ pub fn set_app_actual_port(app_id: String, port: u16, state: State<AppState>) ->
 
     if let Some(app_proc) = app_state.processes.get_mut(&app_id) {
         app_proc.actual_port = Some(port);
+        match update_registered_app_port(&app_id, port) {
+            Ok(true) => {
+                app_proc
+                    .output_lines
+                    .push(format!("[moldable] Updated preferred port to {}", port));
+            }
+            Ok(false) => {}
+            Err(e) => {
+                app_proc.output_lines.push(format!(
+                    "[moldable] Failed to persist preferred port: {}",
+                    e
+                ));
+            }
+        }
     }
 
     Ok(())
@@ -561,12 +996,18 @@ pub fn discover_app_port(
         }
     }
 
+    let working_path = Path::new(&working_dir);
+
     // Try reading from .moldable.port file
     if let Some(port) = read_port_file(&working_dir) {
         // Verify the port is actually in use
         if std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok() {
             return Some(port);
         }
+    }
+
+    if let Some((_, port)) = find_running_instance(working_path) {
+        return Some(port);
     }
 
     None
@@ -579,6 +1020,8 @@ pub fn discover_app_port(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::install_state::update_install_state;
+    use std::fs;
 
     // ==================== COMMAND BASENAME TESTS ====================
 
@@ -730,8 +1173,258 @@ mod tests {
         let state = AppStateInner {
             processes: HashMap::new(),
             last_errors: HashMap::new(),
+            lock_retry_counts: HashMap::new(),
         };
         assert!(state.processes.is_empty());
         assert!(state.last_errors.is_empty());
+        assert!(state.lock_retry_counts.is_empty());
+    }
+
+    // ==================== INSTALL STATE LOGS TESTS ====================
+
+    fn create_temp_dir(prefix: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("{}_{}", prefix, nanos));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn test_install_state_lines_for_path_missing() {
+        let temp_dir = create_temp_dir("moldable-install-lines-missing");
+        let lines = install_state_lines_for_path(&temp_dir);
+        assert!(lines.is_empty());
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_install_state_lines_for_path_error() {
+        let temp_dir = create_temp_dir("moldable-install-lines-error");
+        update_install_state(
+            &temp_dir,
+            "app-id",
+            "dependencies",
+            "error",
+            Some("pnpm failed".to_string()),
+        )
+        .unwrap();
+
+        let lines = install_state_lines_for_path(&temp_dir);
+        assert!(lines.iter().any(|line| line.contains("stage=dependencies")));
+        assert!(lines.iter().any(|line| line.contains("error=pnpm failed")));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_install_state_lines_for_path_ok() {
+        let temp_dir = create_temp_dir("moldable-install-lines-ok");
+        update_install_state(&temp_dir, "app-id", "complete", "ok", None).unwrap();
+
+        let lines = install_state_lines_for_path(&temp_dir);
+        assert!(lines.is_empty());
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    // ==================== NEXT LOCK CLEANUP TESTS ====================
+
+    #[test]
+    fn test_has_next_lock_error_detects_message() {
+        let lines = vec![
+            "[stderr] ⨯ Unable to acquire lock at /tmp/app/.next/dev/lock, is another instance of next dev running?".to_string(),
+        ];
+        assert!(has_next_lock_error(&lines));
+    }
+
+    #[test]
+    fn test_has_next_lock_error_ignores_other_errors() {
+        let lines = vec![
+            "[stderr] Error: spawn next ENOENT".to_string(),
+            "Some other log".to_string(),
+        ];
+        assert!(!has_next_lock_error(&lines));
+    }
+
+    #[test]
+    fn test_clear_stale_next_dev_lock_removes_when_no_instances() {
+        let temp_dir = create_temp_dir("moldable-next-lock-clear");
+        let lock_path = temp_dir.join(".next").join("dev");
+        fs::create_dir_all(&lock_path).unwrap();
+        fs::write(lock_path.join("lock"), "locked").unwrap();
+
+        let result = clear_stale_next_dev_lock(&temp_dir);
+        assert!(result.is_some());
+        assert!(!lock_path.join("lock").exists());
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_clear_stale_next_dev_lock_keeps_when_instance_running() {
+        let temp_dir = create_temp_dir("moldable-next-lock-keep");
+        let lock_path = temp_dir.join(".next").join("dev");
+        fs::create_dir_all(&lock_path).unwrap();
+        fs::write(lock_path.join("lock"), "locked").unwrap();
+
+        // Bind to a real port so is_port_responding returns true
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let instances = serde_json::json!([{
+            "pid": std::process::id(),
+            "port": port,
+            "startedAt": "2026-01-01T00:00:00Z"
+        }]);
+        fs::write(
+            temp_dir.join(".moldable.instances.json"),
+            serde_json::to_string(&instances).unwrap(),
+        )
+        .unwrap();
+
+        let result = clear_stale_next_dev_lock(&temp_dir);
+        assert!(result.is_none());
+        assert!(lock_path.join("lock").exists());
+
+        drop(listener);
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_find_running_instance_returns_port() {
+        let temp_dir = create_temp_dir("moldable-instance-port");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let instances = serde_json::json!([{
+            "pid": std::process::id(),
+            "port": port,
+            "startedAt": "2026-01-01T00:00:00Z"
+        }]);
+        fs::write(
+            temp_dir.join(".moldable.instances.json"),
+            serde_json::to_string(&instances).unwrap(),
+        )
+        .unwrap();
+
+        let instance = find_running_instance(&temp_dir);
+        assert_eq!(instance.map(|(_, p)| p), Some(port));
+
+        drop(listener);
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_read_next_lock_pid_parses() {
+        let temp_dir = create_temp_dir("moldable-next-lock-pid");
+        let lock_path = temp_dir.join(".next").join("dev");
+        fs::create_dir_all(&lock_path).unwrap();
+        fs::write(lock_path.join("lock"), "12345").unwrap();
+
+        let pid = read_next_lock_pid(&temp_dir);
+        assert_eq!(pid, Some(12345));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_handle_next_lock_removes_when_pid_missing() {
+        let temp_dir = create_temp_dir("moldable-next-lock-remove");
+        let lock_path = temp_dir.join(".next").join("dev");
+        fs::create_dir_all(&lock_path).unwrap();
+        fs::write(lock_path.join("lock"), "999999").unwrap();
+
+        let (messages, status) = handle_next_lock_before_start(&temp_dir, Some(4000));
+        assert!(status.is_none());
+        assert!(!messages.is_empty());
+        assert!(!lock_path.join("lock").exists());
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_find_running_instance_skips_without_port() {
+        let temp_dir = create_temp_dir("moldable-instance-no-port");
+        let instances = serde_json::json!([{
+            "pid": std::process::id(),
+            "port": null,
+            "startedAt": "2026-01-01T00:00:00Z"
+        }]);
+        fs::write(
+            temp_dir.join(".moldable.instances.json"),
+            serde_json::to_string(&instances).unwrap(),
+        )
+        .unwrap();
+
+        let instance = find_running_instance(&temp_dir);
+        assert!(instance.is_none());
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    // ==================== ORPHAN DETECTION TESTS ====================
+
+    #[test]
+    fn test_is_pid_orphaned_returns_false_for_current_process() {
+        // Current process has a parent (the test runner), not init (PID 1)
+        let current_pid = std::process::id();
+        assert!(!is_pid_orphaned(current_pid));
+    }
+
+    #[test]
+    fn test_is_pid_orphaned_returns_false_for_nonexistent_pid() {
+        // Non-existent PID should return false (not orphaned, just doesn't exist)
+        assert!(!is_pid_orphaned(999999));
+    }
+
+    // ==================== FORCE CLEANUP TESTS ====================
+
+    #[test]
+    fn test_force_cleanup_removes_lock_and_instances() {
+        let temp_dir = create_temp_dir("moldable-force-cleanup");
+
+        // Create lock file
+        let lock_path = temp_dir.join(".next").join("dev");
+        fs::create_dir_all(&lock_path).unwrap();
+        fs::write(lock_path.join("lock"), "12345").unwrap();
+
+        // Create instances file with a non-existent PID
+        let instances = serde_json::json!([{
+            "pid": 999999,
+            "port": 4000,
+            "startedAt": "2026-01-01T00:00:00Z"
+        }]);
+        fs::write(
+            temp_dir.join(".moldable.instances.json"),
+            serde_json::to_string(&instances).unwrap(),
+        )
+        .unwrap();
+
+        let messages = force_cleanup_next_lock(&temp_dir);
+
+        // Should have cleaned up lock file
+        assert!(!lock_path.join("lock").exists());
+        // Should have cleaned up instances file
+        assert!(!temp_dir.join(".moldable.instances.json").exists());
+        // Should have generated messages about cleanup
+        assert!(!messages.is_empty());
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_force_cleanup_handles_empty_directory() {
+        let temp_dir = create_temp_dir("moldable-force-cleanup-empty");
+
+        // No lock file, no instances file
+        let messages = force_cleanup_next_lock(&temp_dir);
+
+        // Should complete without error, possibly with no messages
+        assert!(messages.is_empty());
+
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 }

@@ -8,7 +8,7 @@
 //! 2. **Just works** - No user configuration needed, no PATH issues
 //! 3. **Fallback for dev** - In development, can use system Node if bundled not available
 
-use log::{info, error};
+use log::{info, error, warn};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -276,31 +276,124 @@ pub fn ensure_pnpm_installed() -> Result<String, String> {
     Err("pnpm not found. Please reinstall Moldable.".to_string())
 }
 
-/// Install node_modules for an app if not present
-pub fn ensure_node_modules_installed(app_dir: &Path) -> Result<(), String> {
-    let node_modules_path = app_dir.join("node_modules");
-    if node_modules_path.exists() {
-        return Ok(());
+fn read_package_json(app_dir: &Path) -> Option<serde_json::Value> {
+    let package_json_path = app_dir.join("package.json");
+    let content = std::fs::read_to_string(package_json_path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+fn has_next_dependency(package_json: &serde_json::Value) -> bool {
+    for key in ["dependencies", "devDependencies"] {
+        if let Some(dep_map) = package_json.get(key).and_then(|v| v.as_object()) {
+            if dep_map.contains_key("next") {
+                return true;
+            }
+        }
     }
-    
-    info!("node_modules missing in {:?}, running pnpm install...", app_dir);
-    
+    false
+}
+
+fn missing_expected_bin(app_dir: &Path) -> Option<String> {
+    let package_json = read_package_json(app_dir)?;
+    if !has_next_dependency(&package_json) {
+        return None;
+    }
+
+    let bin_dir = app_dir.join("node_modules").join(".bin");
+    let candidates = ["next", "next.cmd", "next.ps1"];
+    let has_bin = candidates
+        .iter()
+        .any(|name| bin_dir.join(name).exists());
+    if has_bin {
+        return None;
+    }
+
+    Some("next".to_string())
+}
+
+fn run_pnpm_install(app_dir: &Path) -> Result<(), String> {
     let pnpm_path = ensure_pnpm_installed()?;
     let path = build_runtime_path();
-    
+
     let output = Command::new(&pnpm_path)
         .arg("install")
         .current_dir(app_dir)
         .env("PATH", &path)
         .output()
         .map_err(|e| format!("Failed to run pnpm install: {}", e))?;
-    
+
     if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("pnpm install failed: {}", stderr));
+        let code = output
+            .status
+            .code()
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        return Err(format!(
+            "pnpm install failed (exit {}). stdout: {} stderr: {}",
+            code,
+            stdout.trim(),
+            stderr.trim()
+        ));
     }
-    
-    info!("node_modules installed successfully");
+
+    Ok(())
+}
+
+/// Install node_modules for an app if not present
+pub fn ensure_node_modules_installed(app_dir: &Path) -> Result<(), String> {
+    let node_modules_path = app_dir.join("node_modules");
+    let install_reason = if !node_modules_path.exists() {
+        Some("node_modules missing".to_string())
+    } else if let Some(missing_bin) = missing_expected_bin(app_dir) {
+        Some(format!("missing '{}' binary", missing_bin))
+    } else {
+        None
+    };
+
+    if let Some(reason) = install_reason {
+        info!(
+            "Dependency install stage=prepare path={:?} reason={}",
+            app_dir, reason
+        );
+    } else {
+        return Ok(());
+    }
+
+    let max_attempts = 2;
+    for attempt in 1..=max_attempts {
+        info!(
+            "Dependency install stage=pnpm attempt={}/{}",
+            attempt, max_attempts
+        );
+        let result = run_pnpm_install(app_dir).and_then(|_| {
+            if let Some(missing_bin) = missing_expected_bin(app_dir) {
+                Err(format!(
+                    "Dependencies installed but '{}' binary is still missing",
+                    missing_bin
+                ))
+            } else {
+                Ok(())
+            }
+        });
+
+        match result {
+            Ok(()) => {
+                info!("Dependency install stage=verify status=ok");
+                return Ok(());
+            }
+            Err(e) => {
+                warn!("pnpm install attempt {} failed: {}", attempt, e);
+                if attempt < max_attempts {
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                } else {
+                    return Err(e);
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -311,6 +404,17 @@ pub fn ensure_node_modules_installed(app_dir: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+
+    fn create_temp_dir(prefix: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("{}_{}", prefix, nanos));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
 
     #[test]
     fn test_get_bundled_node_bin_dir() {
@@ -408,5 +512,43 @@ mod tests {
         assert!(json.contains("nodeInstalled"));
         assert!(json.contains("nodeSource"));
         assert!(json.contains("\"bundled\""));
+    }
+
+    #[test]
+    fn test_missing_expected_bin_without_next_dependency() {
+        let temp_dir = create_temp_dir("moldable-test-no-next");
+        let package_json = r#"{"name":"app","dependencies":{"react":"19.0.0"}}"#;
+        fs::write(temp_dir.join("package.json"), package_json).unwrap();
+
+        let missing = missing_expected_bin(&temp_dir);
+        assert!(missing.is_none());
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_missing_expected_bin_when_next_missing() {
+        let temp_dir = create_temp_dir("moldable-test-next-missing");
+        let package_json = r#"{"name":"app","dependencies":{"next":"16.1.1"}}"#;
+        fs::write(temp_dir.join("package.json"), package_json).unwrap();
+
+        let missing = missing_expected_bin(&temp_dir);
+        assert_eq!(missing, Some("next".to_string()));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_missing_expected_bin_with_next_present() {
+        let temp_dir = create_temp_dir("moldable-test-next-present");
+        let package_json = r#"{"name":"app","dependencies":{"next":"16.1.1"}}"#;
+        fs::write(temp_dir.join("package.json"), package_json).unwrap();
+        fs::create_dir_all(temp_dir.join("node_modules").join(".bin")).unwrap();
+        fs::write(temp_dir.join("node_modules").join(".bin").join("next"), "").unwrap();
+
+        let missing = missing_expected_bin(&temp_dir);
+        assert!(missing.is_none());
+
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 }

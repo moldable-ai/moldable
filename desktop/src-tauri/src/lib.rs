@@ -68,6 +68,12 @@ pub mod api_server;
 pub mod apps;
 use apps::get_registered_apps;
 
+// Install state tracking
+pub mod install_state;
+
+// App codemods/migrations
+pub mod codemods;
+
 // GitHub app registry
 pub mod registry;
 
@@ -189,6 +195,7 @@ pub fn run() {
     let app_state = AppState(Arc::new(Mutex::new(AppStateInner {
         processes: HashMap::new(),
         last_errors: HashMap::new(),
+        lock_retry_counts: HashMap::new(),
     })));
 
     // Create AI server state to track the sidecar process
@@ -494,6 +501,7 @@ mod tests {
         let app_state = AppState(Arc::new(Mutex::new(AppStateInner {
             processes: HashMap::new(),
             last_errors: HashMap::new(),
+            lock_retry_counts: HashMap::new(),
         })));
 
         let state = app_state.0.lock().unwrap();
@@ -593,6 +601,7 @@ mod tests {
         let app_state = AppState(Arc::new(Mutex::new(AppStateInner {
             processes: HashMap::new(),
             last_errors: HashMap::new(),
+            lock_retry_counts: HashMap::new(),
         })));
 
         // Clone the inner Arc (as done for exit handler)

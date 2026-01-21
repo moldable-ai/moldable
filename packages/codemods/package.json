@@ -1,0 +1,38 @@
+{
+  "name": "@moldable-ai/codemods",
+  "version": "0.1.0",
+  "description": "Codemods for Moldable app migrations",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./transforms/*": {
+      "import": "./dist/transforms/*.js",
+      "types": "./dist/transforms/*.d.ts"
+    }
+  },
+  "bin": {
+    "moldable-codemod": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "jscodeshift": "^17.1.2",
+    "globby": "^14.0.2",
+    "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "@moldable-ai/typescript-config": "workspace:*",
+    "@types/jscodeshift": "^0.12.0",
+    "@types/node": "^20.17.10",
+    "tsup": "^8.4.0",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

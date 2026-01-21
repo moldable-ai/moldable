@@ -4,10 +4,11 @@
 //! apps from the moldable-ai/apps repository.
 
 use crate::apps::{detect_app_in_folder, register_app, unregister_app};
+use crate::install_state::update_install_state_safe;
 use crate::paths::{get_cache_dir, get_config_file_path, get_shared_apps_dir};
 use crate::runtime;
 use crate::types::{AppRegistry, MoldableConfig, RegisteredApp};
-use log::{info, warn};
+use log::{info, warn, error};
 use std::io::{Read, Write};
 
 // ============================================================================
@@ -85,6 +86,8 @@ pub async fn install_app_from_registry(
     let shared_apps_dir = get_shared_apps_dir()?;
     let app_dir = shared_apps_dir.join(&app_id);
 
+    update_install_state_safe(&app_dir, &app_id, "start", "in_progress", None);
+
     // Check if already registered in the current workspace
     let config_path = get_config_file_path()?;
     let current_apps: Vec<RegisteredApp> = if config_path.exists() {
@@ -110,21 +113,42 @@ pub async fn install_app_from_registry(
             "App '{}' already downloaded, registering in workspace...",
             app_id
         );
+        info!("Install stage=dependencies app={}", app_id);
+        update_install_state_safe(&app_dir, &app_id, "dependencies", "in_progress", None);
 
-        runtime::ensure_node_modules_installed(&app_dir)?;
+        if let Err(e) = runtime::ensure_node_modules_installed(&app_dir) {
+            update_install_state_safe(
+                &app_dir,
+                &app_id,
+                "dependencies",
+                "error",
+                Some(e.clone()),
+            );
+            return Err(e);
+        }
+        update_install_state_safe(&app_dir, &app_id, "dependencies", "ok", None);
 
         let app_dir_str = app_dir.to_string_lossy().to_string();
         let detected =
             detect_app_in_folder(app_dir_str)?.ok_or_else(|| "Failed to detect app".to_string())?;
 
-        register_app(app_handle.clone(), detected.clone())?;
+        info!("Install stage=register app={}", app_id);
+        update_install_state_safe(&app_dir, &app_id, "register", "in_progress", None);
+        if let Err(e) = register_app(app_handle.clone(), detected.clone()) {
+            update_install_state_safe(&app_dir, &app_id, "register", "error", Some(e.clone()));
+            return Err(e);
+        }
+        update_install_state_safe(&app_dir, &app_id, "register", "ok", None);
+        update_install_state_safe(&app_dir, &app_id, "complete", "ok", None);
 
-        info!("Registered {} in workspace!", app_id);
+        info!("Install stage=complete app={}", app_id);
 
         return Ok(detected);
     }
 
-    info!("Installing {} from moldable-ai/apps...", app_id);
+    info!("Install stage=start app={}", app_id);
+    info!("Install stage=download app={} source=moldable-ai/apps", app_id);
+    update_install_state_safe(&app_dir, &app_id, "download", "in_progress", None);
 
     // Download the repo archive for the specific commit
     let archive_url = format!(
@@ -136,21 +160,52 @@ pub async fn install_app_from_registry(
 
     let response = reqwest::get(&archive_url)
         .await
-        .map_err(|e| format!("Failed to download: {}", e))?;
+        .map_err(|e| {
+            let message = format!("Failed to download: {}", e);
+            update_install_state_safe(
+                &app_dir,
+                &app_id,
+                "download",
+                "error",
+                Some(message.clone()),
+            );
+            message
+        })?;
 
     if !response.status().is_success() {
-        return Err(format!(
-            "Failed to download: HTTP {}",
-            response.status()
-        ));
+        let message = format!("Failed to download: HTTP {}", response.status());
+        update_install_state_safe(
+            &app_dir,
+            &app_id,
+            "download",
+            "error",
+            Some(message.clone()),
+        );
+        return Err(message);
     }
 
     let bytes = response
         .bytes()
         .await
-        .map_err(|e| format!("Failed to read response: {}", e))?;
+        .map_err(|e| {
+            let message = format!("Failed to read response: {}", e);
+            update_install_state_safe(
+                &app_dir,
+                &app_id,
+                "download",
+                "error",
+                Some(message.clone()),
+            );
+            message
+        })?;
+    update_install_state_safe(&app_dir, &app_id, "download", "ok", None);
 
-    info!("Downloaded {} bytes, extracting...", bytes.len());
+    info!(
+        "Install stage=extract app={} bytes={}",
+        app_id,
+        bytes.len()
+    );
+    update_install_state_safe(&app_dir, &app_id, "extract", "in_progress", None);
 
     // Create a temporary directory for extraction
     let temp_dir = std::env::temp_dir().join(format!("moldable-app-{}", app_id));
@@ -164,7 +219,17 @@ pub async fn install_app_from_registry(
     // Extract the zip
     let cursor = std::io::Cursor::new(bytes.as_ref());
     let mut archive =
-        zip::ZipArchive::new(cursor).map_err(|e| format!("Failed to open zip: {}", e))?;
+        zip::ZipArchive::new(cursor).map_err(|e| {
+            let message = format!("Failed to open zip: {}", e);
+            update_install_state_safe(
+                &app_dir,
+                &app_id,
+                "extract",
+                "error",
+                Some(message.clone()),
+            );
+            message
+        })?;
 
     // The archive structure is: apps-{commit}/{app_path}/...
     let short_commit = if commit.len() > 7 {
@@ -197,24 +262,40 @@ pub async fn install_app_from_registry(
     }
 
     let prefix = actual_prefix.ok_or_else(|| {
-        format!(
+        let message = format!(
             "Could not find app '{}' in archive (tried prefixes: {:?})",
             app_path, possible_prefixes
-        )
+        );
+        update_install_state_safe(&app_dir, &app_id, "extract", "error", Some(message.clone()));
+        message
     })?;
 
     info!("Found app at prefix: {}", prefix);
 
     // Ensure the shared apps directory exists
     std::fs::create_dir_all(&shared_apps_dir)
-        .map_err(|e| format!("Failed to create shared apps dir: {}", e))?;
+        .map_err(|e| {
+            let message = format!("Failed to create shared apps dir: {}", e);
+            update_install_state_safe(&app_dir, &app_id, "extract", "error", Some(message.clone()));
+            message
+        })?;
 
     // Extract just the app folder
     let mut extracted_count = 0;
     for i in 0..archive.len() {
         let mut file = archive
             .by_index(i)
-            .map_err(|e| format!("Failed to read archive entry: {}", e))?;
+            .map_err(|e| {
+                let message = format!("Failed to read archive entry: {}", e);
+                update_install_state_safe(
+                    &app_dir,
+                    &app_id,
+                    "extract",
+                    "error",
+                    Some(message.clone()),
+                );
+                message
+            })?;
 
         let file_name = file.name().to_string();
 
@@ -232,28 +313,82 @@ pub async fn install_app_from_registry(
 
         if file.is_dir() {
             std::fs::create_dir_all(&dest_path)
-                .map_err(|e| format!("Failed to create dir {:?}: {}", dest_path, e))?;
+                .map_err(|e| {
+                    let message = format!("Failed to create dir {:?}: {}", dest_path, e);
+                    update_install_state_safe(
+                        &app_dir,
+                        &app_id,
+                        "extract",
+                        "error",
+                        Some(message.clone()),
+                    );
+                    message
+                })?;
         } else {
             if let Some(parent) = dest_path.parent() {
                 std::fs::create_dir_all(parent)
-                    .map_err(|e| format!("Failed to create parent dir: {}", e))?;
+                    .map_err(|e| {
+                        let message = format!("Failed to create parent dir: {}", e);
+                        update_install_state_safe(
+                            &app_dir,
+                            &app_id,
+                            "extract",
+                            "error",
+                            Some(message.clone()),
+                        );
+                        message
+                    })?;
             }
 
             let mut content = Vec::new();
             file.read_to_end(&mut content)
-                .map_err(|e| format!("Failed to read file: {}", e))?;
+                .map_err(|e| {
+                    let message = format!("Failed to read file: {}", e);
+                    update_install_state_safe(
+                        &app_dir,
+                        &app_id,
+                        "extract",
+                        "error",
+                        Some(message.clone()),
+                    );
+                    message
+                })?;
 
             let mut dest_file = std::fs::File::create(&dest_path)
-                .map_err(|e| format!("Failed to create file {:?}: {}", dest_path, e))?;
+                .map_err(|e| {
+                    let message = format!("Failed to create file {:?}: {}", dest_path, e);
+                    update_install_state_safe(
+                        &app_dir,
+                        &app_id,
+                        "extract",
+                        "error",
+                        Some(message.clone()),
+                    );
+                    message
+                })?;
             dest_file
                 .write_all(&content)
-                .map_err(|e| format!("Failed to write file: {}", e))?;
+                .map_err(|e| {
+                    let message = format!("Failed to write file: {}", e);
+                    update_install_state_safe(
+                        &app_dir,
+                        &app_id,
+                        "extract",
+                        "error",
+                        Some(message.clone()),
+                    );
+                    message
+                })?;
 
             extracted_count += 1;
         }
     }
 
-    info!("Extracted {} files", extracted_count);
+    info!(
+        "Install stage=extract_complete app={} files={}",
+        app_id, extracted_count
+    );
+    update_install_state_safe(&app_dir, &app_id, "extract", "ok", None);
 
     // Clean up temp dir
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -283,33 +418,39 @@ pub async fn install_app_from_registry(
             .map_err(|e| format!("Failed to write moldable.json: {}", e))?;
     }
 
-    info!("Running pnpm install...");
-
-    let pnpm_path = runtime::ensure_pnpm_installed()?;
-    let install_output = std::process::Command::new(&pnpm_path)
-        .arg("install")
-        .current_dir(&app_dir)
-        .output()
-        .map_err(|e| format!("Failed to run pnpm install: {}", e))?;
-
-    if !install_output.status.success() {
-        let stderr = String::from_utf8_lossy(&install_output.stderr);
-        warn!(
-            "pnpm install had issues (stderr: {}), but continuing...",
-            stderr
+    info!("Install stage=dependencies app={}", app_id);
+    update_install_state_safe(&app_dir, &app_id, "dependencies", "in_progress", None);
+    if let Err(e) = runtime::ensure_node_modules_installed(&app_dir) {
+        error!("Failed to install dependencies for {}: {}", app_id, e);
+        update_install_state_safe(
+            &app_dir,
+            &app_id,
+            "dependencies",
+            "error",
+            Some(e.clone()),
         );
-    } else {
-        info!("pnpm install completed");
+        return Err(format!(
+            "Failed to install dependencies for {}: {}",
+            app_id, e
+        ));
     }
+    update_install_state_safe(&app_dir, &app_id, "dependencies", "ok", None);
 
     // Detect and register the app
     let app_dir_str = app_dir.to_string_lossy().to_string();
     let detected = detect_app_in_folder(app_dir_str.clone())?
         .ok_or_else(|| "Failed to detect installed app".to_string())?;
 
-    register_app(app_handle, detected.clone())?;
+    info!("Install stage=register app={}", app_id);
+    update_install_state_safe(&app_dir, &app_id, "register", "in_progress", None);
+    if let Err(e) = register_app(app_handle, detected.clone()) {
+        update_install_state_safe(&app_dir, &app_id, "register", "error", Some(e.clone()));
+        return Err(e);
+    }
+    update_install_state_safe(&app_dir, &app_id, "register", "ok", None);
+    update_install_state_safe(&app_dir, &app_id, "complete", "ok", None);
 
-    info!("Installed {} successfully!", app_id);
+    info!("Install stage=complete app={}", app_id);
 
     Ok(detected)
 }

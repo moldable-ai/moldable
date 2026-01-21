@@ -29,6 +29,16 @@ if (!hasHostname) {
 
 const forwardedArgs = process.argv.slice(2).filter((arg) => arg !== '--')
 
+// Resolve the path to `next` binary - can't rely on PATH including node_modules/.bin
+const nextBin = path.join(process.cwd(), 'node_modules', '.bin', 'next')
+
+// Check that next binary exists before trying to spawn
+if (!fsSync.existsSync(nextBin)) {
+  console.error(`Error: next binary not found at ${nextBin}`)
+  console.error('Run "pnpm install" to install dependencies.')
+  process.exit(1)
+}
+
 const instancesFile = path.join(process.cwd(), '.moldable.instances.json')
 let myPid = null
 
@@ -97,7 +107,7 @@ process.on('SIGTERM', async () => {
 })
 
 const child = spawn(
-  'next',
+  nextBin,
   ['dev', '--turbopack', ...forwardedArgs, ...extraArgs],
   {
     env: {

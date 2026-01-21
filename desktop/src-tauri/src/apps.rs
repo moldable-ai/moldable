@@ -152,6 +152,51 @@ pub fn unregister_app(
     get_registered_apps()
 }
 
+pub fn update_registered_app_port(app_id: &str, new_port: u16) -> Result<bool, String> {
+    let config_path = get_config_file_path()?;
+    update_registered_app_port_at_path(app_id, new_port, &config_path)
+}
+
+fn update_registered_app_port_at_path(
+    app_id: &str,
+    new_port: u16,
+    config_path: &Path,
+) -> Result<bool, String> {
+    if !config_path.exists() {
+        return Ok(false);
+    }
+
+    let content = std::fs::read_to_string(&config_path)
+        .map_err(|e| format!("Failed to read config: {}", e))?;
+
+    let mut config: MoldableConfig =
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse config: {}", e))?;
+
+    let mut updated = false;
+    for app in &mut config.apps {
+        if app.id != app_id {
+            continue;
+        }
+        if app.requires_port {
+            return Ok(false);
+        }
+        if app.port != new_port {
+            app.port = new_port;
+            updated = true;
+        }
+    }
+
+    if !updated {
+        return Ok(false);
+    }
+
+    let content = serde_json::to_string_pretty(&config)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    std::fs::write(&config_path, content).map_err(|e| format!("Failed to write config: {}", e))?;
+
+    Ok(true)
+}
+
 // ============================================================================
 // APP DETECTION
 // ============================================================================
@@ -595,5 +640,75 @@ mod tests {
         
         // ID should be derived from folder name, lowercase with dashes
         assert_eq!(app.id, "my-cool-app");
+    }
+
+    #[test]
+    fn test_update_registered_app_port_updates_config() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.json");
+        let config = MoldableConfig {
+            workspace: None,
+            apps: vec![RegisteredApp {
+                id: "test-app".to_string(),
+                name: "Test".to_string(),
+                icon: "🧪".to_string(),
+                icon_path: None,
+                port: 4100,
+                path: "/tmp/test-app".to_string(),
+                command: "pnpm".to_string(),
+                args: vec!["dev".to_string()],
+                widget_size: "medium".to_string(),
+                requires_port: false,
+            }],
+            preferences: serde_json::Map::new(),
+        };
+        fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&config).unwrap(),
+        )
+        .unwrap();
+
+        let updated =
+            update_registered_app_port_at_path("test-app", 4200, &config_path).unwrap();
+        assert!(updated);
+
+        let content = fs::read_to_string(&config_path).unwrap();
+        let reloaded: MoldableConfig = serde_json::from_str(&content).unwrap();
+        assert_eq!(reloaded.apps[0].port, 4200);
+    }
+
+    #[test]
+    fn test_update_registered_app_port_skips_requires_port() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.json");
+        let config = MoldableConfig {
+            workspace: None,
+            apps: vec![RegisteredApp {
+                id: "test-app".to_string(),
+                name: "Test".to_string(),
+                icon: "🧪".to_string(),
+                icon_path: None,
+                port: 4100,
+                path: "/tmp/test-app".to_string(),
+                command: "pnpm".to_string(),
+                args: vec!["dev".to_string()],
+                widget_size: "medium".to_string(),
+                requires_port: true,
+            }],
+            preferences: serde_json::Map::new(),
+        };
+        fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&config).unwrap(),
+        )
+        .unwrap();
+
+        let updated =
+            update_registered_app_port_at_path("test-app", 4200, &config_path).unwrap();
+        assert!(!updated);
+
+        let content = fs::read_to_string(&config_path).unwrap();
+        let reloaded: MoldableConfig = serde_json::from_str(&content).unwrap();
+        assert_eq!(reloaded.apps[0].port, 4100);
     }
 }
