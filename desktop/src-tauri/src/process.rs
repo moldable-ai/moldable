@@ -5,7 +5,9 @@
 use crate::apps::{get_registered_apps, update_registered_app_port};
 use crate::codemods::run_pending_codemods;
 use crate::env::get_merged_env_vars;
-use crate::install_state::{format_install_state_lines, read_install_state, update_install_state_safe};
+use crate::install_state::{
+    format_install_state_lines, read_install_state, update_install_state_safe,
+};
 use crate::paths::get_workspaces_config_internal;
 use crate::ports::kill_process_tree;
 use crate::runtime;
@@ -16,8 +18,8 @@ use std::io::{BufRead, BufReader};
 use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::time::Duration;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 use tauri::State;
 
 // ============================================================================
@@ -54,7 +56,9 @@ const MAX_OUTPUT_LINES: usize = 100;
 
 fn get_start_lock(app_id: &str) -> Arc<Mutex<()>> {
     let locks = START_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut guard = locks.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = locks
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     guard
         .entry(app_id.to_string())
         .or_insert_with(|| Arc::new(Mutex::new(())))
@@ -81,10 +85,7 @@ fn append_app_logs(state: &AppState, app_id: &str, lines: Vec<String>) {
             return;
         }
 
-        let entry = app_state
-            .last_errors
-            .entry(app_id.to_string())
-            .or_default();
+        let entry = app_state.last_errors.entry(app_id.to_string()).or_default();
         for line in lines {
             push_output_line(entry, line);
         }
@@ -122,7 +123,11 @@ pub fn upsert_flag_value(args: &mut Vec<String>, flags: &[&str], value: String) 
     args.push(value);
 }
 
-pub fn with_script_args_forwarded(command: &str, args: Vec<String>, port: Option<u16>) -> Vec<String> {
+pub fn with_script_args_forwarded(
+    command: &str,
+    args: Vec<String>,
+    port: Option<u16>,
+) -> Vec<String> {
     // We want to inject `-p <port>` such that it reaches the *app*, not the package manager.
     // For pnpm/npm/yarn/bun, that means putting app args after `--`.
     if port.is_none() {
@@ -224,7 +229,9 @@ fn parent_chain_contains_app_path(pid: u32, working_dir: &Path, max_depth: usize
 
 /// Check if a process is orphaned (PPID=1, meaning its parent died)
 fn is_pid_orphaned(pid: u32) -> bool {
-    parent_pid_for_pid(pid).map(|ppid| ppid == 1).unwrap_or(false)
+    parent_pid_for_pid(pid)
+        .map(|ppid| ppid == 1)
+        .unwrap_or(false)
 }
 
 fn is_pid_for_app(pid: u32, working_dir: &Path) -> bool {
@@ -350,10 +357,7 @@ fn clear_stale_next_dev_lock(working_dir: &Path) -> Option<String> {
             lock_path.display()
         )),
         Err(e) => {
-            warn!(
-                "Failed to remove Next dev lock at {:?}: {}",
-                lock_path, e
-            );
+            warn!("Failed to remove Next dev lock at {:?}: {}", lock_path, e);
             None
         }
     }
@@ -368,7 +372,10 @@ fn force_cleanup_next_lock(working_dir: &Path) -> Vec<String> {
     let mut running_instances_left = false;
 
     // Kill any orphaned or non-responding processes for this app
-    let instances = read_instances_file(working_dir_str.as_ref());
+    let (instances, error) = read_instances_file_with_error(working_dir_str.as_ref());
+    if let Some(error) = error {
+        log_instances_file_error(&error, Some(&mut messages));
+    }
     for instance in instances {
         if !is_pid_running(instance.pid) {
             continue;
@@ -469,9 +476,9 @@ fn read_next_lock_pid(working_dir: &Path) -> Option<u32> {
 }
 
 fn has_next_lock_error(lines: &[String]) -> bool {
-    lines.iter().any(|line| {
-        line.contains("Unable to acquire lock") && line.contains(".next/dev/lock")
-    })
+    lines
+        .iter()
+        .any(|line| line.contains("Unable to acquire lock") && line.contains(".next/dev/lock"))
 }
 
 fn install_state_lines_for_path(app_path: &Path) -> Vec<String> {
@@ -589,7 +596,7 @@ fn handle_next_lock_before_start(
 // ============================================================================
 
 /// Start an app process (internal implementation)
-/// 
+///
 /// If `force_cleanup` is true, aggressively clean up any stale locks and processes
 /// before starting. This is used on retry after lock errors.
 pub fn start_app_internal(
@@ -647,7 +654,10 @@ fn start_app_internal_with_options(
     // If force_cleanup is set, aggressively clean up stale state before proceeding
     let mut cleanup_messages = codemod_messages;
     if force_cleanup {
-        info!("Force cleanup enabled for {}, cleaning stale state...", app_id);
+        info!(
+            "Force cleanup enabled for {}, cleaning stale state...",
+            app_id
+        );
         cleanup_messages = force_cleanup_next_lock(working_path);
         for msg in &cleanup_messages {
             info!("{}", msg);
@@ -907,15 +917,63 @@ pub fn read_port_file(working_dir: &str) -> Option<u16> {
 
 /// Read all instances from .moldable.instances.json in app directory
 pub fn read_instances_file(working_dir: &str) -> Vec<AppInstance> {
-    let instances_file = std::path::Path::new(working_dir).join(".moldable.instances.json");
-    if instances_file.exists() {
-        if let Ok(content) = std::fs::read_to_string(&instances_file) {
-            if let Ok(instances) = serde_json::from_str::<Vec<AppInstance>>(&content) {
-                return instances;
-            }
-        }
+    let (instances, error) = read_instances_file_with_error(working_dir);
+    if let Some(error) = error {
+        log_instances_file_error(&error, None);
     }
-    Vec::new()
+    instances
+}
+
+struct InstancesFileError {
+    path: std::path::PathBuf,
+    message: String,
+}
+
+fn read_instances_file_with_error(
+    working_dir: &str,
+) -> (Vec<AppInstance>, Option<InstancesFileError>) {
+    let instances_file = std::path::Path::new(working_dir).join(".moldable.instances.json");
+    if !instances_file.exists() {
+        return (Vec::new(), None);
+    }
+
+    let content = match std::fs::read_to_string(&instances_file) {
+        Ok(content) => content,
+        Err(e) => {
+            return (
+                Vec::new(),
+                Some(InstancesFileError {
+                    path: instances_file,
+                    message: format!("Failed to read instances file: {}", e),
+                }),
+            )
+        }
+    };
+
+    match serde_json::from_str::<Vec<AppInstance>>(&content) {
+        Ok(instances) => (instances, None),
+        Err(e) => (
+            Vec::new(),
+            Some(InstancesFileError {
+                path: instances_file,
+                message: format!("Failed to parse instances file: {}", e),
+            }),
+        ),
+    }
+}
+
+fn log_instances_file_error(error: &InstancesFileError, messages: Option<&mut Vec<String>>) {
+    warn!(
+        "Invalid instance registry at {}: {}",
+        error.path.display(),
+        error.message
+    );
+    if let Some(messages) = messages {
+        messages.push(format!(
+            "[moldable] Startup cleanup: invalid instance registry ({})",
+            error.message
+        ));
+    }
 }
 
 /// Remove the .moldable.instances.json file
@@ -926,13 +984,17 @@ pub fn remove_instances_file(working_dir: &str) {
 
 /// Kill all orphaned app instances for a given app directory
 pub fn cleanup_orphaned_instances(working_dir: &str) -> (usize, Vec<String>) {
-    let instances = read_instances_file(working_dir);
+    let (instances, error) = read_instances_file_with_error(working_dir);
     let mut killed = 0;
     let mut messages = Vec::new();
     let mut killed_pids = HashSet::new();
     let mut running_instances_left = false;
     let working_path = Path::new(working_dir);
     let lock_pid = read_next_lock_pid(working_path);
+
+    if let Some(error) = error {
+        log_instances_file_error(&error, Some(&mut messages));
+    }
 
     for instance in &instances {
         if is_pid_running(instance.pid) {
@@ -1169,9 +1231,7 @@ pub fn get_app_status(app_id: String, state: State<AppState>) -> Result<AppStatu
                 if exit_code.is_some() && has_next_lock_error(&output) {
                     if let Ok(apps) = get_registered_apps() {
                         if let Some(app) = apps.into_iter().find(|a| a.id == app_id) {
-                            if let Some((pid, port)) =
-                                find_running_instance(Path::new(&app.path))
-                            {
+                            if let Some((pid, port)) = find_running_instance(Path::new(&app.path)) {
                                 immediate_status = Some(AppStatus {
                                     running: true,
                                     pid: Some(pid),
@@ -1239,10 +1299,7 @@ pub fn get_app_status(app_id: String, state: State<AppState>) -> Result<AppStatu
                     running: false,
                     pid: None,
                     exit_code: None,
-                    recent_output: vec![format!(
-                        "[moldable] Auto-retry failed: {}",
-                        e
-                    )],
+                    recent_output: vec![format!("[moldable] Auto-retry failed: {}", e)],
                     actual_port: None,
                 });
             }
@@ -1296,7 +1353,11 @@ pub fn get_app_logs(app_id: String, state: State<AppState>) -> Result<Vec<String
 }
 
 #[tauri::command]
-pub fn set_app_actual_port(app_id: String, port: u16, state: State<AppState>) -> Result<(), String> {
+pub fn set_app_actual_port(
+    app_id: String,
+    port: u16,
+    state: State<AppState>,
+) -> Result<(), String> {
     let mut app_state = state.0.lock().map_err(|e| e.to_string())?;
 
     if let Some(app_proc) = app_state.processes.get_mut(&app_id) {
@@ -1592,6 +1653,20 @@ mod tests {
 
         assert!(Arc::ptr_eq(&first, &second));
         assert!(!Arc::ptr_eq(&first, &other));
+    }
+
+    #[test]
+    fn test_cleanup_orphaned_instances_logs_invalid_registry() {
+        let temp_dir = TempDir::new().unwrap();
+        let instances_path = temp_dir.path().join(".moldable.instances.json");
+        fs::write(&instances_path, "not-json").unwrap();
+
+        let (_killed, messages) =
+            cleanup_orphaned_instances(temp_dir.path().to_string_lossy().as_ref());
+
+        assert!(messages
+            .iter()
+            .any(|line| line.contains("invalid instance registry")));
     }
 
     // ==================== NEXT LOCK CLEANUP TESTS ====================
