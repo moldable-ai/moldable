@@ -8,8 +8,54 @@ use crate::install_state::update_install_state_safe;
 use crate::paths::{get_cache_dir, get_config_file_path, get_shared_apps_dir};
 use crate::runtime;
 use crate::types::{AppRegistry, MoldableConfig, RegisteredApp};
-use log::{info, warn, error};
+use log::{error, info, warn};
 use std::io::{Read, Write};
+use std::path::{Component, Path, PathBuf};
+
+fn ensure_path_within_root(root: &Path, path: &Path) -> Result<(), String> {
+    let resolved = path
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve path {:?}: {}", path, e))?;
+    if !resolved.starts_with(root) {
+        return Err(format!(
+            "Zip entry attempted to write outside install directory: {}",
+            resolved.display()
+        ));
+    }
+    Ok(())
+}
+
+fn safe_zip_entry_name(file: &zip::read::ZipFile) -> Result<PathBuf, String> {
+    let raw_path = Path::new(file.name());
+    if raw_path.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        return Err(format!("Unsafe zip entry path: {}", file.name()));
+    }
+
+    file.enclosed_name()
+        .map(|path| path.to_path_buf())
+        .ok_or_else(|| format!("Unsafe zip entry path: {}", file.name()))
+}
+
+fn safe_zip_entry_relative_path(
+    file: &zip::read::ZipFile,
+    prefix: &str,
+) -> Result<Option<PathBuf>, String> {
+    let enclosed = safe_zip_entry_name(file)?;
+    let enclosed_str = enclosed.to_string_lossy();
+    if !enclosed_str.starts_with(prefix) {
+        return Ok(None);
+    }
+    let relative = &enclosed_str[prefix.len()..];
+    if relative.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(PathBuf::from(relative)))
+}
 
 // ============================================================================
 // REGISTRY FETCHING
@@ -86,8 +132,6 @@ pub async fn install_app_from_registry(
     let shared_apps_dir = get_shared_apps_dir()?;
     let app_dir = shared_apps_dir.join(&app_id);
 
-    update_install_state_safe(&app_dir, &app_id, "start", "in_progress", None);
-
     // Check if already registered in the current workspace
     let config_path = get_config_file_path()?;
     let current_apps: Vec<RegisteredApp> = if config_path.exists() {
@@ -113,6 +157,7 @@ pub async fn install_app_from_registry(
             "App '{}' already downloaded, registering in workspace...",
             app_id
         );
+        update_install_state_safe(&app_dir, &app_id, "start", "in_progress", None);
         info!("Install stage=dependencies app={}", app_id);
         update_install_state_safe(&app_dir, &app_id, "dependencies", "in_progress", None);
 
@@ -146,9 +191,19 @@ pub async fn install_app_from_registry(
         return Ok(detected);
     }
 
+    // Create a temporary directory for extraction
+    let temp_dir = std::env::temp_dir().join(format!("moldable-app-{}", app_id));
+    if temp_dir.exists() {
+        std::fs::remove_dir_all(&temp_dir)
+            .map_err(|e| format!("Failed to clean temp dir: {}", e))?;
+    }
+    std::fs::create_dir_all(&temp_dir)
+        .map_err(|e| format!("Failed to create temp dir: {}", e))?;
+
+    update_install_state_safe(&temp_dir, &app_id, "start", "in_progress", None);
     info!("Install stage=start app={}", app_id);
     info!("Install stage=download app={} source=moldable-ai/apps", app_id);
-    update_install_state_safe(&app_dir, &app_id, "download", "in_progress", None);
+    update_install_state_safe(&temp_dir, &app_id, "download", "in_progress", None);
 
     // Download the repo archive for the specific commit
     let archive_url = format!(
@@ -163,7 +218,7 @@ pub async fn install_app_from_registry(
         .map_err(|e| {
             let message = format!("Failed to download: {}", e);
             update_install_state_safe(
-                &app_dir,
+                &temp_dir,
                 &app_id,
                 "download",
                 "error",
@@ -175,7 +230,7 @@ pub async fn install_app_from_registry(
     if !response.status().is_success() {
         let message = format!("Failed to download: HTTP {}", response.status());
         update_install_state_safe(
-            &app_dir,
+            &temp_dir,
             &app_id,
             "download",
             "error",
@@ -190,7 +245,7 @@ pub async fn install_app_from_registry(
         .map_err(|e| {
             let message = format!("Failed to read response: {}", e);
             update_install_state_safe(
-                &app_dir,
+                &temp_dir,
                 &app_id,
                 "download",
                 "error",
@@ -198,31 +253,22 @@ pub async fn install_app_from_registry(
             );
             message
         })?;
-    update_install_state_safe(&app_dir, &app_id, "download", "ok", None);
+    update_install_state_safe(&temp_dir, &app_id, "download", "ok", None);
 
     info!(
         "Install stage=extract app={} bytes={}",
         app_id,
         bytes.len()
     );
-    update_install_state_safe(&app_dir, &app_id, "extract", "in_progress", None);
+    update_install_state_safe(&temp_dir, &app_id, "extract", "in_progress", None);
 
-    // Create a temporary directory for extraction
-    let temp_dir = std::env::temp_dir().join(format!("moldable-app-{}", app_id));
-    if temp_dir.exists() {
-        std::fs::remove_dir_all(&temp_dir)
-            .map_err(|e| format!("Failed to clean temp dir: {}", e))?;
-    }
-    std::fs::create_dir_all(&temp_dir)
-        .map_err(|e| format!("Failed to create temp dir: {}", e))?;
-
-    // Extract the zip
-    let cursor = std::io::Cursor::new(bytes.as_ref());
-    let mut archive =
-        zip::ZipArchive::new(cursor).map_err(|e| {
+    let extracted_count = match (|| -> Result<usize, String> {
+        // Extract the zip
+        let cursor = std::io::Cursor::new(bytes.as_ref());
+        let mut archive = zip::ZipArchive::new(cursor).map_err(|e| {
             let message = format!("Failed to open zip: {}", e);
             update_install_state_safe(
-                &app_dir,
+                &temp_dir,
                 &app_id,
                 "extract",
                 "error",
@@ -231,26 +277,46 @@ pub async fn install_app_from_registry(
             message
         })?;
 
-    // The archive structure is: apps-{commit}/{app_path}/...
-    let short_commit = if commit.len() > 7 {
-        &commit[..7]
-    } else {
-        &commit
-    };
-    let possible_prefixes = vec![
-        format!("apps-{}/{}/", commit, app_path),
-        format!("apps-{}/{}/", short_commit, app_path),
-        format!("moldable-apps-{}/{}/", commit, app_path),
-        format!("moldable-apps-{}/{}/", short_commit, app_path),
-    ];
+        // The archive structure is: apps-{commit}/{app_path}/...
+        let short_commit = if commit.len() > 7 {
+            &commit[..7]
+        } else {
+            &commit
+        };
+        let possible_prefixes = vec![
+            format!("apps-{}/{}/", commit, app_path),
+            format!("apps-{}/{}/", short_commit, app_path),
+            format!("moldable-apps-{}/{}/", commit, app_path),
+            format!("moldable-apps-{}/{}/", short_commit, app_path),
+        ];
 
-    // Find which prefix is used in this archive
-    let mut actual_prefix: Option<String> = None;
-    for i in 0..archive.len() {
-        if let Ok(file) = archive.by_index(i) {
-            let name = file.name();
+        // Find which prefix is used in this archive
+        let mut actual_prefix: Option<String> = None;
+        for i in 0..archive.len() {
+            let file = archive.by_index(i).map_err(|e| {
+                let message = format!("Failed to read archive entry: {}", e);
+                update_install_state_safe(
+                    &temp_dir,
+                    &app_id,
+                    "extract",
+                    "error",
+                    Some(message.clone()),
+                );
+                message
+            })?;
+            let name = safe_zip_entry_name(&file).map_err(|message| {
+                update_install_state_safe(
+                    &temp_dir,
+                    &app_id,
+                    "extract",
+                    "error",
+                    Some(message.clone()),
+                );
+                message
+            })?;
+            let name_str = name.to_string_lossy();
             for prefix in &possible_prefixes {
-                if name.starts_with(prefix) {
+                if name_str.starts_with(prefix) {
                     actual_prefix = Some(prefix.clone());
                     break;
                 }
@@ -259,36 +325,56 @@ pub async fn install_app_from_registry(
                 break;
             }
         }
-    }
 
-    let prefix = actual_prefix.ok_or_else(|| {
-        let message = format!(
-            "Could not find app '{}' in archive (tried prefixes: {:?})",
-            app_path, possible_prefixes
-        );
-        update_install_state_safe(&app_dir, &app_id, "extract", "error", Some(message.clone()));
-        message
-    })?;
-
-    info!("Found app at prefix: {}", prefix);
-
-    // Ensure the shared apps directory exists
-    std::fs::create_dir_all(&shared_apps_dir)
-        .map_err(|e| {
-            let message = format!("Failed to create shared apps dir: {}", e);
-            update_install_state_safe(&app_dir, &app_id, "extract", "error", Some(message.clone()));
+        let prefix = actual_prefix.ok_or_else(|| {
+            let message = format!(
+                "Could not find app '{}' in archive (tried prefixes: {:?})",
+                app_path, possible_prefixes
+            );
+            update_install_state_safe(
+                &temp_dir,
+                &app_id,
+                "extract",
+                "error",
+                Some(message.clone()),
+            );
             message
         })?;
 
-    // Extract just the app folder
-    let mut extracted_count = 0;
-    for i in 0..archive.len() {
-        let mut file = archive
-            .by_index(i)
-            .map_err(|e| {
+        info!("Found app at prefix: {}", prefix);
+
+        // Ensure the shared apps directory exists
+        std::fs::create_dir_all(&shared_apps_dir).map_err(|e| {
+            let message = format!("Failed to create shared apps dir: {}", e);
+            update_install_state_safe(
+                &temp_dir,
+                &app_id,
+                "extract",
+                "error",
+                Some(message.clone()),
+            );
+            message
+        })?;
+
+        let temp_root = temp_dir.canonicalize().map_err(|e| {
+            let message = format!("Failed to resolve temp dir: {}", e);
+            update_install_state_safe(
+                &temp_dir,
+                &app_id,
+                "extract",
+                "error",
+                Some(message.clone()),
+            );
+            message
+        })?;
+
+        // Extract just the app folder
+        let mut extracted_count = 0;
+        for i in 0..archive.len() {
+            let mut file = archive.by_index(i).map_err(|e| {
                 let message = format!("Failed to read archive entry: {}", e);
                 update_install_state_safe(
-                    &app_dir,
+                    &temp_dir,
                     &app_id,
                     "extract",
                     "error",
@@ -297,40 +383,29 @@ pub async fn install_app_from_registry(
                 message
             })?;
 
-        let file_name = file.name().to_string();
-
-        if !file_name.starts_with(&prefix) {
-            continue;
-        }
-
-        // Get the relative path within the app
-        let relative_path = &file_name[prefix.len()..];
-        if relative_path.is_empty() {
-            continue;
-        }
-
-        let dest_path = app_dir.join(relative_path);
-
-        if file.is_dir() {
-            std::fs::create_dir_all(&dest_path)
-                .map_err(|e| {
-                    let message = format!("Failed to create dir {:?}: {}", dest_path, e);
+            let relative_path =
+                match safe_zip_entry_relative_path(&file, &prefix).map_err(|message| {
                     update_install_state_safe(
-                        &app_dir,
+                        &temp_dir,
                         &app_id,
                         "extract",
                         "error",
                         Some(message.clone()),
                     );
                     message
-                })?;
-        } else {
-            if let Some(parent) = dest_path.parent() {
-                std::fs::create_dir_all(parent)
+                })? {
+                    Some(path) => path,
+                    None => continue,
+                };
+
+            let dest_path = temp_dir.join(&relative_path);
+
+            if file.is_dir() {
+                std::fs::create_dir_all(&dest_path)
                     .map_err(|e| {
-                        let message = format!("Failed to create parent dir: {}", e);
+                        let message = format!("Failed to create dir {:?}: {}", dest_path, e);
                         update_install_state_safe(
-                            &app_dir,
+                            &temp_dir,
                             &app_id,
                             "extract",
                             "error",
@@ -338,60 +413,116 @@ pub async fn install_app_from_registry(
                         );
                         message
                     })?;
+                ensure_path_within_root(&temp_root, &dest_path).map_err(|message| {
+                    update_install_state_safe(
+                        &temp_dir,
+                        &app_id,
+                        "extract",
+                        "error",
+                        Some(message.clone()),
+                    );
+                    message
+                })?;
+            } else {
+                if let Some(parent) = dest_path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| {
+                            let message = format!("Failed to create parent dir: {}", e);
+                            update_install_state_safe(
+                                &temp_dir,
+                                &app_id,
+                                "extract",
+                                "error",
+                                Some(message.clone()),
+                            );
+                            message
+                        })?;
+                    ensure_path_within_root(&temp_root, parent).map_err(|message| {
+                        update_install_state_safe(
+                            &temp_dir,
+                            &app_id,
+                            "extract",
+                            "error",
+                            Some(message.clone()),
+                        );
+                        message
+                    })?;
+                }
+
+                let mut content = Vec::new();
+                file.read_to_end(&mut content)
+                    .map_err(|e| {
+                        let message = format!("Failed to read file: {}", e);
+                        update_install_state_safe(
+                            &temp_dir,
+                            &app_id,
+                            "extract",
+                            "error",
+                            Some(message.clone()),
+                        );
+                        message
+                    })?;
+
+                let mut dest_file = std::fs::File::create(&dest_path)
+                    .map_err(|e| {
+                        let message = format!("Failed to create file {:?}: {}", dest_path, e);
+                        update_install_state_safe(
+                            &temp_dir,
+                            &app_id,
+                            "extract",
+                            "error",
+                            Some(message.clone()),
+                        );
+                        message
+                    })?;
+                dest_file
+                    .write_all(&content)
+                    .map_err(|e| {
+                        let message = format!("Failed to write file: {}", e);
+                        update_install_state_safe(
+                            &temp_dir,
+                            &app_id,
+                            "extract",
+                            "error",
+                            Some(message.clone()),
+                        );
+                        message
+                    })?;
+                ensure_path_within_root(&temp_root, &dest_path).map_err(|message| {
+                    update_install_state_safe(
+                        &temp_dir,
+                        &app_id,
+                        "extract",
+                        "error",
+                        Some(message.clone()),
+                    );
+                    message
+                })?;
+
+                extracted_count += 1;
             }
-
-            let mut content = Vec::new();
-            file.read_to_end(&mut content)
-                .map_err(|e| {
-                    let message = format!("Failed to read file: {}", e);
-                    update_install_state_safe(
-                        &app_dir,
-                        &app_id,
-                        "extract",
-                        "error",
-                        Some(message.clone()),
-                    );
-                    message
-                })?;
-
-            let mut dest_file = std::fs::File::create(&dest_path)
-                .map_err(|e| {
-                    let message = format!("Failed to create file {:?}: {}", dest_path, e);
-                    update_install_state_safe(
-                        &app_dir,
-                        &app_id,
-                        "extract",
-                        "error",
-                        Some(message.clone()),
-                    );
-                    message
-                })?;
-            dest_file
-                .write_all(&content)
-                .map_err(|e| {
-                    let message = format!("Failed to write file: {}", e);
-                    update_install_state_safe(
-                        &app_dir,
-                        &app_id,
-                        "extract",
-                        "error",
-                        Some(message.clone()),
-                    );
-                    message
-                })?;
-
-            extracted_count += 1;
         }
-    }
+
+        Ok(extracted_count)
+    })() {
+        Ok(count) => count,
+        Err(message) => {
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            return Err(message);
+        }
+    };
 
     info!(
         "Install stage=extract_complete app={} files={}",
         app_id, extracted_count
     );
+    if let Err(e) = std::fs::rename(&temp_dir, &app_dir) {
+        let message = format!("Failed to move app into place: {}", e);
+        update_install_state_safe(&temp_dir, &app_id, "extract", "error", Some(message.clone()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        return Err(message);
+    }
     update_install_state_safe(&app_dir, &app_id, "extract", "ok", None);
-
-    // Clean up temp dir
-    let _ = std::fs::remove_dir_all(&temp_dir);
 
     // Update moldable.json with upstream info
     let moldable_json_path = app_dir.join("moldable.json");
@@ -547,6 +678,23 @@ pub async fn ensure_hello_moldables_app_async(
 mod tests {
     // Note: AppRegistry type serialization tests are in types.rs
     // These tests focus on registry-specific behavior
+    use super::safe_zip_entry_relative_path;
+    use std::io::{Cursor, Write};
+    use zip::write::FileOptions;
+
+    fn build_test_zip(entries: Vec<(&str, &str)>) -> Vec<u8> {
+        let mut buffer = Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(&mut buffer);
+        let options = FileOptions::<()>::default();
+
+        for (name, contents) in entries {
+            zip.start_file(name, options).unwrap();
+            zip.write_all(contents.as_bytes()).unwrap();
+        }
+
+        zip.finish().unwrap();
+        buffer.into_inner()
+    }
 
     #[test]
     fn test_github_archive_url_format() {
@@ -563,5 +711,38 @@ mod tests {
         let base = "https://raw.githubusercontent.com/moldable-ai/apps/main/manifest.json";
         let with_cache_bust = format!("{}?_={}", base, 12345);
         assert!(with_cache_bust.contains("?_="));
+    }
+
+    #[test]
+    fn test_zip_entry_path_rejects_parent_traversal() {
+        let bytes = build_test_zip(vec![("apps-abc/app/../evil.txt", "oops")]);
+        let cursor = Cursor::new(bytes);
+        let mut archive = zip::ZipArchive::new(cursor).unwrap();
+        let file = archive.by_index(0).unwrap();
+
+        let result = safe_zip_entry_relative_path(&file, "apps-abc/app/");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_zip_entry_path_rejects_absolute() {
+        let bytes = build_test_zip(vec![("/absolute/evil.txt", "oops")]);
+        let cursor = Cursor::new(bytes);
+        let mut archive = zip::ZipArchive::new(cursor).unwrap();
+        let file = archive.by_index(0).unwrap();
+
+        let result = safe_zip_entry_relative_path(&file, "apps-abc/app/");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_zip_entry_path_accepts_safe_entry() {
+        let bytes = build_test_zip(vec![("apps-abc/app/src/index.js", "ok")]);
+        let cursor = Cursor::new(bytes);
+        let mut archive = zip::ZipArchive::new(cursor).unwrap();
+        let file = archive.by_index(0).unwrap();
+
+        let result = safe_zip_entry_relative_path(&file, "apps-abc/app/").unwrap();
+        assert_eq!(result, Some(std::path::PathBuf::from("src/index.js")));
     }
 }
