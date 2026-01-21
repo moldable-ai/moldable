@@ -109,6 +109,11 @@ fn create_install_staging_dir(app_id: &str) -> Result<PathBuf, String> {
 
 fn swap_app_directory(staging_dir: &Path, app_dir: &Path) -> Result<(), String> {
     let mut backup_dir = None;
+    info!(
+        "Install swap: replacing {} with {}",
+        app_dir.display(),
+        staging_dir.display()
+    );
     if app_dir.exists() {
         let parent = app_dir
             .parent()
@@ -122,6 +127,11 @@ fn swap_app_directory(staging_dir: &Path, app_dir: &Path) -> Result<(), String> 
             unique_suffix()
         );
         let backup_path = parent.join(backup_name);
+        info!(
+            "Install swap: backing up {} to {}",
+            app_dir.display(),
+            backup_path.display()
+        );
         std::fs::rename(app_dir, &backup_path)
             .map_err(|e| format!("Failed to backup existing app: {}", e))?;
         backup_dir = Some(backup_path);
@@ -130,18 +140,35 @@ fn swap_app_directory(staging_dir: &Path, app_dir: &Path) -> Result<(), String> 
     if let Err(e) = std::fs::rename(staging_dir, app_dir) {
         if let Some(backup_path) = backup_dir.as_ref() {
             if let Err(restore_err) = std::fs::rename(backup_path, app_dir) {
+                warn!(
+                    "Install swap: failed to restore {} from {}: {}",
+                    app_dir.display(),
+                    backup_path.display(),
+                    restore_err
+                );
                 return Err(format!(
                     "Failed to move app into place: {} (restore failed: {})",
                     e, restore_err
                 ));
             }
+            warn!(
+                "Install swap: restored previous app after failure: {}",
+                app_dir.display()
+            );
         }
         return Err(format!("Failed to move app into place: {}", e));
     }
 
+    info!("Install swap: moved staging into place at {}", app_dir.display());
+
     if let Some(backup_path) = backup_dir {
         if let Err(e) = std::fs::remove_dir_all(&backup_path) {
             warn!("Failed to remove backup dir {:?}: {}", backup_path, e);
+        } else {
+            info!(
+                "Install swap: removed backup at {}",
+                backup_path.display()
+            );
         }
     }
 
@@ -258,6 +285,7 @@ pub async fn install_app_from_registry(
     let shared_apps_dir = get_shared_apps_dir()?;
     let app_dir = shared_apps_dir.join(&app_id);
     let _install_guard = install_lock_guard(&app_id).await;
+    let mut reinstall_notice: Option<String> = None;
 
     // Check if already registered in the current workspace
     let config_path = get_config_file_path()?;
@@ -280,47 +308,70 @@ pub async fn install_app_from_registry(
 
     // If app code already exists in shared/apps, just register it
     if app_dir.exists() {
-        info!(
-            "App '{}' already downloaded, registering in workspace...",
-            app_id
-        );
-        update_install_state_safe(&app_dir, &app_id, "start", "in_progress", None);
-        info!("Install stage=dependencies app={}", app_id);
-        update_install_state_safe(&app_dir, &app_id, "dependencies", "in_progress", None);
+        match validate_extracted_app(&app_dir) {
+            Ok(()) => {
+                info!(
+                    "App '{}' already downloaded, registering in workspace...",
+                    app_id
+                );
+                update_install_state_safe(&app_dir, &app_id, "start", "in_progress", None);
+                info!("Install stage=dependencies app={}", app_id);
+                update_install_state_safe(&app_dir, &app_id, "dependencies", "in_progress", None);
 
-        if let Err(e) = runtime::ensure_node_modules_installed(&app_dir) {
-            update_install_state_safe(
-                &app_dir,
-                &app_id,
-                "dependencies",
-                "error",
-                Some(e.clone()),
-            );
-            return Err(e);
+                if let Err(e) = runtime::ensure_node_modules_installed(&app_dir) {
+                    update_install_state_safe(
+                        &app_dir,
+                        &app_id,
+                        "dependencies",
+                        "error",
+                        Some(e.clone()),
+                    );
+                    return Err(e);
+                }
+                update_install_state_safe(&app_dir, &app_id, "dependencies", "ok", None);
+
+                let app_dir_str = app_dir.to_string_lossy().to_string();
+                let detected = detect_app_in_folder(app_dir_str)?
+                    .ok_or_else(|| "Failed to detect app".to_string())?;
+
+                info!("Install stage=register app={}", app_id);
+                update_install_state_safe(&app_dir, &app_id, "register", "in_progress", None);
+                if let Err(e) = register_app(app_handle.clone(), detected.clone()) {
+                    update_install_state_safe(&app_dir, &app_id, "register", "error", Some(e.clone()));
+                    return Err(e);
+                }
+                update_install_state_safe(&app_dir, &app_id, "register", "ok", None);
+                update_install_state_safe(&app_dir, &app_id, "complete", "ok", None);
+
+                info!("Install stage=complete app={}", app_id);
+
+                return Ok(detected);
+            }
+            Err(e) => {
+                let message = format!("Existing app invalid, reinstalling: {}", e);
+                warn!("{}", message);
+                reinstall_notice = Some(message);
+            }
         }
-        update_install_state_safe(&app_dir, &app_id, "dependencies", "ok", None);
-
-        let app_dir_str = app_dir.to_string_lossy().to_string();
-        let detected =
-            detect_app_in_folder(app_dir_str)?.ok_or_else(|| "Failed to detect app".to_string())?;
-
-        info!("Install stage=register app={}", app_id);
-        update_install_state_safe(&app_dir, &app_id, "register", "in_progress", None);
-        if let Err(e) = register_app(app_handle.clone(), detected.clone()) {
-            update_install_state_safe(&app_dir, &app_id, "register", "error", Some(e.clone()));
-            return Err(e);
-        }
-        update_install_state_safe(&app_dir, &app_id, "register", "ok", None);
-        update_install_state_safe(&app_dir, &app_id, "complete", "ok", None);
-
-        info!("Install stage=complete app={}", app_id);
-
-        return Ok(detected);
     }
 
     let temp_dir = create_install_staging_dir(&app_id)?;
+    info!(
+        "Install stage=staging app={} dir={}",
+        app_id,
+        temp_dir.display()
+    );
 
     update_install_state_safe(&temp_dir, &app_id, "start", "in_progress", None);
+    if let Some(message) = reinstall_notice {
+        update_install_state_safe(
+            &temp_dir,
+            &app_id,
+            "validate",
+            "error",
+            Some(message),
+        );
+    }
     info!("Install stage=start app={}", app_id);
     info!("Install stage=download app={} source=moldable-ai/apps", app_id);
     update_install_state_safe(&temp_dir, &app_id, "download", "in_progress", None);
@@ -646,11 +697,18 @@ pub async fn install_app_from_registry(
         return Err(message);
     }
 
+    info!(
+        "Install stage=swap app={} dest={}",
+        app_id,
+        app_dir.display()
+    );
+    update_install_state_safe(&temp_dir, &app_id, "swap", "in_progress", None);
     if let Err(e) = swap_app_directory(&temp_dir, &app_dir) {
-        update_install_state_safe(&temp_dir, &app_id, "extract", "error", Some(e.clone()));
+        update_install_state_safe(&temp_dir, &app_id, "swap", "error", Some(e.clone()));
         let _ = std::fs::remove_dir_all(&temp_dir);
         return Err(e);
     }
+    update_install_state_safe(&app_dir, &app_id, "swap", "ok", None);
     update_install_state_safe(&app_dir, &app_id, "extract", "ok", None);
 
     // Update moldable.json with upstream info
