@@ -34,6 +34,7 @@ export {
   createFilesystemTools,
   createBashTools,
   createMoldableTools,
+  createSkillsTools,
   TOOL_DESCRIPTIONS,
   type CommandProgressCallback,
   type CommandProgressUpdate,

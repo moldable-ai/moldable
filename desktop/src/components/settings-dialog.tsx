@@ -1,4 +1,5 @@
 import {
+  BookOpen,
   Download,
   Key,
   Plug,
@@ -22,12 +23,14 @@ import { SettingsGeneral } from './settings-general'
 import { SettingsLogs } from './settings-logs'
 import { SettingsMcp } from './settings-mcp'
 import { SettingsSecurity } from './settings-security'
+import { SettingsSkills } from './settings-skills'
 
 type SettingsSection =
   | 'general'
   | 'security'
   | 'api-keys'
   | 'mcp'
+  | 'skills'
   | 'developer'
   | 'logs'
   | 'updates'
@@ -47,6 +50,7 @@ const navItems: NavItem[] = [
   { id: 'security', label: 'Security', icon: <Shield className="size-4" /> },
   { id: 'api-keys', label: 'API Keys', icon: <Key className="size-4" /> },
   { id: 'mcp', label: 'MCP Servers', icon: <Plug className="size-4" /> },
+  { id: 'skills', label: 'Skills', icon: <BookOpen className="size-4" /> },
   {
     id: 'developer',
     label: 'Developer',
@@ -158,6 +162,10 @@ export function SettingsDialog({
 
               {activeSection === 'mcp' && (
                 <SettingsMcp aiServerPort={aiServerPort} />
+              )}
+
+              {activeSection === 'skills' && (
+                <SettingsSkills aiServerPort={aiServerPort} />
               )}
 
               {activeSection === 'developer' && <SettingsDeveloper />}

@@ -4,11 +4,12 @@ use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 const INSTALL_STATE_FILE: &str = ".moldable.install.json";
 const INSTALL_STATE_LOCK_FILE: &str = ".moldable.install.lock";
 const INSTALL_HISTORY_LIMIT: usize = 50;
+const INSTALL_STATE_LOCK_STALE_AFTER: Duration = Duration::from_secs(60);
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -64,6 +65,14 @@ fn acquire_install_state_lock(app_dir: &Path) -> Result<InstallStateLock, String
                 return Ok(InstallStateLock { path: lock_path });
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if is_lock_stale(&lock_path, INSTALL_STATE_LOCK_STALE_AFTER) {
+                    warn!(
+                        "Removing stale install state lock at {}",
+                        lock_path.display()
+                    );
+                    let _ = std::fs::remove_file(&lock_path);
+                    continue;
+                }
                 if start.elapsed() >= timeout {
                     return Err("Timed out waiting for install state lock".to_string());
                 }
@@ -74,6 +83,17 @@ fn acquire_install_state_lock(app_dir: &Path) -> Result<InstallStateLock, String
             }
         }
     }
+}
+
+fn is_lock_stale(lock_path: &Path, stale_after: Duration) -> bool {
+    if let Ok(metadata) = std::fs::metadata(lock_path) {
+        if let Ok(modified) = metadata.modified() {
+            if let Ok(age) = SystemTime::now().duration_since(modified) {
+                return age > stale_after;
+            }
+        }
+    }
+    false
 }
 
 fn write_install_state_atomic(app_dir: &Path, content: &str) -> Result<(), String> {

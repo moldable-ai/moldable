@@ -9,6 +9,7 @@ import {
   getProviderConfig,
   toMarkdown,
 } from '@moldable-ai/ai'
+import { createSkillsTools } from '@moldable-ai/ai/tools'
 import {
   McpClientManager,
   type McpServerInfo,
@@ -30,7 +31,14 @@ import {
 } from 'ai'
 import { config } from 'dotenv'
 import { strFromU8, unzipSync } from 'fflate'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'fs'
 import { IncomingMessage, ServerResponse, createServer } from 'http'
 import { homedir } from 'os'
 import { dirname, join } from 'path'
@@ -88,6 +96,20 @@ const mcpManager = new McpClientManager(
   join(homedir(), '.moldable', 'shared', 'config', 'mcp.json'),
 )
 let mcpServers: McpServerInfo[] = []
+
+const SKILLS_CONFIG_PATH = join(
+  MOLDABLE_HOME,
+  'shared',
+  'config',
+  'skills.json',
+)
+const SKILLS_DIR = join(MOLDABLE_HOME, 'shared', 'skills')
+const skillsTools = createSkillsTools()
+const skillsToolContext = {
+  toolCallId: 'skills-api',
+  messages: [],
+  abortSignal: new AbortController().signal,
+}
 
 // Initialize MCP connections
 async function initMcpConnections() {
@@ -157,6 +179,85 @@ function sendJson(res: ServerResponse, data: unknown, status = 200): void {
 // Send error response
 function sendError(res: ServerResponse, message: string, status = 500): void {
   sendJson(res, { error: message }, status)
+}
+
+function normalizeSkillRepoInput(value: string): string | null {
+  const trimmed = value.trim()
+  if (!trimmed) return null
+
+  const directMatch = trimmed.match(
+    /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)(?:\.git)?$/,
+  )
+  if (directMatch) {
+    return `${directMatch[1]}/${directMatch[2]}`
+  }
+
+  const candidate = trimmed.includes('://') ? trimmed : `https://${trimmed}`
+  try {
+    const url = new URL(candidate)
+    const host = url.hostname.toLowerCase()
+    const segments = url.pathname.split('/').filter(Boolean)
+    const cleanRepo = (repo: string) => repo.replace(/\.git$/, '')
+
+    const owner = segments[0]
+    const repo = segments[1]
+
+    if (
+      (host === 'github.com' || host.endsWith('.github.com')) &&
+      owner &&
+      repo
+    ) {
+      return `${owner}/${cleanRepo(repo)}`
+    }
+
+    if (host === 'skills.sh' || host.endsWith('.skills.sh')) {
+      const offset = segments[0] === 'skills' ? 1 : 0
+      const skillOwner = segments[offset]
+      const skillRepo = segments[offset + 1]
+      if (skillOwner && skillRepo) {
+        return `${skillOwner}/${cleanRepo(skillRepo)}`
+      }
+    }
+  } catch {
+    return null
+  }
+
+  return null
+}
+
+function sanitizeRepoDir(name: string): string {
+  return name.replace(/[^a-z0-9-]/gi, '-')
+}
+
+function getInstalledSkills(repoName: string): string[] {
+  const repoDir = join(SKILLS_DIR, sanitizeRepoDir(repoName))
+  if (!existsSync(repoDir)) return []
+
+  try {
+    return readdirSync(repoDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort((a, b) => a.localeCompare(b))
+  } catch {
+    return []
+  }
+}
+
+function pruneUnselectedSkills(repoName: string, selected: string[]): void {
+  const repoDir = join(SKILLS_DIR, sanitizeRepoDir(repoName))
+  if (!existsSync(repoDir)) return
+
+  const selectedSet = new Set(selected)
+  try {
+    for (const entry of readdirSync(repoDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue
+      if (!selectedSet.has(entry.name)) {
+        rmSync(join(repoDir, entry.name), { recursive: true, force: true })
+      }
+    }
+  } catch {
+    // Ignore cleanup errors - selection is still updated in config.
+  }
 }
 
 /**
@@ -1182,6 +1283,354 @@ async function handleInstallBundle(
   }
 }
 
+async function handleListSkillRepos(res: ServerResponse): Promise<void> {
+  try {
+    const result = (await skillsTools.listSkillRepos.execute!(
+      {},
+      skillsToolContext,
+    )) as {
+      success?: boolean
+      repositories?: Array<{
+        name: string
+        url: string
+        enabled: boolean
+        mode: string
+        skills: string[]
+        lastSync?: string
+      }>
+      error?: string
+    }
+
+    if (result.success === false) {
+      sendJson(res, {
+        success: false,
+        error: result.error,
+        repositories: [],
+      })
+      return
+    }
+
+    const repositories =
+      result.repositories?.map((repo) => ({
+        ...repo,
+        installedSkills: getInstalledSkills(repo.name),
+      })) ?? []
+
+    sendJson(res, { success: true, repositories })
+  } catch (error) {
+    console.error('❌ Error listing skills:', error)
+    sendError(
+      res,
+      error instanceof Error ? error.message : 'Failed to list skills',
+    )
+  }
+}
+
+async function handleAddSkillRepo(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  const body = (await parseBody(req)) as {
+    url?: string
+    name?: string
+    branch?: string
+    skillsPath?: string
+    mode?: 'all' | 'include' | 'exclude'
+    skills?: string[]
+    sync?: boolean
+  }
+
+  if (!body.url) {
+    sendError(res, 'url is required', 400)
+    return
+  }
+
+  const normalizedUrl = normalizeSkillRepoInput(body.url)
+  if (!normalizedUrl) {
+    sendError(res, 'Invalid repository URL. Use owner/repo format.', 400)
+    return
+  }
+
+  try {
+    const addResult = (await skillsTools.addSkillRepo.execute!(
+      {
+        url: normalizedUrl,
+        name: body.name,
+        branch: body.branch,
+        skillsPath: body.skillsPath,
+        mode: body.mode,
+        skills: body.skills,
+      },
+      skillsToolContext,
+    )) as {
+      success?: boolean
+      name?: string
+      url?: string
+      availableSkills?: string[]
+      error?: string
+    }
+
+    if (addResult.success === false) {
+      sendJson(res, addResult, 400)
+      return
+    }
+
+    let syncResult:
+      | {
+          success?: boolean
+          synced?: number
+          failed?: number
+          skills?: string[]
+          error?: string
+        }
+      | undefined
+
+    if (body.sync !== false && addResult.name) {
+      syncResult = (await skillsTools.syncSkills.execute!(
+        { repoName: addResult.name },
+        skillsToolContext,
+      )) as {
+        success?: boolean
+        synced?: number
+        failed?: number
+        skills?: string[]
+        error?: string
+      }
+    }
+
+    sendJson(res, {
+      success: true,
+      ...addResult,
+      sync: syncResult,
+    })
+  } catch (error) {
+    console.error('❌ Error adding skill repo:', error)
+    sendError(
+      res,
+      error instanceof Error ? error.message : 'Failed to add skill repo',
+    )
+  }
+}
+
+async function handleSyncSkills(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  const body = (await parseBody(req)) as { repoName?: string }
+
+  try {
+    const result = (await skillsTools.syncSkills.execute!(
+      { repoName: body.repoName },
+      skillsToolContext,
+    )) as {
+      success?: boolean
+      synced?: number
+      failed?: number
+      skills?: string[]
+      error?: string
+    }
+
+    if (result.success === false) {
+      sendJson(res, result, 400)
+      return
+    }
+
+    sendJson(res, result)
+  } catch (error) {
+    console.error('❌ Error syncing skills:', error)
+    sendError(
+      res,
+      error instanceof Error ? error.message : 'Failed to sync skills',
+    )
+  }
+}
+
+async function handleListAvailableSkills(
+  name: string,
+  res: ServerResponse,
+): Promise<void> {
+  if (!name) {
+    sendError(res, 'Repository name is required', 400)
+    return
+  }
+
+  try {
+    const result = (await skillsTools.listAvailableSkills.execute!(
+      { repoName: name },
+      skillsToolContext,
+    )) as {
+      success?: boolean
+      repoName?: string
+      available?: string[]
+      selected?: string[]
+      mode?: 'all' | 'include' | 'exclude'
+      error?: string
+    }
+
+    if (result.success === false) {
+      sendJson(res, result, 400)
+      return
+    }
+
+    sendJson(res, {
+      success: true,
+      repoName: result.repoName,
+      available: result.available || [],
+      selected: result.selected || [],
+      mode: result.mode,
+    })
+  } catch (error) {
+    console.error('❌ Error listing available skills:', error)
+    sendError(
+      res,
+      error instanceof Error ? error.message : 'Failed to list skills',
+    )
+  }
+}
+
+async function handleUpdateSkillSelection(
+  name: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  if (!name) {
+    sendError(res, 'Repository name is required', 400)
+    return
+  }
+
+  const body = (await parseBody(req)) as {
+    mode?: 'all' | 'include' | 'exclude'
+    skills?: string[]
+    sync?: boolean
+  }
+
+  const hasSkills = Array.isArray(body.skills)
+  if (!body.mode && !hasSkills) {
+    sendError(res, 'mode or skills are required', 400)
+    return
+  }
+
+  const nextMode = body.mode || 'include'
+
+  try {
+    const updateResult = (await skillsTools.updateSkillSelection.execute!(
+      {
+        repoName: name,
+        mode: nextMode,
+        skills: hasSkills ? body.skills : undefined,
+      },
+      skillsToolContext,
+    )) as {
+      success?: boolean
+      repoName?: string
+      mode?: 'all' | 'include' | 'exclude'
+      skills?: string[]
+      enabled?: boolean
+      error?: string
+    }
+
+    if (updateResult.success === false) {
+      sendJson(res, updateResult, 400)
+      return
+    }
+
+    if (nextMode === 'include' && hasSkills && body.skills) {
+      pruneUnselectedSkills(name, body.skills)
+    }
+
+    let syncResult:
+      | {
+          success?: boolean
+          synced?: number
+          failed?: number
+          skills?: string[]
+          error?: string
+        }
+      | undefined
+
+    if (body.sync) {
+      syncResult = (await skillsTools.syncSkills.execute!(
+        { repoName: name },
+        skillsToolContext,
+      )) as {
+        success?: boolean
+        synced?: number
+        failed?: number
+        skills?: string[]
+        error?: string
+      }
+    }
+
+    sendJson(res, {
+      success: true,
+      repoName: updateResult.repoName,
+      mode: updateResult.mode,
+      skills: updateResult.skills,
+      enabled: updateResult.enabled,
+      sync: syncResult,
+    })
+  } catch (error) {
+    console.error('❌ Error updating skill selection:', error)
+    sendError(
+      res,
+      error instanceof Error ? error.message : 'Failed to update selection',
+    )
+  }
+}
+
+async function handleRemoveSkillRepo(
+  name: string,
+  res: ServerResponse,
+): Promise<void> {
+  if (!name) {
+    sendError(res, 'Repository name is required', 400)
+    return
+  }
+
+  if (!existsSync(SKILLS_CONFIG_PATH)) {
+    sendError(res, 'No skills config found', 404)
+    return
+  }
+
+  try {
+    const config = JSON.parse(readFileSync(SKILLS_CONFIG_PATH, 'utf-8')) as {
+      repositories?: Array<{
+        name: string
+        url: string
+      }>
+    }
+
+    const repositories = config.repositories ?? []
+    const index = repositories.findIndex((repo) => repo.name === name)
+
+    if (index === -1) {
+      sendError(res, `Repository "${name}" not found`, 404)
+      return
+    }
+
+    const [removed] = repositories.splice(index, 1)
+    if (!removed) {
+      sendError(res, `Repository "${name}" not found`, 404)
+      return
+    }
+
+    writeFileSync(SKILLS_CONFIG_PATH, JSON.stringify({ repositories }, null, 2))
+
+    const repoDir = join(SKILLS_DIR, sanitizeRepoDir(removed.name))
+    if (existsSync(repoDir)) {
+      rmSync(repoDir, { recursive: true, force: true })
+    }
+
+    sendJson(res, { success: true, name: removed.name, url: removed.url })
+  } catch (error) {
+    console.error('❌ Error removing skill repo:', error)
+    sendError(
+      res,
+      error instanceof Error ? error.message : 'Failed to remove skill repo',
+    )
+  }
+}
+
 // Create HTTP server
 const server = createServer(async (req, res) => {
   const url = new URL(req.url || '/', `http://${getHost()}:${getPort()}`)
@@ -1230,6 +1679,34 @@ const server = createServer(async (req, res) => {
     req.method === 'POST'
   ) {
     await handleInstallBundle(req, res)
+  } else if (url.pathname === '/api/skills/repos' && req.method === 'GET') {
+    await handleListSkillRepos(res)
+  } else if (
+    url.pathname.startsWith('/api/skills/repos/') &&
+    url.pathname.endsWith('/available') &&
+    req.method === 'GET'
+  ) {
+    const pathParts = url.pathname.split('/')
+    const name = decodeURIComponent(pathParts[pathParts.length - 2] || '')
+    await handleListAvailableSkills(name, res)
+  } else if (
+    url.pathname.startsWith('/api/skills/repos/') &&
+    url.pathname.endsWith('/selection') &&
+    req.method === 'POST'
+  ) {
+    const pathParts = url.pathname.split('/')
+    const name = decodeURIComponent(pathParts[pathParts.length - 2] || '')
+    await handleUpdateSkillSelection(name, req, res)
+  } else if (url.pathname === '/api/skills/add' && req.method === 'POST') {
+    await handleAddSkillRepo(req, res)
+  } else if (url.pathname === '/api/skills/sync' && req.method === 'POST') {
+    await handleSyncSkills(req, res)
+  } else if (
+    url.pathname.startsWith('/api/skills/repos/') &&
+    req.method === 'DELETE'
+  ) {
+    const name = decodeURIComponent(url.pathname.split('/').pop() || '')
+    await handleRemoveSkillRepo(name, res)
   } else {
     sendError(res, 'Not found', 404)
   }

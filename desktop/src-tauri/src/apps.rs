@@ -7,11 +7,11 @@ use crate::paths::get_config_file_path;
 use crate::ports::{find_free_port, is_port_available};
 use crate::runtime::get_pnpm_path;
 use crate::types::{AvailableApp, MoldableConfig, MoldableManifest, RegisteredApp};
-use log::error;
+use log::{error, warn};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tauri::Emitter;
 
 // ============================================================================
@@ -64,6 +64,7 @@ pub fn get_registered_apps() -> Result<Vec<RegisteredApp>, String> {
 }
 
 const CONFIG_LOCK_FILE: &str = ".moldable.config.lock";
+const CONFIG_LOCK_STALE_AFTER: Duration = Duration::from_secs(60);
 
 struct ConfigLock {
     path: std::path::PathBuf,
@@ -96,6 +97,11 @@ fn acquire_config_lock(config_path: &Path) -> Result<ConfigLock, String> {
                 return Ok(ConfigLock { path: lock_path });
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if is_lock_stale(&lock_path, CONFIG_LOCK_STALE_AFTER) {
+                    warn!("Removing stale config lock at {}", lock_path.display());
+                    let _ = std::fs::remove_file(&lock_path);
+                    continue;
+                }
                 if start.elapsed() >= timeout {
                     return Err("Timed out waiting for config lock".to_string());
                 }
@@ -104,6 +110,17 @@ fn acquire_config_lock(config_path: &Path) -> Result<ConfigLock, String> {
             Err(e) => return Err(format!("Failed to create config lock: {}", e)),
         }
     }
+}
+
+fn is_lock_stale(lock_path: &Path, stale_after: Duration) -> bool {
+    if let Ok(metadata) = std::fs::metadata(lock_path) {
+        if let Ok(modified) = metadata.modified() {
+            if let Ok(age) = SystemTime::now().duration_since(modified) {
+                return age > stale_after;
+            }
+        }
+    }
+    false
 }
 
 fn write_config_atomic(config_path: &Path, config: &MoldableConfig) -> Result<(), String> {

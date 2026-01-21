@@ -10,10 +10,11 @@ use crate::runtime;
 use crate::types::{AppRegistry, MoldableConfig, RegisteredApp};
 use log::{error, info, warn};
 use std::collections::HashMap;
+use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex as TokioMutex, OwnedMutexGuard};
 
 fn ensure_path_within_root(root: &Path, path: &Path) -> Result<(), String> {
@@ -46,6 +47,8 @@ fn format_http_error(context: &str, error: reqwest::Error) -> String {
 }
 
 static INSTALL_LOCKS: OnceLock<TokioMutex<HashMap<String, Arc<TokioMutex<()>>>>> = OnceLock::new();
+const INSTALL_LOCK_STALE_AFTER: Duration = Duration::from_secs(60);
+const INSTALL_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 
 async fn get_install_lock(app_id: &str) -> Arc<TokioMutex<()>> {
     let locks = INSTALL_LOCKS.get_or_init(|| TokioMutex::new(HashMap::new()));
@@ -59,6 +62,69 @@ async fn get_install_lock(app_id: &str) -> Arc<TokioMutex<()>> {
 async fn install_lock_guard(app_id: &str) -> OwnedMutexGuard<()> {
     let lock = get_install_lock(app_id).await;
     lock.lock_owned().await
+}
+
+struct InstallFileLock {
+    path: PathBuf,
+}
+
+impl Drop for InstallFileLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn is_lock_stale(lock_path: &Path, stale_after: Duration) -> bool {
+    if let Ok(metadata) = std::fs::metadata(lock_path) {
+        if let Ok(modified) = metadata.modified() {
+            if let Ok(age) = SystemTime::now().duration_since(modified) {
+                return age > stale_after;
+            }
+        }
+    }
+    false
+}
+
+fn acquire_install_file_lock(app_id: &str) -> Result<InstallFileLock, String> {
+    let cache_dir = get_cache_dir()?;
+    let lock_dir = cache_dir.join("install-locks");
+    std::fs::create_dir_all(&lock_dir)
+        .map_err(|e| format!("Failed to create install lock dir: {}", e))?;
+    let lock_path = lock_dir.join(format!("{}.lock", app_id));
+    let start = Instant::now();
+
+    loop {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(mut file) => {
+                let _ = writeln!(
+                    file,
+                    "pid={} started={}",
+                    std::process::id(),
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs()
+                );
+                return Ok(InstallFileLock { path: lock_path });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if is_lock_stale(&lock_path, INSTALL_LOCK_STALE_AFTER) {
+                    warn!("Removing stale install lock at {}", lock_path.display());
+                    let _ = std::fs::remove_file(&lock_path);
+                    continue;
+                }
+                if start.elapsed() >= INSTALL_LOCK_TIMEOUT {
+                    return Err("Timed out waiting for install lock".to_string());
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => return Err(format!("Failed to create install lock: {}", e)),
+        }
+    }
 }
 
 fn validate_extracted_app(app_dir: &Path) -> Result<(), String> {
@@ -285,6 +351,7 @@ pub async fn install_app_from_registry(
     let shared_apps_dir = get_shared_apps_dir()?;
     let app_dir = shared_apps_dir.join(&app_id);
     let _install_guard = install_lock_guard(&app_id).await;
+    let _install_file_guard = acquire_install_file_lock(&app_id)?;
     let mut reinstall_notice: Option<String> = None;
 
     // Check if already registered in the current workspace

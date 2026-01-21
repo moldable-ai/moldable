@@ -14,12 +14,13 @@ use crate::runtime;
 use crate::types::{AppInstance, AppStatus, RegisteredApp};
 use log::{info, warn};
 use std::collections::{HashMap, HashSet};
-use std::io::{BufRead, BufReader};
+use std::fs::OpenOptions;
+use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::State;
 
 // ============================================================================
@@ -47,6 +48,9 @@ pub struct AppStateInner {
 pub struct AppState(pub Arc<Mutex<AppStateInner>>);
 
 static START_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+const START_LOCK_FILE: &str = ".moldable.start.lock";
+const START_LOCK_STALE_AFTER: Duration = Duration::from_secs(60);
+const START_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 
 // ============================================================================
 // HELPER FUNCTIONS
@@ -63,6 +67,65 @@ fn get_start_lock(app_id: &str) -> Arc<Mutex<()>> {
         .entry(app_id.to_string())
         .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone()
+}
+
+struct StartFileLock {
+    path: PathBuf,
+}
+
+impl Drop for StartFileLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn is_lock_stale(lock_path: &Path, stale_after: Duration) -> bool {
+    if let Ok(metadata) = std::fs::metadata(lock_path) {
+        if let Ok(modified) = metadata.modified() {
+            if let Ok(age) = SystemTime::now().duration_since(modified) {
+                return age > stale_after;
+            }
+        }
+    }
+    false
+}
+
+fn acquire_start_file_lock(working_dir: &Path, app_id: &str) -> Result<StartFileLock, String> {
+    let lock_path = working_dir.join(START_LOCK_FILE);
+    let start = Instant::now();
+
+    loop {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(mut file) => {
+                let _ = writeln!(
+                    file,
+                    "pid={} started={}",
+                    std::process::id(),
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs()
+                );
+                return Ok(StartFileLock { path: lock_path });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if is_lock_stale(&lock_path, START_LOCK_STALE_AFTER) {
+                    warn!("Removing stale start lock for {}", app_id);
+                    let _ = std::fs::remove_file(&lock_path);
+                    continue;
+                }
+                if start.elapsed() >= START_LOCK_TIMEOUT {
+                    return Err(format!("Timed out waiting for start lock for {}", app_id));
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => return Err(format!("Failed to create start lock: {}", e)),
+        }
+    }
 }
 
 fn push_output_line(lines: &mut Vec<String>, line: String) {
@@ -265,9 +328,13 @@ fn is_port_responding(port: u16) -> bool {
     TcpStream::connect_timeout(&addr, Duration::from_millis(1000)).is_ok()
 }
 
-fn find_responding_port_for_pid(working_dir: &Path, pid: u32) -> Option<u16> {
+fn find_responding_port_for_pid(
+    working_dir: &Path,
+    pid: u32,
+    messages: Option<&mut Vec<String>>,
+) -> Option<u16> {
     let working_dir_str = working_dir.to_string_lossy();
-    let instances = read_instances_file(working_dir_str.as_ref());
+    let instances = read_instances_file(working_dir_str.as_ref(), messages);
 
     for instance in instances {
         if instance.pid != pid {
@@ -283,9 +350,12 @@ fn find_responding_port_for_pid(working_dir: &Path, pid: u32) -> Option<u16> {
     None
 }
 
-fn find_responding_instance_from_registry(working_dir: &Path) -> Option<(u32, u16)> {
+fn find_responding_instance_from_registry(
+    working_dir: &Path,
+    messages: Option<&mut Vec<String>>,
+) -> Option<(u32, u16)> {
     let working_dir_str = working_dir.to_string_lossy();
-    let instances = read_instances_file(working_dir_str.as_ref());
+    let instances = read_instances_file(working_dir_str.as_ref(), messages);
 
     for instance in instances {
         let port = match instance.port {
@@ -307,9 +377,12 @@ fn find_responding_instance_from_registry(working_dir: &Path) -> Option<(u32, u1
     None
 }
 
-fn find_running_instance(working_dir: &Path) -> Option<(u32, u16)> {
+fn find_running_instance(
+    working_dir: &Path,
+    messages: Option<&mut Vec<String>>,
+) -> Option<(u32, u16)> {
     let working_dir_str = working_dir.to_string_lossy();
-    let instances = read_instances_file(working_dir_str.as_ref());
+    let instances = read_instances_file(working_dir_str.as_ref(), messages);
 
     for instance in instances {
         if !is_pid_running(instance.pid) {
@@ -325,9 +398,9 @@ fn find_running_instance(working_dir: &Path) -> Option<(u32, u16)> {
     None
 }
 
-fn has_running_recorded_instance(working_dir: &Path) -> bool {
+fn has_running_recorded_instance(working_dir: &Path, messages: Option<&mut Vec<String>>) -> bool {
     let working_dir_str = working_dir.to_string_lossy();
-    let instances = read_instances_file(working_dir_str.as_ref());
+    let instances = read_instances_file(working_dir_str.as_ref(), messages);
     instances.iter().any(|instance| {
         if !is_pid_running(instance.pid) {
             return false;
@@ -341,13 +414,13 @@ fn has_running_recorded_instance(working_dir: &Path) -> bool {
     })
 }
 
-fn clear_stale_next_dev_lock(working_dir: &Path) -> Option<String> {
+fn clear_stale_next_dev_lock(working_dir: &Path, messages: &mut Vec<String>) -> Option<String> {
     let lock_path = working_dir.join(".next").join("dev").join("lock");
     if !lock_path.exists() {
         return None;
     }
 
-    if has_running_recorded_instance(working_dir) {
+    if has_running_recorded_instance(working_dir, Some(messages)) {
         return None;
     }
 
@@ -372,10 +445,7 @@ fn force_cleanup_next_lock(working_dir: &Path) -> Vec<String> {
     let mut running_instances_left = false;
 
     // Kill any orphaned or non-responding processes for this app
-    let (instances, error) = read_instances_file_with_error(working_dir_str.as_ref());
-    if let Some(error) = error {
-        log_instances_file_error(&error, Some(&mut messages));
-    }
+    let instances = read_instances_file(working_dir_str.as_ref(), Some(&mut messages));
     for instance in instances {
         if !is_pid_running(instance.pid) {
             continue;
@@ -524,7 +594,9 @@ fn handle_next_lock_before_start(
                     }
                 }
 
-                if let Some(port) = find_responding_port_for_pid(working_dir, pid) {
+                if let Some(port) =
+                    find_responding_port_for_pid(working_dir, pid, Some(&mut messages))
+                {
                     return (
                         vec![format!(
                             "[moldable] Detected existing instance on port {}",
@@ -541,7 +613,7 @@ fn handle_next_lock_before_start(
                 }
 
                 if let Some((instance_pid, instance_port)) =
-                    find_responding_instance_from_registry(working_dir)
+                    find_responding_instance_from_registry(working_dir, Some(&mut messages))
                 {
                     return (
                         vec![format!(
@@ -584,7 +656,7 @@ fn handle_next_lock_before_start(
         }
     }
 
-    if let Some(line) = clear_stale_next_dev_lock(working_dir) {
+    if let Some(line) = clear_stale_next_dev_lock(working_dir, &mut messages) {
         messages.push(format!("[moldable] {}", line));
     }
 
@@ -644,6 +716,7 @@ fn start_app_internal_with_options(
     let _start_guard = start_lock
         .lock()
         .map_err(|_| "Failed to acquire start lock".to_string())?;
+    let _start_file_guard = acquire_start_file_lock(working_path, &app_id)?;
 
     // Run any pending codemods to migrate the app to current Moldable version
     let codemod_messages = run_pending_codemods(working_path);
@@ -720,7 +793,7 @@ fn start_app_internal_with_options(
             return Ok(status);
         }
 
-        if let Some((pid, port)) = find_running_instance(working_path) {
+        if let Some((pid, port)) = find_running_instance(working_path, Some(&mut initial_output)) {
             return Ok(AppStatus {
                 running: true,
                 pid: Some(pid),
@@ -916,10 +989,13 @@ pub fn read_port_file(working_dir: &str) -> Option<u16> {
 }
 
 /// Read all instances from .moldable.instances.json in app directory
-pub fn read_instances_file(working_dir: &str) -> Vec<AppInstance> {
+pub fn read_instances_file(
+    working_dir: &str,
+    messages: Option<&mut Vec<String>>,
+) -> Vec<AppInstance> {
     let (instances, error) = read_instances_file_with_error(working_dir);
     if let Some(error) = error {
-        log_instances_file_error(&error, None);
+        log_instances_file_error(&error, messages);
     }
     instances
 }
@@ -984,17 +1060,13 @@ pub fn remove_instances_file(working_dir: &str) {
 
 /// Kill all orphaned app instances for a given app directory
 pub fn cleanup_orphaned_instances(working_dir: &str) -> (usize, Vec<String>) {
-    let (instances, error) = read_instances_file_with_error(working_dir);
-    let mut killed = 0;
     let mut messages = Vec::new();
+    let instances = read_instances_file(working_dir, Some(&mut messages));
+    let mut killed = 0;
     let mut killed_pids = HashSet::new();
     let mut running_instances_left = false;
     let working_path = Path::new(working_dir);
     let lock_pid = read_next_lock_pid(working_path);
-
-    if let Some(error) = error {
-        log_instances_file_error(&error, Some(&mut messages));
-    }
 
     for instance in &instances {
         if is_pid_running(instance.pid) {
@@ -1223,7 +1295,7 @@ pub fn get_app_status(app_id: String, state: State<AppState>) -> Result<AppStatu
             Ok(Some(status)) => {
                 // Process ended
                 let exit_code = status.code();
-                let output = app_proc.output_lines.clone();
+                let mut output = app_proc.output_lines.clone();
                 let attempted_port = app_proc.actual_port;
                 app_state.last_errors.insert(app_id.clone(), output.clone());
                 app_state.processes.remove(&app_id);
@@ -1231,18 +1303,26 @@ pub fn get_app_status(app_id: String, state: State<AppState>) -> Result<AppStatu
                 if exit_code.is_some() && has_next_lock_error(&output) {
                     if let Ok(apps) = get_registered_apps() {
                         if let Some(app) = apps.into_iter().find(|a| a.id == app_id) {
-                            if let Some((pid, port)) = find_running_instance(Path::new(&app.path)) {
+                            let mut instance_messages = Vec::new();
+                            if let Some((pid, port)) = find_running_instance(
+                                Path::new(&app.path),
+                                Some(&mut instance_messages),
+                            ) {
+                                instance_messages.push(format!(
+                                    "[moldable] Detected existing instance on port {}",
+                                    port
+                                ));
                                 immediate_status = Some(AppStatus {
                                     running: true,
                                     pid: Some(pid),
                                     exit_code: None,
-                                    recent_output: vec![format!(
-                                        "[moldable] Detected existing instance on port {}",
-                                        port
-                                    )],
+                                    recent_output: instance_messages,
                                     actual_port: Some(port),
                                 });
                             } else {
+                                if !instance_messages.is_empty() {
+                                    output.extend(instance_messages);
+                                }
                                 let attempts = app_state
                                     .lock_retry_counts
                                     .entry(app_id.clone())
@@ -1406,8 +1486,15 @@ pub fn discover_app_port(
         }
     }
 
-    if let Some((_, port)) = find_running_instance(working_path) {
+    let mut instance_messages = Vec::new();
+    if let Some((_, port)) = find_running_instance(working_path, Some(&mut instance_messages)) {
+        if !instance_messages.is_empty() {
+            append_app_logs(state.inner(), &app_id, instance_messages);
+        }
         return Some(port);
+    }
+    if !instance_messages.is_empty() {
+        append_app_logs(state.inner(), &app_id, instance_messages);
     }
 
     None
@@ -1695,7 +1782,8 @@ mod tests {
         fs::create_dir_all(&lock_path).unwrap();
         fs::write(lock_path.join("lock"), "locked").unwrap();
 
-        let result = clear_stale_next_dev_lock(&temp_dir);
+        let mut messages = Vec::new();
+        let result = clear_stale_next_dev_lock(&temp_dir, &mut messages);
         assert!(result.is_some());
         assert!(!lock_path.join("lock").exists());
 
@@ -1724,7 +1812,8 @@ mod tests {
         )
         .unwrap();
 
-        let result = clear_stale_next_dev_lock(&temp_dir);
+        let mut messages = Vec::new();
+        let result = clear_stale_next_dev_lock(&temp_dir, &mut messages);
         assert!(result.is_none());
         assert!(lock_path.join("lock").exists());
 
@@ -1749,7 +1838,7 @@ mod tests {
         )
         .unwrap();
 
-        let instance = find_running_instance(&temp_dir);
+        let instance = find_running_instance(&temp_dir, None);
         assert_eq!(instance.map(|(_, p)| p), Some(port));
 
         drop(listener);
@@ -1827,7 +1916,7 @@ mod tests {
         )
         .unwrap();
 
-        let instance = find_running_instance(&temp_dir);
+        let instance = find_running_instance(&temp_dir, None);
         assert!(instance.is_none());
 
         let _ = fs::remove_dir_all(&temp_dir);
