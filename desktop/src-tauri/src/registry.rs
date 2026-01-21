@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex as TokioMutex, OwnedMutexGuard};
 
 fn ensure_path_within_root(root: &Path, path: &Path) -> Result<(), String> {
@@ -27,6 +27,22 @@ fn ensure_path_within_root(root: &Path, path: &Path) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+fn registry_http_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("Failed to build registry client: {}", e))
+}
+
+fn format_http_error(context: &str, error: reqwest::Error) -> String {
+    if error.is_timeout() {
+        format!("{}: request timed out", context)
+    } else {
+        format!("{}: {}", context, error)
+    }
 }
 
 static INSTALL_LOCKS: OnceLock<TokioMutex<HashMap<String, Arc<TokioMutex<()>>>>> = OnceLock::new();
@@ -206,9 +222,12 @@ pub async fn fetch_app_registry(force_refresh: Option<bool>) -> Result<AppRegist
     // Fetch from GitHub
     let manifest_url = "https://raw.githubusercontent.com/moldable-ai/apps/main/manifest.json";
 
-    let response = reqwest::get(manifest_url)
+    let client = registry_http_client()?;
+    let response = client
+        .get(manifest_url)
+        .send()
         .await
-        .map_err(|e| format!("Failed to fetch registry: {}", e))?;
+        .map_err(|e| format_http_error("Failed to fetch registry", e))?;
 
     if !response.status().is_success() {
         return Err(format!(
@@ -325,10 +344,13 @@ pub async fn install_app_from_registry(
 
     info!("Downloading from {}...", archive_url);
 
-    let response = reqwest::get(&archive_url)
+    let client = registry_http_client()?;
+    let response = client
+        .get(&archive_url)
+        .send()
         .await
         .map_err(|e| {
-            let message = format!("Failed to download: {}", e);
+            let message = format_http_error("Failed to download", e);
             update_install_state_safe(
                 &temp_dir,
                 &app_id,
