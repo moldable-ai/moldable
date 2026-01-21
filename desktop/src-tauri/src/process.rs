@@ -160,39 +160,96 @@ fn is_pid_running(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
-/// Check if a process is orphaned (PPID=1, meaning its parent died)
-fn is_pid_orphaned(pid: u32) -> bool {
+fn command_line_for_pid(pid: u32) -> Option<String> {
     let output = Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "ppid="])
-        .output();
+        .args(["-p", &pid.to_string(), "-o", "command="])
+        .output()
+        .ok()?;
 
-    match output {
-        Ok(result) if result.status.success() => {
-            let ppid_str = String::from_utf8_lossy(&result.stdout).trim().to_string();
-            ppid_str == "1"
-        }
-        _ => false,
+    if !output.status.success() {
+        return None;
+    }
+
+    let command = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if command.is_empty() {
+        None
+    } else {
+        Some(command)
     }
 }
 
-fn is_pid_for_app(pid: u32, working_dir: &Path) -> bool {
+fn parent_pid_for_pid(pid: u32) -> Option<u32> {
     let output = Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "command="])
-        .output();
+        .args(["-p", &pid.to_string(), "-o", "ppid="])
+        .output()
+        .ok()?;
 
-    let command = match output {
-        Ok(result) if result.status.success() => String::from_utf8_lossy(&result.stdout)
-            .trim()
-            .to_string(),
-        _ => return false,
-    };
-
-    if command.is_empty() {
-        return false;
+    if !output.status.success() {
+        return None;
     }
 
+    let parent_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    parent_str.parse::<u32>().ok()
+}
+
+fn command_line_contains_app_path(command: &str, working_dir: &Path) -> bool {
     let path = working_dir.to_string_lossy();
     command.contains(path.as_ref())
+}
+
+fn parent_chain_contains_app_path(pid: u32, working_dir: &Path, max_depth: usize) -> bool {
+    let mut current_pid = pid;
+    for _ in 0..max_depth {
+        let parent_pid = match parent_pid_for_pid(current_pid) {
+            Some(pid) => pid,
+            None => return false,
+        };
+        if parent_pid <= 1 || parent_pid == current_pid {
+            return false;
+        }
+
+        let command = match command_line_for_pid(parent_pid) {
+            Some(cmd) => cmd,
+            None => return false,
+        };
+
+        if command_line_contains_app_path(&command, working_dir) {
+            return true;
+        }
+
+        current_pid = parent_pid;
+    }
+    false
+}
+
+/// Check if a process is orphaned (PPID=1, meaning its parent died)
+fn is_pid_orphaned(pid: u32) -> bool {
+    parent_pid_for_pid(pid).map(|ppid| ppid == 1).unwrap_or(false)
+}
+
+fn is_pid_for_app(pid: u32, working_dir: &Path) -> bool {
+    command_line_for_pid(pid)
+        .map(|command| command_line_contains_app_path(&command, working_dir))
+        .unwrap_or(false)
+}
+
+fn verify_pid_ownership(pid: u32, working_dir: &Path, lock_pid: Option<u32>) -> Result<(), String> {
+    let command = command_line_for_pid(pid)
+        .ok_or_else(|| format!("Unable to read command line for pid {}", pid))?;
+
+    if command_line_contains_app_path(&command, working_dir) {
+        return Ok(());
+    }
+
+    if parent_chain_contains_app_path(pid, working_dir, 8) {
+        return Ok(());
+    }
+
+    if lock_pid == Some(pid) {
+        return Err("PID matches Next lock but command line missing app path".to_string());
+    }
+
+    Err("Process command line does not include app path".to_string())
 }
 
 fn is_port_responding(port: u16) -> bool {
@@ -265,11 +322,26 @@ fn clear_stale_next_dev_lock(working_dir: &Path) -> Option<String> {
 fn force_cleanup_next_lock(working_dir: &Path) -> Vec<String> {
     let mut messages = Vec::new();
     let working_dir_str = working_dir.to_string_lossy();
+    let lock_pid = read_next_lock_pid(working_dir);
+    let mut running_instances_left = false;
 
     // Kill any orphaned or non-responding processes for this app
     let instances = read_instances_file(working_dir_str.as_ref());
     for instance in instances {
         if !is_pid_running(instance.pid) {
+            continue;
+        }
+
+        if let Err(reason) = verify_pid_ownership(instance.pid, working_dir, lock_pid) {
+            warn!(
+                "Skipping stale cleanup for pid {}: {}",
+                instance.pid, reason
+            );
+            messages.push(format!(
+                "[moldable] Startup cleanup: skipped process (pid {}) - {}",
+                instance.pid, reason
+            ));
+            running_instances_left = true;
             continue;
         }
 
@@ -291,13 +363,28 @@ fn force_cleanup_next_lock(working_dir: &Path) -> Vec<String> {
                 "[moldable] Killed stale process (pid {})",
                 instance.pid
             ));
+            if is_pid_running(instance.pid) {
+                warn!("Failed to kill stale process {}", instance.pid);
+                messages.push(format!(
+                    "[moldable] Startup cleanup: failed to kill process (pid {})",
+                    instance.pid
+                ));
+                running_instances_left = true;
+            }
+        } else {
+            running_instances_left = true;
         }
     }
 
     // Clear the instances file since we're starting fresh
     let instances_path = working_dir.join(".moldable.instances.json");
     if instances_path.exists() {
-        if let Err(e) = std::fs::remove_file(&instances_path) {
+        if running_instances_left {
+            messages.push(
+                "[moldable] Startup cleanup: instances still running; leaving registry intact"
+                    .to_string(),
+            );
+        } else if let Err(e) = std::fs::remove_file(&instances_path) {
             warn!("Failed to remove instances file: {}", e);
         } else {
             messages.push("[moldable] Cleared stale instances file".to_string());
@@ -362,30 +449,38 @@ fn handle_next_lock_before_start(
     }
 
     if let Some(pid) = read_next_lock_pid(working_dir) {
-        if is_pid_running(pid) && is_pid_for_app(pid, working_dir) {
-            if let Some(p) = port {
-                if is_port_responding(p) {
-                    return (
-                        vec![format!(
-                            "[moldable] Detected existing instance on port {}",
-                            p
-                        )],
-                        Some(AppStatus {
-                            running: true,
-                            pid: Some(pid),
-                            exit_code: None,
-                            recent_output: Vec::new(),
-                            actual_port: Some(p),
-                        }),
-                    );
+        if is_pid_running(pid) {
+            if let Err(reason) = verify_pid_ownership(pid, working_dir, Some(pid)) {
+                warn!("Skipping Next dev cleanup for pid {}: {}", pid, reason);
+                messages.push(format!(
+                    "[moldable] Skipped Next dev cleanup (pid {}) - {}",
+                    pid, reason
+                ));
+            } else {
+                if let Some(p) = port {
+                    if is_port_responding(p) {
+                        return (
+                            vec![format!(
+                                "[moldable] Detected existing instance on port {}",
+                                p
+                            )],
+                            Some(AppStatus {
+                                running: true,
+                                pid: Some(pid),
+                                exit_code: None,
+                                recent_output: Vec::new(),
+                                actual_port: Some(p),
+                            }),
+                        );
+                    }
                 }
-            }
 
-            kill_process_tree(pid);
-            messages.push(format!(
-                "[moldable] Killed stale Next dev process (pid {})",
-                pid
-            ));
+                kill_process_tree(pid);
+                messages.push(format!(
+                    "[moldable] Killed stale Next dev process (pid {})",
+                    pid
+                ));
+            }
         }
     }
 
@@ -744,9 +839,22 @@ pub fn cleanup_orphaned_instances(working_dir: &str) -> (usize, Vec<String>) {
     let mut killed_pids = HashSet::new();
     let mut running_instances_left = false;
     let working_path = Path::new(working_dir);
+    let lock_pid = read_next_lock_pid(working_path);
 
     for instance in &instances {
         if is_pid_running(instance.pid) {
+            if let Err(reason) = verify_pid_ownership(instance.pid, working_path, lock_pid) {
+                warn!(
+                    "Skipping orphan cleanup for pid {}: {}",
+                    instance.pid, reason
+                );
+                messages.push(format!(
+                    "[moldable] Startup cleanup: skipped process (pid {}) - {}",
+                    instance.pid, reason
+                ));
+                running_instances_left = true;
+                continue;
+            }
             info!(
                 "Killing orphaned process {} (port {:?})",
                 instance.pid, instance.port
@@ -792,8 +900,15 @@ pub fn cleanup_orphaned_instances(working_dir: &str) -> (usize, Vec<String>) {
         let mut lock_pid_running = false;
 
         if let Some(pid) = read_next_lock_pid(working_path) {
-            if is_pid_running(pid) && is_pid_for_app(pid, working_path) {
-                if !killed_pids.contains(&pid) {
+            if is_pid_running(pid) {
+                if let Err(reason) = verify_pid_ownership(pid, working_path, Some(pid)) {
+                    warn!("Skipping Next dev cleanup for pid {}: {}", pid, reason);
+                    messages.push(format!(
+                        "[moldable] Startup cleanup: skipped Next dev process (pid {}) - {}",
+                        pid, reason
+                    ));
+                    lock_pid_running = true;
+                } else if !killed_pids.contains(&pid) {
                     info!("Killing Next dev process {} from lock file", pid);
                     kill_process_tree(pid);
                     std::thread::sleep(Duration::from_millis(100));
@@ -1153,6 +1268,7 @@ mod tests {
     use super::*;
     use crate::install_state::update_install_state;
     use std::fs;
+    use tempfile::TempDir;
 
     // ==================== COMMAND BASENAME TESTS ====================
 
@@ -1359,6 +1475,20 @@ mod tests {
         assert!(lines.is_empty());
 
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_verify_pid_ownership_rejects_unrelated_process() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut child = Command::new("sleep").arg("2").spawn().unwrap();
+        let pid = child.id();
+
+        let result = verify_pid_ownership(pid, temp_dir.path(), None);
+
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert!(result.is_err());
     }
 
     #[test]
