@@ -9,9 +9,12 @@ use crate::paths::{get_cache_dir, get_config_file_path, get_shared_apps_dir};
 use crate::runtime;
 use crate::types::{AppRegistry, MoldableConfig, RegisteredApp};
 use log::{error, info, warn};
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::{Mutex as TokioMutex, OwnedMutexGuard};
 
 fn ensure_path_within_root(root: &Path, path: &Path) -> Result<(), String> {
     let resolved = path
@@ -24,6 +27,22 @@ fn ensure_path_within_root(root: &Path, path: &Path) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+static INSTALL_LOCKS: OnceLock<TokioMutex<HashMap<String, Arc<TokioMutex<()>>>>> = OnceLock::new();
+
+async fn get_install_lock(app_id: &str) -> Arc<TokioMutex<()>> {
+    let locks = INSTALL_LOCKS.get_or_init(|| TokioMutex::new(HashMap::new()));
+    let mut guard = locks.lock().await;
+    guard
+        .entry(app_id.to_string())
+        .or_insert_with(|| Arc::new(TokioMutex::new(())))
+        .clone()
+}
+
+async fn install_lock_guard(app_id: &str) -> OwnedMutexGuard<()> {
+    let lock = get_install_lock(app_id).await;
+    lock.lock_owned().await
 }
 
 fn validate_extracted_app(app_dir: &Path) -> Result<(), String> {
@@ -230,6 +249,7 @@ pub async fn install_app_from_registry(
 ) -> Result<RegisteredApp, String> {
     let shared_apps_dir = get_shared_apps_dir()?;
     let app_dir = shared_apps_dir.join(&app_id);
+    let _install_guard = install_lock_guard(&app_id).await;
 
     // Check if already registered in the current workspace
     let config_path = get_config_file_path()?;
@@ -776,7 +796,9 @@ pub async fn ensure_hello_moldables_app_async(
 mod tests {
     // Note: AppRegistry type serialization tests are in types.rs
     // These tests focus on registry-specific behavior
-    use super::{safe_zip_entry_relative_path, swap_app_directory, validate_extracted_app};
+    use super::{
+        get_install_lock, safe_zip_entry_relative_path, swap_app_directory, validate_extracted_app,
+    };
     use std::io::{Cursor, Write};
     use tempfile::TempDir;
     use zip::write::FileOptions;
@@ -896,5 +918,18 @@ mod tests {
 
         assert!(app_dir.join("new.txt").exists());
         assert!(!app_dir.join("old.txt").exists());
+    }
+
+    #[test]
+    fn test_install_lock_is_shared_per_app() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let first = get_install_lock("app-a").await;
+            let second = get_install_lock("app-a").await;
+            let other = get_install_lock("app-b").await;
+
+            assert!(std::sync::Arc::ptr_eq(&first, &second));
+            assert!(!std::sync::Arc::ptr_eq(&first, &other));
+        });
     }
 }

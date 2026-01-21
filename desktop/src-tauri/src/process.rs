@@ -17,7 +17,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::State;
 
 // ============================================================================
@@ -44,11 +44,22 @@ pub struct AppStateInner {
 /// Wrap in Arc so it can be shared across threads
 pub struct AppState(pub Arc<Mutex<AppStateInner>>);
 
+static START_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+
 // ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
 
 const MAX_OUTPUT_LINES: usize = 100;
+
+fn get_start_lock(app_id: &str) -> Arc<Mutex<()>> {
+    let locks = START_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = locks.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard
+        .entry(app_id.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
 
 fn push_output_line(lines: &mut Vec<String>, line: String) {
     if lines.len() >= MAX_OUTPUT_LINES {
@@ -433,6 +444,11 @@ fn start_app_internal_with_options(
             working_dir
         ));
     }
+
+    let start_lock = get_start_lock(&app_id);
+    let _start_guard = start_lock
+        .lock()
+        .map_err(|_| "Failed to acquire start lock".to_string())?;
 
     // Run any pending codemods to migrate the app to current Moldable version
     let codemod_messages = run_pending_codemods(working_path);
@@ -1343,6 +1359,16 @@ mod tests {
         assert!(lines.is_empty());
 
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_start_lock_is_shared_per_app() {
+        let first = get_start_lock("app-a");
+        let second = get_start_lock("app-a");
+        let other = get_start_lock("app-b");
+
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(!Arc::ptr_eq(&first, &other));
     }
 
     // ==================== NEXT LOCK CLEANUP TESTS ====================
