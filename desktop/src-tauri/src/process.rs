@@ -258,6 +258,48 @@ fn is_port_responding(port: u16) -> bool {
     TcpStream::connect_timeout(&addr, Duration::from_millis(1000)).is_ok()
 }
 
+fn find_responding_port_for_pid(working_dir: &Path, pid: u32) -> Option<u16> {
+    let working_dir_str = working_dir.to_string_lossy();
+    let instances = read_instances_file(working_dir_str.as_ref());
+
+    for instance in instances {
+        if instance.pid != pid {
+            continue;
+        }
+        if let Some(port) = instance.port {
+            if is_port_responding(port) {
+                return Some(port);
+            }
+        }
+    }
+
+    None
+}
+
+fn find_responding_instance_from_registry(working_dir: &Path) -> Option<(u32, u16)> {
+    let working_dir_str = working_dir.to_string_lossy();
+    let instances = read_instances_file(working_dir_str.as_ref());
+
+    for instance in instances {
+        let port = match instance.port {
+            Some(port) => port,
+            None => continue,
+        };
+        if !is_pid_running(instance.pid) {
+            continue;
+        }
+        if !is_port_responding(port) {
+            continue;
+        }
+        if verify_pid_ownership(instance.pid, working_dir, None).is_err() {
+            continue;
+        }
+        return Some((instance.pid, port));
+    }
+
+    None
+}
+
 fn find_running_instance(working_dir: &Path) -> Option<(u32, u16)> {
     let working_dir_str = working_dir.to_string_lossy();
     let instances = read_instances_file(working_dir_str.as_ref());
@@ -475,11 +517,62 @@ fn handle_next_lock_before_start(
                     }
                 }
 
-                kill_process_tree(pid);
-                messages.push(format!(
-                    "[moldable] Killed stale Next dev process (pid {})",
-                    pid
-                ));
+                if let Some(port) = find_responding_port_for_pid(working_dir, pid) {
+                    return (
+                        vec![format!(
+                            "[moldable] Detected existing instance on port {}",
+                            port
+                        )],
+                        Some(AppStatus {
+                            running: true,
+                            pid: Some(pid),
+                            exit_code: None,
+                            recent_output: Vec::new(),
+                            actual_port: Some(port),
+                        }),
+                    );
+                }
+
+                if let Some((instance_pid, instance_port)) =
+                    find_responding_instance_from_registry(working_dir)
+                {
+                    return (
+                        vec![format!(
+                            "[moldable] Detected existing instance on port {}",
+                            instance_port
+                        )],
+                        Some(AppStatus {
+                            running: true,
+                            pid: Some(instance_pid),
+                            exit_code: None,
+                            recent_output: Vec::new(),
+                            actual_port: Some(instance_port),
+                        }),
+                    );
+                }
+
+                if is_pid_orphaned(pid) {
+                    kill_process_tree(pid);
+                    messages.push(format!(
+                        "[moldable] Killed stale Next dev process (pid {})",
+                        pid
+                    ));
+                } else {
+                    messages.push(format!(
+                        "[moldable] Detected running instance (pid {})",
+                        pid
+                    ));
+                    return (
+                        messages,
+                        Some(AppStatus {
+                            running: true,
+                            pid: Some(pid),
+                            exit_code: None,
+                            recent_output: Vec::new(),
+                            actual_port: None,
+                        }),
+                    );
+                }
             }
         }
     }
@@ -1613,6 +1706,35 @@ mod tests {
         assert!(!messages.is_empty());
         assert!(!lock_path.join("lock").exists());
 
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_handle_next_lock_returns_running_when_port_unresponsive() {
+        let temp_dir = create_temp_dir("moldable-next-lock-running");
+        let lock_path = temp_dir.join(".next").join("dev");
+        fs::create_dir_all(&lock_path).unwrap();
+
+        let app_file = temp_dir.join("dummy.log");
+        fs::write(&app_file, "test".as_bytes()).unwrap();
+        let mut child = Command::new("tail")
+            .arg("-f")
+            .arg(&app_file)
+            .spawn()
+            .unwrap();
+
+        fs::write(lock_path.join("lock"), child.id().to_string()).unwrap();
+
+        let (messages, status) = handle_next_lock_before_start(&temp_dir, Some(4000));
+        assert!(status.is_some());
+        let status = status.unwrap();
+        assert!(status.running);
+        assert_eq!(status.pid, Some(child.id()));
+        assert!(!messages.is_empty());
+        assert!(is_pid_running(child.id()));
+
+        let _ = child.kill();
+        let _ = child.wait();
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
