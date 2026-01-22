@@ -1,3 +1,8 @@
+import {
+  TRUNCATION_LIMITS,
+  generateOutputId,
+  truncateArray,
+} from './tool-output'
 import { tool, zodSchema } from 'ai'
 import { exec } from 'child_process'
 import { promises as fs } from 'fs'
@@ -34,16 +39,20 @@ async function detectTools(): Promise<void> {
   toolsDetected = true
 }
 
+export type SearchToolsOptions = {
+  /** Base path for search operations (security boundary) */
+  basePath?: string
+  /** Max results for search operations (default: 100) */
+  maxResults?: number
+  /** Directory to save large tool outputs for later retrieval */
+  outputDir?: string
+}
+
 /**
  * Create search tools for the AI agent (grep, glob file search)
  */
-export function createSearchTools(
-  options: {
-    basePath?: string
-    maxResults?: number
-  } = {},
-) {
-  const { basePath, maxResults = 100 } = options
+export function createSearchTools(options: SearchToolsOptions = {}) {
+  const { basePath, maxResults = 100, outputDir } = options
 
   const basePathResolved = basePath ? path.resolve(basePath) : undefined
   const homeDir = os.homedir()
@@ -132,7 +141,7 @@ export function createSearchTools(
   return {
     grep: tool({
       description:
-        'Search file contents using regex patterns. Returns matching lines with file paths and line numbers.',
+        'Search file contents using regex patterns. Returns matching lines with file paths and line numbers. Large result sets are automatically truncated.',
       inputSchema: zodSchema(grepSchema),
       execute: async (input) => {
         await detectTools()
@@ -142,12 +151,58 @@ export function createSearchTools(
             ? resolvePath(input.path)
             : basePath || '.'
 
-          const limit = input.maxResults || maxResults
+          // Use higher internal limit to detect if truncation is needed
+          const internalLimit = Math.max(
+            (input.maxResults || maxResults) * 2,
+            TRUNCATION_LIMITS.GREP_MATCHES * 2,
+          )
+
+          let result: {
+            success: boolean
+            matches: Array<{ file: string; line: number; content: string }>
+            totalMatches: number
+            truncated: boolean
+          }
 
           if (hasRg) {
-            return await grepWithRipgrep(input, searchPath, limit)
+            result = await grepWithRipgrep(input, searchPath, internalLimit)
           } else {
-            return await grepWithGrep(input, searchPath, limit, escapeForGrep)
+            result = await grepWithGrep(
+              input,
+              searchPath,
+              internalLimit,
+              escapeForGrep,
+            )
+          }
+
+          // Apply truncation with saved output
+          const truncationLimit =
+            input.maxResults ||
+            Math.min(maxResults, TRUNCATION_LIMITS.GREP_MATCHES)
+          const outputId = generateOutputId()
+          const truncated = truncateArray(result.matches, {
+            maxItems: truncationLimit,
+            outputDir,
+            outputId,
+            itemToString: (match) =>
+              `${match.file}:${match.line}: ${match.content}`,
+            metadata: {
+              tool: 'grep',
+              pattern: input.pattern,
+              path: searchPath,
+            },
+          })
+
+          return {
+            success: result.success,
+            matches: truncated.data,
+            totalMatches: result.totalMatches,
+            returnedMatches: truncated.returnedCount,
+            truncated: truncated.truncated,
+            ...(truncated.truncated && {
+              truncationMessage: truncated.message,
+              savedPath: truncated.savedPath,
+            }),
           }
         } catch (error) {
           // Handle "no matches" case
@@ -162,6 +217,7 @@ export function createSearchTools(
               success: true,
               matches: [],
               totalMatches: 0,
+              returnedMatches: 0,
               truncated: false,
             }
           }
@@ -177,7 +233,7 @@ export function createSearchTools(
 
     globFileSearch: tool({
       description:
-        'Find files matching a glob pattern. Returns matching file paths sorted by modification time (most recent first).',
+        'Find files matching a glob pattern. Returns matching file paths sorted by modification time (most recent first). Large result sets are automatically truncated.',
       inputSchema: zodSchema(globFileSearchSchema),
       execute: async (input) => {
         await detectTools()
@@ -187,10 +243,45 @@ export function createSearchTools(
             ? resolvePath(input.directory)
             : basePath || '.'
 
+          // Use higher internal limit to detect if truncation is needed
+          const internalLimit = TRUNCATION_LIMITS.GLOB_FILES * 2
+
+          let result: { success: boolean; files: string[]; count: number }
+
           if (hasFd) {
-            return await findWithFd(input.pattern, searchDir, maxResults)
+            result = await findWithFd(input.pattern, searchDir, internalLimit)
           } else {
-            return await findWithFind(input.pattern, searchDir, maxResults)
+            result = await findWithFind(input.pattern, searchDir, internalLimit)
+          }
+
+          // Apply truncation with saved output
+          const truncationLimit = Math.min(
+            maxResults,
+            TRUNCATION_LIMITS.GLOB_FILES,
+          )
+          const outputId = generateOutputId()
+          const truncated = truncateArray(result.files, {
+            maxItems: truncationLimit,
+            outputDir,
+            outputId,
+            itemToString: (file) => file,
+            metadata: {
+              tool: 'globFileSearch',
+              pattern: input.pattern,
+              directory: searchDir,
+            },
+          })
+
+          return {
+            success: result.success,
+            files: truncated.data,
+            count: truncated.returnedCount,
+            totalCount: truncated.totalCount,
+            truncated: truncated.truncated,
+            ...(truncated.truncated && {
+              truncationMessage: truncated.message,
+              savedPath: truncated.savedPath,
+            }),
           }
         } catch (error) {
           return {

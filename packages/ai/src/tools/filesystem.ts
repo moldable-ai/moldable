@@ -1,14 +1,27 @@
+import {
+  TRUNCATION_LIMITS,
+  generateOutputId,
+  truncateArray,
+  truncateString,
+} from './tool-output'
 import { tool, zodSchema } from 'ai'
 import { promises as fs } from 'fs'
 import os from 'os'
 import path from 'path'
 import { z } from 'zod/v4'
 
+export type FilesystemToolsOptions = {
+  /** Base path for file operations (security boundary) */
+  basePath?: string
+  /** Directory to save large tool outputs for later retrieval */
+  outputDir?: string
+}
+
 /**
  * Create filesystem tools for the AI agent
  */
-export function createFilesystemTools(options: { basePath?: string } = {}) {
-  const { basePath } = options
+export function createFilesystemTools(options: FilesystemToolsOptions = {}) {
+  const { basePath, outputDir } = options
 
   const basePathResolved = basePath ? path.resolve(basePath) : undefined
   const homeDir = os.homedir()
@@ -106,14 +119,15 @@ export function createFilesystemTools(options: { basePath?: string } = {}) {
   return {
     readFile: tool({
       description:
-        'Read the contents of a file at the specified path. Returns the file content as text. Supports optional line offset and limit.',
+        'Read the contents of a file at the specified path. Returns the file content as text. Supports optional line offset and limit. Large files are automatically truncated - use offset/limit to read specific sections.',
       inputSchema: zodSchema(readFileSchema),
       execute: async (input) => {
         try {
           const resolvedPath = resolvePath(input.path)
           let content = await fs.readFile(resolvedPath, 'utf-8')
+          const totalLines = content.split('\n').length
 
-          // Apply offset and limit if specified
+          // Apply offset and limit if specified by user
           if (input.offset !== undefined || input.limit !== undefined) {
             const lines = content.split('\n')
             const startLine = (input.offset ?? 1) - 1 // Convert to 0-indexed
@@ -123,13 +137,45 @@ export function createFilesystemTools(options: { basePath?: string } = {}) {
               .slice(Math.max(0, startLine), endLine)
               .map((line, idx) => `${startLine + idx + 1}|${line}`)
               .join('\n')
+
+            // No automatic truncation when user specifies offset/limit
+            return {
+              success: true,
+              path: resolvedPath,
+              content,
+              size: content.length,
+              totalLines,
+              startLine: Math.max(0, startLine) + 1,
+              endLine: Math.min(endLine, lines.length),
+            }
           }
+
+          // Apply automatic truncation for large files
+          const outputId = generateOutputId()
+          const truncated = truncateString(content, {
+            maxChars: TRUNCATION_LIMITS.FILE_CONTENT_CHARS,
+            maxLines: TRUNCATION_LIMITS.FILE_CONTENT_LINES,
+            outputDir,
+            outputId,
+            metadata: {
+              tool: 'readFile',
+              path: resolvedPath,
+              totalLines,
+            },
+          })
 
           return {
             success: true,
             path: resolvedPath,
-            content,
+            content: truncated.data,
             size: content.length,
+            totalLines,
+            truncated: truncated.truncated,
+            linesReturned: truncated.returnedCount,
+            ...(truncated.truncated && {
+              truncationMessage: truncated.message,
+              savedPath: truncated.savedPath,
+            }),
           }
         } catch (error) {
           return {
@@ -260,7 +306,7 @@ export function createFilesystemTools(options: { basePath?: string } = {}) {
 
     listDirectory: tool({
       description:
-        'List the contents of a directory. Returns file and directory names with their types.',
+        'List the contents of a directory. Returns file and directory names with their types. Large directories are automatically truncated.',
       inputSchema: zodSchema(listDirectorySchema),
       execute: async (input) => {
         try {
@@ -289,11 +335,32 @@ export function createFilesystemTools(options: { basePath?: string } = {}) {
               if (a.type !== 'directory' && b.type === 'directory') return 1
               return a.name.localeCompare(b.name)
             })
+
+          // Apply truncation for large directories
+          const outputId = generateOutputId()
+          const truncated = truncateArray(items, {
+            maxItems: TRUNCATION_LIMITS.DIRECTORY_ITEMS,
+            outputDir,
+            outputId,
+            itemToString: (item) =>
+              `${item.type === 'directory' ? 'd' : 'f'} ${item.name}`,
+            metadata: {
+              tool: 'listDirectory',
+              path: resolvedPath,
+            },
+          })
+
           return {
             success: true,
             path: resolvedPath,
-            items,
-            count: items.length,
+            items: truncated.data,
+            count: truncated.returnedCount,
+            totalCount: truncated.totalCount,
+            truncated: truncated.truncated,
+            ...(truncated.truncated && {
+              truncationMessage: truncated.message,
+              savedPath: truncated.savedPath,
+            }),
           }
         } catch (error) {
           return {

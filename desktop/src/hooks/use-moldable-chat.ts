@@ -53,6 +53,8 @@ interface UseMoldableChatOptions {
   activeApp?: ActiveAppContext | null
   /** Available API keys from health check - used to auto-select appropriate model */
   availableKeys?: AvailableKeys
+  /** App-provided instructions to embed in chat context */
+  appChatInstructions?: string
   /** Callback when a response finishes streaming */
   onFinish?: (messages: UIMessage[]) => void
   /** AI server port (from health check, may be fallback port) */
@@ -69,6 +71,7 @@ interface DynamicBodyStore {
   activeWorkspaceId: string | null
   registeredApps: RegisteredAppInfo[]
   activeApp: ActiveAppContext | null
+  appChatInstructions: string | null
   apiServerPort: number | null
   requireUnsandboxedApproval: boolean
   requireDangerousCommandApproval: boolean
@@ -84,6 +87,7 @@ export function useMoldableChat(options: UseMoldableChatOptions = {}) {
     registeredApps = [],
     activeApp = null,
     availableKeys,
+    appChatInstructions,
     aiServerPort = DEFAULT_AI_SERVER_PORT,
     apiServerPort,
   } = options
@@ -117,6 +121,7 @@ export function useMoldableChat(options: UseMoldableChatOptions = {}) {
     activeWorkspaceId: null,
     registeredApps: [],
     activeApp: null,
+    appChatInstructions: null,
     apiServerPort: null,
     requireUnsandboxedApproval: true,
     requireDangerousCommandApproval: true,
@@ -131,6 +136,7 @@ export function useMoldableChat(options: UseMoldableChatOptions = {}) {
     activeWorkspaceId: activeWorkspaceId ?? null,
     registeredApps,
     activeApp,
+    appChatInstructions: appChatInstructions ?? null,
     apiServerPort: apiServerPort ?? null,
     requireUnsandboxedApproval,
     requireDangerousCommandApproval,
@@ -198,6 +204,9 @@ export function useMoldableChat(options: UseMoldableChatOptions = {}) {
               dataDir: store.activeApp.dataDir,
             },
           }),
+          ...(store.appChatInstructions && {
+            appChatInstructions: store.appChatInstructions,
+          }),
           // Pass API server port for scaffold tools (handles multi-user on same machine)
           ...(store.apiServerPort && { apiServerPort: store.apiServerPort }),
           // Pass security preferences
@@ -210,9 +219,33 @@ export function useMoldableChat(options: UseMoldableChatOptions = {}) {
     })
   }, [apiEndpoint])
 
+  // Transform error messages to be more user-friendly
+  const handleError = useCallback((error: Error) => {
+    console.error('[Chat] Error:', error.message)
+    // The error message should already be well-formatted from the server
+    // But we can catch any client-side errors here too
+    const message = error.message || 'Unknown error'
+
+    // Handle client-side specific errors
+    if (
+      message.includes('Failed to fetch') ||
+      message.includes('NetworkError')
+    ) {
+      error.message =
+        'Could not connect to the AI server. Please check that Moldable is running properly.'
+    } else if (message.includes('Load failed')) {
+      error.message =
+        'Failed to load response from AI server. The connection may have been interrupted.'
+    } else if (message === 'Load error' || message === 'Error') {
+      // Generic errors - provide more context
+      error.message = 'The AI request failed. Please try again.'
+    }
+  }, [])
+
   const chat = useChat({
     transport,
     onData: handleData,
+    onError: handleError,
     // Auto-continue after tool approval responses are added
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
   })

@@ -40,6 +40,8 @@ export interface SystemPromptOptions {
   registeredApps?: RegisteredAppInfo[]
   /** Currently active app being viewed in Moldable (if any) */
   activeApp?: ActiveAppContext | null
+  /** App-provided instructions to include in every chat request (set via moldable:set-chat-instructions) */
+  appChatInstructions?: string
 }
 
 /**
@@ -407,6 +409,7 @@ export async function buildSystemPrompt(
     additionalContext,
     registeredApps = [],
     activeApp,
+    appChatInstructions,
   } = options
 
   const sections: string[] = [DEFAULT_SYSTEM_PROMPT]
@@ -478,6 +481,16 @@ The user is currently viewing the **${activeApp.icon} ${activeApp.name}** app in
 - **Data Directory**: ${activeApp.dataDir}
 
 When the user asks to make changes, modify features, or fix issues, assume they are referring to this app unless they specify otherwise. Use the working directory above as the base path for file operations related to this app. Use the data directory for any persistent data the app stores (e.g., meetings for a meetings app).`)
+  }
+
+  // Add app-provided instructions (set by the app via moldable:set-chat-instructions)
+  if (appChatInstructions) {
+    sections.push(`
+## App-Provided Context
+
+The following context was provided by the currently active app:
+
+${appChatInstructions}`)
   }
 
   // Add tool-specific instructions if tools are available

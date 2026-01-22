@@ -19,7 +19,11 @@ const MODEL_CONFIG: Record<LLMProvider, ModelConfig> = {
     temperature: 1.0,
     isReasoning: true,
   },
-  [LLMProvider.OpenAI_GPT_5_2]: {
+  [LLMProvider.Anthropic_Claude_Sonnet_4_5]: {
+    temperature: 1.0,
+    isReasoning: true,
+  },
+  [LLMProvider.OpenAI_GPT_5_2_Codex]: {
     temperature: 1.0,
     isReasoning: true,
   },
@@ -28,6 +32,18 @@ const MODEL_CONFIG: Record<LLMProvider, ModelConfig> = {
     isReasoning: true,
   },
   [LLMProvider.OpenRouter_Google_Gemini_3_Flash]: {
+    temperature: 1.0,
+    isReasoning: true,
+  },
+  [LLMProvider.OpenRouter_Google_Gemini_3_Pro]: {
+    temperature: 1.0,
+    isReasoning: true,
+  },
+  [LLMProvider.OpenRouter_XAI_Grok_Code_Fast_1]: {
+    temperature: 1.0,
+    isReasoning: true,
+  },
+  [LLMProvider.OpenRouter_ZAI_GLM_4_7]: {
     temperature: 1.0,
     isReasoning: true,
   },
@@ -223,7 +239,7 @@ export function getProviderConfig(
   }
 
   if (apiKeys.openrouterApiKey) {
-    // OpenRouter uses full model ID for OpenAI models: 'openai/gpt-5.2'
+    // OpenRouter uses full model ID for OpenAI models: 'openai/gpt-5.2-codex'
     return buildOpenRouterConfig(
       apiKeys.openrouterApiKey,
       provider,

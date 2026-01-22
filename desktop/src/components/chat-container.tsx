@@ -47,6 +47,8 @@ interface ChatContainerProps {
   suggestedInput?: string
   /** Called when suggested input has been consumed */
   onSuggestedInputConsumed?: () => void
+  /** App-provided instructions to include in chat context */
+  appChatInstructions?: string
   /** AI server port (may be fallback port if default was unavailable) */
   aiServerPort?: number
   /** API server port (for scaffold tools, handles multi-user on same machine) */
@@ -66,6 +68,7 @@ export function ChatContainer({
   onAddApiKey,
   suggestedInput,
   onSuggestedInputConsumed,
+  appChatInstructions,
   aiServerPort,
   apiServerPort,
 }: ChatContainerProps) {
@@ -88,6 +91,7 @@ export function ChatContainer({
     registeredApps,
     activeApp,
     availableKeys,
+    appChatInstructions,
     aiServerPort,
     apiServerPort,
   })

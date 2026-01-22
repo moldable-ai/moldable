@@ -1,4 +1,5 @@
 import { createFilesystemTools } from './filesystem'
+import { TRUNCATION_LIMITS } from './tool-output'
 import { promises as fs } from 'fs'
 import os from 'os'
 import path from 'path'
@@ -21,6 +22,11 @@ async function execReadFile(
   return (await tools.readFile.execute!(input, ctx)) as {
     success: boolean
     content?: string
+    totalLines?: number
+    truncated?: boolean
+    linesReturned?: number
+    truncationMessage?: string
+    savedPath?: string
     error?: string
   }
 }
@@ -61,6 +67,11 @@ async function execListDir(tools: FsTools, input: { path: string }) {
   return (await tools.listDirectory.execute!(input, ctx)) as {
     success: boolean
     items?: Array<{ name: string; type: string }>
+    count?: number
+    totalCount?: number
+    truncated?: boolean
+    truncationMessage?: string
+    savedPath?: string
     error?: string
   }
 }
@@ -122,6 +133,71 @@ describe('createFilesystemTools', () => {
 
       expect(result.success).toBe(false)
       expect(result.error).toContain('ENOENT')
+    })
+
+    it('truncates large files automatically', async () => {
+      // Create a file that exceeds the line limit
+      const lines = Array.from(
+        { length: TRUNCATION_LIMITS.FILE_CONTENT_LINES + 100 },
+        (_, i) => `Line ${i + 1}`,
+      )
+      const largeContent = lines.join('\n')
+      await fs.writeFile(path.join(tempDir, 'large.txt'), largeContent)
+
+      const result = await execReadFile(tools, { path: 'large.txt' })
+
+      expect(result.success).toBe(true)
+      expect(result.truncated).toBe(true)
+      expect(result.linesReturned).toBeLessThanOrEqual(
+        TRUNCATION_LIMITS.FILE_CONTENT_LINES,
+      )
+      expect(result.totalLines).toBe(lines.length)
+      expect(result.truncationMessage).toContain('truncated')
+    })
+
+    it('does not truncate when user specifies offset/limit', async () => {
+      // Create a large file
+      const lines = Array.from(
+        { length: TRUNCATION_LIMITS.FILE_CONTENT_LINES + 100 },
+        (_, i) => `Line ${i + 1}`,
+      )
+      await fs.writeFile(path.join(tempDir, 'large2.txt'), lines.join('\n'))
+
+      // Request specific range - should not auto-truncate
+      const result = await execReadFile(tools, {
+        path: 'large2.txt',
+        offset: 1,
+        limit: 10,
+      })
+
+      expect(result.success).toBe(true)
+      expect(result.truncated).toBeUndefined() // No auto-truncation
+    })
+
+    it('saves full output to file when truncated and outputDir provided', async () => {
+      const outputDir = path.join(tempDir, 'tool-output')
+      const toolsWithOutput = createFilesystemTools({
+        basePath: tempDir,
+        outputDir,
+      })
+
+      // Create large file
+      const lines = Array.from(
+        { length: TRUNCATION_LIMITS.FILE_CONTENT_LINES + 100 },
+        (_, i) => `Line ${i + 1}`,
+      )
+      await fs.writeFile(path.join(tempDir, 'large3.txt'), lines.join('\n'))
+
+      const result = await execReadFile(toolsWithOutput, { path: 'large3.txt' })
+
+      expect(result.success).toBe(true)
+      expect(result.truncated).toBe(true)
+      expect(result.savedPath).toBeDefined()
+      expect(result.savedPath).toContain(outputDir)
+
+      // Verify saved file exists and contains full content
+      const savedContent = await fs.readFile(result.savedPath!, 'utf-8')
+      expect(savedContent).toContain(`Line ${lines.length}`)
     })
   })
 
@@ -279,6 +355,27 @@ describe('createFilesystemTools', () => {
       const names = result.items!.map((i: { name: string }) => i.name)
       expect(names).toContain('visible.txt')
       expect(names).not.toContain('.hidden')
+    })
+
+    it('truncates large directories', async () => {
+      // Create many files exceeding the limit
+      const numFiles = TRUNCATION_LIMITS.DIRECTORY_ITEMS + 100
+      for (let i = 0; i < numFiles; i++) {
+        await fs.writeFile(
+          path.join(tempDir, `file${i.toString().padStart(4, '0')}.txt`),
+          '',
+        )
+      }
+
+      const result = await execListDir(tools, { path: '.' })
+
+      expect(result.success).toBe(true)
+      expect(result.truncated).toBe(true)
+      expect(result.count).toBeLessThanOrEqual(
+        TRUNCATION_LIMITS.DIRECTORY_ITEMS,
+      )
+      expect(result.totalCount).toBe(numFiles)
+      expect(result.truncationMessage).toContain('truncated')
     })
   })
 

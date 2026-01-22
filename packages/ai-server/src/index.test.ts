@@ -413,28 +413,28 @@ describe('AI Server', () => {
       })
 
       // OpenAI model without any key
-      expect(validateApiKeys('openai/gpt-5.2', {})).toEqual({
+      expect(validateApiKeys('openai/gpt-5.2-codex', {})).toEqual({
         valid: false,
         error: 'OPENAI_API_KEY or OPENROUTER_API_KEY required',
       })
 
       // OpenAI model with direct OpenAI key
       expect(
-        validateApiKeys('openai/gpt-5.2', { openaiApiKey: 'key' }),
+        validateApiKeys('openai/gpt-5.2-codex', { openaiApiKey: 'key' }),
       ).toEqual({
         valid: true,
       })
 
       // OpenAI model with OpenRouter key (fallback)
       expect(
-        validateApiKeys('openai/gpt-5.2', { openrouterApiKey: 'key' }),
+        validateApiKeys('openai/gpt-5.2-codex', { openrouterApiKey: 'key' }),
       ).toEqual({
         valid: true,
       })
 
       // OpenAI model with both keys (prefers direct, but valid either way)
       expect(
-        validateApiKeys('openai/gpt-5.2', {
+        validateApiKeys('openai/gpt-5.2-codex', {
           openaiApiKey: 'key',
           openrouterApiKey: 'key',
         }),

@@ -99,13 +99,13 @@ describe('getProviderConfig', () => {
 
   describe('OpenAI provider', () => {
     it('requires OpenAI or OpenRouter API key', () => {
-      expect(() => getProviderConfig(LLMProvider.OpenAI_GPT_5_2, {})).toThrow(
-        'OpenAI API key or OpenRouter API key is required',
-      )
+      expect(() =>
+        getProviderConfig(LLMProvider.OpenAI_GPT_5_2_Codex, {}),
+      ).toThrow('OpenAI API key or OpenRouter API key is required')
     })
 
     it('returns correct config with API key', () => {
-      const config = getProviderConfig(LLMProvider.OpenAI_GPT_5_2, {
+      const config = getProviderConfig(LLMProvider.OpenAI_GPT_5_2_Codex, {
         openaiApiKey: 'test-key',
       })
 
@@ -117,7 +117,7 @@ describe('getProviderConfig', () => {
 
     it('includes reasoning effort in provider options', () => {
       const config = getProviderConfig(
-        LLMProvider.OpenAI_GPT_5_2,
+        LLMProvider.OpenAI_GPT_5_2_Codex,
         { openaiApiKey: 'test-key' },
         'high',
       )
@@ -129,7 +129,7 @@ describe('getProviderConfig', () => {
     })
 
     it('falls back to OpenRouter when only OpenRouter key is available', () => {
-      const config = getProviderConfig(LLMProvider.OpenAI_GPT_5_2, {
+      const config = getProviderConfig(LLMProvider.OpenAI_GPT_5_2_Codex, {
         openrouterApiKey: 'test-key',
       })
 
@@ -139,7 +139,7 @@ describe('getProviderConfig', () => {
     })
 
     it('prefers direct OpenAI API over OpenRouter when both keys available', () => {
-      const config = getProviderConfig(LLMProvider.OpenAI_GPT_5_2, {
+      const config = getProviderConfig(LLMProvider.OpenAI_GPT_5_2_Codex, {
         openaiApiKey: 'test-openai-key',
         openrouterApiKey: 'test-openrouter-key',
       })

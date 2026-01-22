@@ -277,6 +277,7 @@ pub fn run() {
             // Paths (from paths module)
             paths::get_moldable_config_path,
             paths::get_moldable_root_cmd,
+            paths::reveal_in_file_manager,
             // App registration (from apps module)
             apps::get_registered_apps,
             apps::get_registered_apps_for_workspace,

@@ -14,6 +14,7 @@ import type { AppConfig } from '../app'
 import { AppEnvDialog } from './app-env-dialog'
 import { AppLogs } from './app-logs'
 import { PortConflictDialog } from './port-conflict-dialog'
+import { invoke } from '@tauri-apps/api/core'
 import { downloadDir } from '@tauri-apps/api/path'
 import { save } from '@tauri-apps/plugin-dialog'
 import { writeFile, writeTextFile } from '@tauri-apps/plugin-fs'
@@ -142,6 +143,15 @@ export function AppView({
           await open(event.data.url)
         } catch (err) {
           console.error('Failed to open URL:', err)
+        }
+      }
+
+      // Handle "show in finder" requests
+      if (event.data?.type === 'moldable:show-in-folder' && event.data?.path) {
+        try {
+          await invoke('reveal_in_file_manager', { path: event.data.path })
+        } catch (err) {
+          console.error('Failed to reveal in file manager:', err)
         }
       }
 

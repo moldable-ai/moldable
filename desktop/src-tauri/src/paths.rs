@@ -144,6 +144,46 @@ pub fn get_moldable_root_cmd() -> Result<String, String> {
     get_moldable_root().map(|p| p.to_string_lossy().to_string())
 }
 
+/// Reveal a file in the native file manager (Finder on macOS, Explorer on Windows)
+#[tauri::command]
+pub fn reveal_in_file_manager(path: String) -> Result<(), String> {
+    let path = PathBuf::from(&path);
+    
+    if !path.exists() {
+        return Err(format!("Path does not exist: {}", path.display()));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("Failed to reveal in Finder: {}", e))?;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg("/select,")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("Failed to reveal in Explorer: {}", e))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // Linux doesn't have a standard way to select a file, so just open the parent folder
+        let parent = path.parent().unwrap_or(&path);
+        std::process::Command::new("xdg-open")
+            .arg(parent)
+            .spawn()
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
+    }
+
+    Ok(())
+}
+
 // ============================================================================
 // TESTS
 // ============================================================================

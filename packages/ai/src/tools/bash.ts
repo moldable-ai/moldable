@@ -1,4 +1,9 @@
 import {
+  TRUNCATION_LIMITS,
+  generateOutputId,
+  truncateString,
+} from './tool-output'
+import {
   SandboxManager,
   type SandboxRuntimeConfig,
 } from '@anthropic-ai/sandbox-runtime'
@@ -583,25 +588,31 @@ export type CommandProgressCallback = (
   progress: CommandProgressUpdate & { command: string },
 ) => void
 
+export type BashToolsOptions = {
+  /** Working directory for commands */
+  cwd?: string
+  /** Max buffer size for command output (default: 1MB) */
+  maxBuffer?: number
+  /** Custom sandbox configuration */
+  sandboxConfig?: Partial<SandboxRuntimeConfig>
+  /** Disable sandbox entirely */
+  disableSandbox?: boolean
+  /** Callback for streaming stdout/stderr to the UI as commands execute */
+  onProgress?: CommandProgressCallback
+  /** Whether to require user approval for unsandboxed commands (default: true) */
+  requireUnsandboxedApproval?: boolean
+  /** Whether to require user approval for dangerous commands (default: true) */
+  requireDangerousCommandApproval?: boolean
+  /** Dangerous command patterns (regex strings) that require approval */
+  dangerousPatterns?: string[]
+  /** Directory to save large tool outputs for later retrieval */
+  outputDir?: string
+}
+
 /**
  * Create bash/shell tools for the AI agent with sandbox support
  */
-export function createBashTools(
-  options: {
-    cwd?: string
-    maxBuffer?: number
-    sandboxConfig?: Partial<SandboxRuntimeConfig>
-    disableSandbox?: boolean
-    /** Callback for streaming stdout/stderr to the UI as commands execute */
-    onProgress?: CommandProgressCallback
-    /** Whether to require user approval for unsandboxed commands (default: true) */
-    requireUnsandboxedApproval?: boolean
-    /** Whether to require user approval for dangerous commands (default: true) */
-    requireDangerousCommandApproval?: boolean
-    /** Dangerous command patterns (regex strings) that require approval */
-    dangerousPatterns?: string[]
-  } = {},
-) {
+export function createBashTools(options: BashToolsOptions = {}) {
   const {
     cwd,
     maxBuffer = 1024 * 1024,
@@ -611,6 +622,7 @@ export function createBashTools(
     requireUnsandboxedApproval = true,
     requireDangerousCommandApproval = true,
     dangerousPatterns = [],
+    outputDir,
   } = options
 
   // Build config with workspace path added to allowWrite (with /** for nested paths)
@@ -680,7 +692,7 @@ export function createBashTools(
       execute: async (input, { abortSignal, toolCallId }) => {
         // Default sandbox=true, but allow explicit override for package installs
         const useSandbox = input.sandbox !== false && !disableSandbox
-        return executeCommand(input.command, {
+        const result = await executeCommand(input.command, {
           cwd: input.workingDirectory || cwd,
           maxBuffer,
           useSandbox,
@@ -691,6 +703,67 @@ export function createBashTools(
                 onProgress(toolCallId, { ...update, command: input.command })
             : undefined,
         })
+
+        // Apply truncation to stdout and stderr
+        const outputId = generateOutputId()
+        let truncatedStdout: string | undefined = result.stdout
+        let truncatedStderr: string | undefined = result.stderr
+        let stdoutTruncationMessage: string | undefined
+        let stderrTruncationMessage: string | undefined
+        let savedStdoutPath: string | undefined
+        let savedStderrPath: string | undefined
+
+        if (result.stdout) {
+          const truncated = truncateString(result.stdout, {
+            maxChars: TRUNCATION_LIMITS.COMMAND_STDOUT_CHARS,
+            maxLines: TRUNCATION_LIMITS.FILE_CONTENT_LINES,
+            outputDir,
+            outputId: `${outputId}_stdout`,
+            metadata: {
+              tool: 'runCommand',
+              command: input.command,
+              type: 'stdout',
+            },
+          })
+          truncatedStdout = truncated.data
+          if (truncated.truncated) {
+            stdoutTruncationMessage = truncated.message
+            savedStdoutPath = truncated.savedPath
+          }
+        }
+
+        if (result.stderr) {
+          const truncated = truncateString(result.stderr, {
+            maxChars: TRUNCATION_LIMITS.COMMAND_STDERR_CHARS,
+            maxLines: 200,
+            outputDir,
+            outputId: `${outputId}_stderr`,
+            metadata: {
+              tool: 'runCommand',
+              command: input.command,
+              type: 'stderr',
+            },
+          })
+          truncatedStderr = truncated.data
+          if (truncated.truncated) {
+            stderrTruncationMessage = truncated.message
+            savedStderrPath = truncated.savedPath
+          }
+        }
+
+        return {
+          ...result,
+          stdout: truncatedStdout,
+          stderr: truncatedStderr,
+          ...(stdoutTruncationMessage && {
+            stdoutTruncationMessage,
+            savedStdoutPath,
+          }),
+          ...(stderrTruncationMessage && {
+            stderrTruncationMessage,
+            savedStderrPath,
+          }),
+        }
       },
     }),
   }

@@ -17,13 +17,20 @@ type GrepResult = {
   success: boolean
   matches: Array<{ file: string; line: number; content: string }>
   totalMatches: number
+  returnedMatches?: number
   truncated: boolean
+  truncationMessage?: string
+  savedPath?: string
   error?: string
 }
 type GlobResult = {
   success: boolean
   files: string[]
   count: number
+  totalCount?: number
+  truncated?: boolean
+  truncationMessage?: string
+  savedPath?: string
   error?: string
 }
 
@@ -129,6 +136,35 @@ describe('createSearchTools', () => {
       expect(result.matches.length).toBeLessThanOrEqual(10)
       expect(result.truncated).toBe(true)
     })
+
+    it('saves full output when truncated and outputDir provided', async () => {
+      const outputDir = path.join(tempDir, 'tool-output')
+      await fs.mkdir(outputDir, { recursive: true })
+
+      // Create many matches
+      let content = ''
+      for (let i = 0; i < 100; i++) {
+        content += `Match line ${i}\n`
+      }
+      await fs.writeFile(path.join(tempDir, 'many2.txt'), content)
+
+      const toolsWithOutput = createSearchTools({
+        basePath: tempDir,
+        maxResults: 10,
+        outputDir,
+      })
+      const result = await execGrep(toolsWithOutput, { pattern: 'Match' })
+
+      expect(result.success).toBe(true)
+      expect(result.truncated).toBe(true)
+      expect(result.savedPath).toBeDefined()
+      expect(result.savedPath).toContain(outputDir)
+      expect(result.truncationMessage).toContain('truncated')
+
+      // Verify saved file contains all matches
+      const savedContent = await fs.readFile(result.savedPath!, 'utf-8')
+      expect(savedContent).toContain('Match line 99')
+    })
   })
 
   describe('globFileSearch', () => {
@@ -180,6 +216,57 @@ describe('createSearchTools', () => {
       expect(result.success).toBe(true)
       // Most recent should be first
       expect(result.files[0]).toContain('mtime2.txt')
+    })
+
+    it('truncates large result sets', async () => {
+      // Create more files than the limit
+      const numFiles = 600 // More than GLOB_FILES limit (500)
+      for (let i = 0; i < numFiles; i++) {
+        await fs.writeFile(
+          path.join(tempDir, `glob${i.toString().padStart(4, '0')}.txt`),
+          '',
+        )
+      }
+
+      const limitedTools = createSearchTools({
+        basePath: tempDir,
+        maxResults: 100, // Lower limit to test truncation
+      })
+      const result = await execGlobSearch(limitedTools, {
+        pattern: 'glob*.txt',
+      })
+
+      expect(result.success).toBe(true)
+      expect(result.truncated).toBe(true)
+      expect(result.count).toBeLessThanOrEqual(100)
+      expect(result.totalCount).toBeGreaterThan(100)
+    })
+
+    it('saves full output when truncated and outputDir provided', async () => {
+      const outputDir = path.join(tempDir, 'tool-output')
+      await fs.mkdir(outputDir, { recursive: true })
+
+      // Create more files than limit
+      for (let i = 0; i < 150; i++) {
+        await fs.writeFile(
+          path.join(tempDir, `save${i.toString().padStart(4, '0')}.txt`),
+          '',
+        )
+      }
+
+      const toolsWithOutput = createSearchTools({
+        basePath: tempDir,
+        maxResults: 50,
+        outputDir,
+      })
+      const result = await execGlobSearch(toolsWithOutput, {
+        pattern: 'save*.txt',
+      })
+
+      expect(result.success).toBe(true)
+      expect(result.truncated).toBe(true)
+      expect(result.savedPath).toBeDefined()
+      expect(result.truncationMessage).toContain('truncated')
     })
   })
 

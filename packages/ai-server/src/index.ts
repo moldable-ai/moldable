@@ -456,6 +456,7 @@ async function handleChat(
         workingDir: string
         dataDir: string
       }
+      appChatInstructions?: string // App-provided instructions to include in system prompt
     }
 
     console.log('📨 Received chat request')
@@ -522,6 +523,13 @@ async function handleChat(
       console.log('   API server port:', body.apiServerPort)
     }
 
+    // outputDir: Where large tool outputs are saved for later retrieval
+    // Path: ~/.moldable/workspaces/{workspaceId}/tool-output/
+    const toolsOutputDir = body.activeWorkspaceId
+      ? join(MOLDABLE_HOME, 'workspaces', body.activeWorkspaceId, 'tool-output')
+      : join(MOLDABLE_HOME, 'tool-output') // Fallback when no workspace
+    console.log('   Tool output dir:', toolsOutputDir)
+
     // Create MCP tools from connected servers (these don't need the writer)
     const mcpTools = createMcpTools(mcpManager)
     const mcpToolCount = Object.keys(mcpTools).length
@@ -543,6 +551,7 @@ async function handleChat(
       'globFileSearch',
       'webSearch',
       'scaffoldApp',
+      'readToolOutput',
       'listSkillRepos',
       'listAvailableSkills',
       'syncSkills',
@@ -563,6 +572,7 @@ async function handleChat(
       availableTools: toolNamesForPrompt,
       registeredApps: body.registeredApps,
       activeApp: body.activeApp,
+      appChatInstructions: body.appChatInstructions,
     })
 
     // Get provider config
@@ -726,6 +736,9 @@ async function handleChat(
     const streamResponse = createUIMessageStreamResponse({
       stream: createUIMessageStream({
         originalMessages: body.messages,
+        // Format errors for better user-facing messages
+        // See: https://ai-sdk.dev/docs/reference/ai-sdk-errors
+        onError: (error: unknown) => formatErrorMessage(error),
         execute: async ({ writer }) => {
           try {
             // Create Moldable built-in tools INSIDE the stream execute callback
@@ -742,6 +755,8 @@ async function handleChat(
                 body.requireDangerousCommandApproval ?? true,
               // Dangerous command patterns (regex strings)
               dangerousPatterns: body.dangerousPatterns ?? [],
+              // Directory to save large tool outputs for later retrieval
+              outputDir: toolsOutputDir,
               // Stream command progress (stdout/stderr) to the UI as data parts
               onCommandProgress: (
                 toolCallId: string,
@@ -861,12 +876,154 @@ async function handleChat(
     }
     console.error('❌ Chat error:', error)
     if (!res.headersSent) {
-      sendError(
-        res,
-        error instanceof Error ? error.message : 'Internal server error',
-      )
+      // Format error message for better user experience
+      const formattedMessage = formatErrorMessage(error)
+      sendError(res, formattedMessage)
     }
   }
+}
+
+/**
+ * Format error messages to be more user-friendly
+ * Handles AI SDK specific error types: https://ai-sdk.dev/docs/reference/ai-sdk-errors
+ */
+function formatErrorMessage(error: unknown): string {
+  // Handle abort errors silently
+  if (error instanceof Error && error.name === 'AbortError') {
+    return 'Request cancelled'
+  }
+
+  // Extract error name and message
+  const errorName = error instanceof Error ? error.name : ''
+  const message =
+    error instanceof Error ? error.message : String(error || 'Unknown error')
+
+  // Handle AI SDK specific errors by name
+  switch (errorName) {
+    case 'AI_APICallError':
+      if (message.includes('401'))
+        return 'API authentication failed. Please check your API key.'
+      if (message.includes('403'))
+        return 'API access denied. Your API key may not have access to this model.'
+      if (message.includes('429'))
+        return 'Rate limit exceeded. Please wait a moment and try again.'
+      if (message.includes('500'))
+        return 'The AI service encountered an error. Please try again.'
+      if (message.includes('502') || message.includes('503'))
+        return 'The AI service is temporarily unavailable.'
+      return `API call failed: ${message}`
+
+    case 'AI_LoadAPIKeyError':
+      return 'API key not found. Please add your API key in settings.'
+
+    case 'AI_InvalidArgumentError':
+      return `Invalid request: ${message}`
+
+    case 'AI_InvalidToolInputError':
+      return `Tool input error: ${message}`
+
+    case 'AI_NoSuchModelError':
+      return 'The selected model is not available. Please choose a different model.'
+
+    case 'AI_NoSuchProviderError':
+      return 'The AI provider is not configured. Please check your settings.'
+
+    case 'AI_NoSuchToolError':
+      return `Tool not found: ${message}`
+
+    case 'AI_MessageConversionError':
+      return 'Failed to process messages. Try starting a new chat.'
+
+    case 'AI_InvalidMessageRoleError':
+      return 'Invalid message format. Try starting a new chat.'
+
+    case 'AI_RetryError':
+      return 'Request failed after multiple attempts. Please try again later.'
+
+    case 'AI_EmptyResponseBodyError':
+      return 'The AI service returned an empty response. Please try again.'
+
+    case 'AI_InvalidResponseDataError':
+      return 'Received invalid response from AI service. Please try again.'
+
+    case 'AI_JSONParseError':
+      return 'Failed to parse AI response. Please try again.'
+
+    case 'AI_TypeValidationError':
+      return `Response validation failed: ${message}`
+
+    case 'AI_UnsupportedFunctionalityError':
+      return `This feature is not supported: ${message}`
+
+    case 'AI_UIMessageStreamError':
+      return `Stream error: ${message}`
+
+    case 'AI_NoContentGeneratedError':
+      return 'The AI did not generate a response. Please try again.'
+
+    case 'AI_NoObjectGeneratedError':
+      return 'Failed to generate structured output. Please try again.'
+
+    case 'AI_ToolCallRepairError':
+      return 'Failed to repair tool call. Please try again.'
+
+    case 'AI_TooManyEmbeddingValuesForCallError':
+      return 'Too much content to process at once. Try with less content.'
+  }
+
+  // Handle common HTTP/network errors by message content
+  if (message.includes('401') || message.includes('Unauthorized')) {
+    return 'API authentication failed. Please check your API key is valid.'
+  }
+  if (message.includes('403') || message.includes('Forbidden')) {
+    return 'API access denied. Your API key may not have access to this model.'
+  }
+  if (message.includes('429') || message.includes('rate limit')) {
+    return 'Rate limit exceeded. Please wait a moment and try again.'
+  }
+  if (message.includes('500') || message.includes('Internal Server Error')) {
+    return 'The AI service encountered an internal error. Please try again.'
+  }
+  if (message.includes('502') || message.includes('Bad Gateway')) {
+    return 'The AI service is temporarily unavailable. Please try again.'
+  }
+  if (message.includes('503') || message.includes('Service Unavailable')) {
+    return 'The AI service is overloaded. Please try again in a moment.'
+  }
+  if (message.includes('ECONNREFUSED') || message.includes('ENOTFOUND')) {
+    return 'Could not connect to the AI service. Please check your network connection.'
+  }
+  if (message.includes('ETIMEDOUT') || message.includes('timeout')) {
+    return 'The request timed out. Please try again.'
+  }
+  if (
+    message.includes('credit') ||
+    message.includes('balance') ||
+    message.includes('billing')
+  ) {
+    return 'API billing issue. Please check your account has sufficient credits.'
+  }
+  if (
+    message.includes('context length') ||
+    message.includes('token limit') ||
+    message.includes('too long')
+  ) {
+    return 'The conversation is too long. Try starting a new chat or removing some messages.'
+  }
+  if (
+    message.includes('invalid_api_key') ||
+    message.includes('Invalid API key')
+  ) {
+    return 'Invalid API key. Please check your API key in settings.'
+  }
+
+  // Clean up the message
+  const cleanedMessage = message
+    .replace(/^Error:\s*/i, '')
+    .replace(/^API error:\s*/i, '')
+    .replace(/^\[.*?\]\s*/, '')
+
+  return cleanedMessage || 'An unexpected error occurred. Please try again.'
 }
 
 // Re-read .env file and update process.env with fresh values

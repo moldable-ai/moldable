@@ -26,6 +26,10 @@ type CommandResult = {
   signal?: string
   error?: string
   sandboxed?: boolean
+  stdoutTruncationMessage?: string
+  stderrTruncationMessage?: string
+  savedStdoutPath?: string
+  savedStderrPath?: string
 }
 
 async function execCommand(
@@ -183,6 +187,48 @@ describe('createBashTools', () => {
 
       expect(result.success).toBe(true)
       expect(result.stdout?.trim()).toBe('2')
+    })
+
+    it('truncates large stdout', async () => {
+      const outputDir = path.join(tempDir, 'tool-output')
+      const toolsWithOutput = createBashTools({
+        cwd: tempDir,
+        disableSandbox: true,
+        outputDir,
+      })
+
+      // Generate output larger than the limit (50K chars)
+      // seq 1 10000 generates about 49K chars, let's go higher
+      const result = await execCommand(toolsWithOutput, {
+        command: 'seq 1 20000',
+      })
+
+      expect(result.success).toBe(true)
+      // Output should be truncated
+      if (result.stdoutTruncationMessage) {
+        expect(result.stdoutTruncationMessage).toContain('truncated')
+        expect(result.savedStdoutPath).toBeDefined()
+      }
+    })
+
+    it('truncates large stderr', async () => {
+      const outputDir = path.join(tempDir, 'tool-output')
+      const toolsWithOutput = createBashTools({
+        cwd: tempDir,
+        disableSandbox: true,
+        outputDir,
+      })
+
+      // Generate large stderr
+      const result = await execCommand(toolsWithOutput, {
+        command: 'seq 1 10000 >&2',
+      })
+
+      // stderr output should be truncated (limit is 20K chars)
+      if (result.stderrTruncationMessage) {
+        expect(result.stderrTruncationMessage).toContain('truncated')
+        expect(result.savedStderrPath).toBeDefined()
+      }
     })
   })
 

@@ -4,15 +4,20 @@ import { createFilesystemTools } from './filesystem'
 import { createScaffoldTools } from './scaffold'
 import { createSearchTools } from './search'
 import { createSkillsTools } from './skills'
+import { createToolOutputTools } from './tool-output'
 import { createWebSearchTools } from './web-search'
 
-export { createFilesystemTools } from './filesystem'
+export {
+  createFilesystemTools,
+  type FilesystemToolsOptions,
+} from './filesystem'
 export {
   createBashTools,
+  type BashToolsOptions,
   type CommandProgressCallback,
   type CommandProgressUpdate,
 } from './bash'
-export { createSearchTools } from './search'
+export { createSearchTools, type SearchToolsOptions } from './search'
 export { createWebSearchTools, type WebSearchResult } from './web-search'
 export { createSkillsTools, SKILLS_TOOL_DESCRIPTIONS } from './skills'
 export {
@@ -25,6 +30,11 @@ export {
   APP_MANAGEMENT_TOOL_DESCRIPTIONS,
   type AppManagementToolsOptions,
 } from './app-management'
+export {
+  createToolOutputTools,
+  TRUNCATION_LIMITS,
+  type TruncationResult,
+} from './tool-output'
 
 export type MoldableToolsOptions = {
   /** Base path for file operations (security boundary) */
@@ -47,6 +57,8 @@ export type MoldableToolsOptions = {
   requireDangerousCommandApproval?: boolean
   /** Dangerous command patterns (regex strings) that require approval */
   dangerousPatterns?: string[]
+  /** Directory to save large tool outputs for later retrieval (e.g., conversations/tool-output/) */
+  outputDir?: string
 }
 
 /**
@@ -64,10 +76,11 @@ export function createMoldableTools(options: MoldableToolsOptions = {}) {
     requireUnsandboxedApproval,
     requireDangerousCommandApproval,
     dangerousPatterns,
+    outputDir,
   } = options
 
   return {
-    ...createFilesystemTools({ basePath }),
+    ...createFilesystemTools({ basePath, outputDir }),
     ...createBashTools({
       cwd: basePath,
       maxBuffer,
@@ -75,10 +88,12 @@ export function createMoldableTools(options: MoldableToolsOptions = {}) {
       requireUnsandboxedApproval,
       requireDangerousCommandApproval,
       dangerousPatterns,
+      outputDir,
     }),
     ...createSearchTools({
       basePath,
       maxResults: maxSearchResults,
+      outputDir,
     }),
     ...createWebSearchTools({
       apiKey: googleApiKey,
@@ -87,6 +102,7 @@ export function createMoldableTools(options: MoldableToolsOptions = {}) {
     ...createSkillsTools(),
     ...createScaffoldTools({ apiServerPort }),
     ...createAppManagementTools({ apiServerPort }),
+    ...createToolOutputTools({ outputDir }),
   }
 }
 
@@ -130,6 +146,9 @@ export const TOOL_DESCRIPTIONS = {
   addSkillRepo: 'Add a new skill repository',
   updateSkillSelection: 'Update which skills are synced',
   initSkillsConfig: 'Initialize default skills configuration',
+
+  // Tool output management
+  readToolOutput: 'Read saved large tool output with pagination (offset/limit)',
 } as const
 
 /**
@@ -143,6 +162,7 @@ export const TOOL_CATEGORIES = {
     'deleteFile',
     'listDirectory',
     'fileExists',
+    'readToolOutput',
   ],
   terminal: ['runCommand'],
   search: ['grep', 'globFileSearch'],

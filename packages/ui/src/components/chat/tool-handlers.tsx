@@ -1138,6 +1138,73 @@ export const DEFAULT_TOOL_HANDLERS: Record<string, ToolHandler> = {
     },
   },
 
+  readToolOutput: {
+    loadingLabel: 'Reading tool output...',
+    marker: ThinkingTimelineMarker.File,
+    inline: true,
+    renderLoading: (args?: unknown) => {
+      const { path } = (args ?? {}) as { path?: string }
+      return (
+        <FileOperation
+          operation="read"
+          path={path || 'saved output'}
+          status="loading"
+        />
+      )
+    },
+    renderOutput: (output, toolCallId) => {
+      const result = (output ?? {}) as {
+        success?: boolean
+        path?: string
+        totalLines?: number
+        startLine?: number
+        linesReturned?: number
+        hasMore?: boolean
+        error?: string
+      }
+
+      // If output is empty, tool is still executing
+      if (output === undefined || output === null) {
+        return (
+          <FileOperation
+            key={toolCallId}
+            operation="read"
+            path="saved output"
+            status="loading"
+          />
+        )
+      }
+
+      if (result.success === false) {
+        return (
+          <FileOperation
+            key={toolCallId}
+            operation="read"
+            path={result.path || 'saved output'}
+            status="error"
+          />
+        )
+      }
+
+      const startLine = result.startLine ?? 0
+      const endLine = startLine + (result.linesReturned || 0)
+
+      return (
+        <div
+          key={toolCallId}
+          className="bg-muted text-muted-foreground my-1 inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-xs"
+        >
+          <FileText className="size-3.5 shrink-0" />
+          <span className="shrink-0 font-medium">Read tool output</span>
+          <span className="text-muted-foreground/70 shrink-0">
+            {startLine}–{endLine}/{result.totalLines || 0}
+          </span>
+          <Check className="size-3 shrink-0 text-green-600" />
+        </div>
+      )
+    },
+  },
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Web Search
   // ─────────────────────────────────────────────────────────────────────────────

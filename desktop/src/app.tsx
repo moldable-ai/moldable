@@ -221,6 +221,9 @@ export function App() {
   const [suggestedChatInput, setSuggestedChatInput] = useState<
     string | undefined
   >()
+  const [appChatInstructions, setAppChatInstructions] = useState<
+    string | undefined
+  >()
   const [isLogsOpen, setIsLogsOpen] = useState(false)
   const [userHomeDir, setUserHomeDir] = useState<string | null>(null)
   const [showApiKeySetup, setShowApiKeySetup] = useState(false)
@@ -341,11 +344,24 @@ export function App() {
         setIsChatMinimized(false)
         setIsChatExpanded(true)
       }
+
+      if (event.data?.type === 'moldable:set-chat-instructions') {
+        const nextInstructions =
+          typeof event.data?.text === 'string' && event.data.text.trim() !== ''
+            ? event.data.text
+            : undefined
+        setAppChatInstructions(nextInstructions)
+      }
     }
 
     window.addEventListener('message', handleMessage)
     return () => window.removeEventListener('message', handleMessage)
   }, [])
+
+  // Clear app-provided instructions when switching apps or workspaces
+  useEffect(() => {
+    setAppChatInstructions(undefined)
+  }, [activeApp?.id, activeWorkspace?.id])
 
   const handleOnboardingComplete = useCallback(
     (workspaceId: string, markOnboardingDone: boolean = true) => {
@@ -580,6 +596,7 @@ export function App() {
         onAddApiKey={() => setShowApiKeySetup(true)}
         suggestedInput={suggestedChatInput}
         onSuggestedInputConsumed={() => setSuggestedChatInput(undefined)}
+        appChatInstructions={appChatInstructions}
         aiServerPort={health.port}
         apiServerPort={health.apiServerPort}
       />

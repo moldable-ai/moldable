@@ -17,7 +17,7 @@ describe('types', () => {
     })
 
     it('has OpenAI provider', () => {
-      expect(LLMProvider.OpenAI_GPT_5_2).toBe('openai/gpt-5.2')
+      expect(LLMProvider.OpenAI_GPT_5_2_Codex).toBe('openai/gpt-5.2-codex')
     })
 
     it('has OpenRouter providers', () => {
@@ -34,11 +34,15 @@ describe('types', () => {
     it('contains all providers', () => {
       const providerIds = AVAILABLE_MODELS.map((m) => m.id)
       expect(providerIds).toContain(LLMProvider.Anthropic_Claude_Opus_4_5)
-      expect(providerIds).toContain(LLMProvider.OpenAI_GPT_5_2)
+      expect(providerIds).toContain(LLMProvider.Anthropic_Claude_Sonnet_4_5)
+      expect(providerIds).toContain(LLMProvider.OpenAI_GPT_5_2_Codex)
       expect(providerIds).toContain(LLMProvider.OpenRouter_MiniMax_M2_1)
       expect(providerIds).toContain(
         LLMProvider.OpenRouter_Google_Gemini_3_Flash,
       )
+      expect(providerIds).toContain(LLMProvider.OpenRouter_Google_Gemini_3_Pro)
+      expect(providerIds).toContain(LLMProvider.OpenRouter_XAI_Grok_Code_Fast_1)
+      expect(providerIds).toContain(LLMProvider.OpenRouter_ZAI_GLM_4_7)
     })
 
     it('has display names for all models', () => {
@@ -107,10 +111,10 @@ describe('types', () => {
   })
 
   describe('DEFAULT_REASONING_EFFORT', () => {
-    it('defaults to medium for all vendors', () => {
-      expect(DEFAULT_REASONING_EFFORT.anthropic).toBe('medium')
-      expect(DEFAULT_REASONING_EFFORT.openai).toBe('medium')
-      expect(DEFAULT_REASONING_EFFORT.openrouter).toBe('medium')
+    it('defaults to none for all vendors', () => {
+      expect(DEFAULT_REASONING_EFFORT.anthropic).toBe('none')
+      expect(DEFAULT_REASONING_EFFORT.openai).toBe('none')
+      expect(DEFAULT_REASONING_EFFORT.openrouter).toBe('none')
     })
   })
 
@@ -140,7 +144,9 @@ describe('types', () => {
       expect(getVendorFromModel(LLMProvider.Anthropic_Claude_Opus_4_5)).toBe(
         'anthropic',
       )
-      expect(getVendorFromModel(LLMProvider.OpenAI_GPT_5_2)).toBe('openai')
+      expect(getVendorFromModel(LLMProvider.OpenAI_GPT_5_2_Codex)).toBe(
+        'openai',
+      )
       expect(getVendorFromModel(LLMProvider.OpenRouter_MiniMax_M2_1)).toBe(
         'openrouter',
       )
