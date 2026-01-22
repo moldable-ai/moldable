@@ -4,6 +4,8 @@ All notable changes to Moldable Desktop will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.16] - 2026-01-22
+
 ## [0.1.15] - 2026-01-22
 
 ## [0.1.14] - 2026-01-22
