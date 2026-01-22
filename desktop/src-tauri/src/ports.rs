@@ -262,29 +262,71 @@ pub fn get_port_info(port: u16) -> Option<PortInfo> {
 // PROCESS KILLING
 // ============================================================================
 
-/// Kill a process and all its children recursively
+/// Kill a process and all its children using process group signals.
+///
+/// On Unix, processes spawned with `process_group(0)` create a new process group
+/// where the PID equals the PGID. Sending a signal to the negative PGID (-pid)
+/// delivers it to ALL processes in that group, ensuring complete cleanup.
+///
+/// This is much more reliable than recursively walking the process tree because:
+/// - One signal kills everything in the group
+/// - Works even if children have been reparented to init (PPID=1)
+/// - No race conditions from walking the tree
 pub fn kill_process_tree(pid: u32) {
-    // First, find and kill all child processes
-    // Use pgrep to find children, then kill them recursively
-    if let Ok(output) = Command::new("pgrep")
-        .args(["-P", &pid.to_string()])
+    // Strategy:
+    // 1. First try to kill the entire process group (most reliable)
+    // 2. Fall back to killing individual process if group kill fails
+    
+    // Try killing the process group first (sends signal to all processes in group)
+    // The negative PID tells kill to send to the process group, not just the process
+    let pgid_result = Command::new("kill")
+        .args(["-TERM", &format!("-{}", pid)])
+        .output();
+    
+    // Give processes a moment to handle SIGTERM gracefully
+    std::thread::sleep(Duration::from_millis(100));
+    
+    // Check if the main process is still running
+    let still_running = Command::new("kill")
+        .args(["-0", &pid.to_string()])
         .output()
-    {
-        if output.status.success() {
-            let children = String::from_utf8_lossy(&output.stdout);
-            for child_pid in children.lines() {
-                if let Ok(cpid) = child_pid.trim().parse::<u32>() {
-                    // Recursively kill children first
-                    kill_process_tree(cpid);
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    
+    if still_running {
+        // Process didn't respond to SIGTERM, force kill with SIGKILL
+        let _ = Command::new("kill")
+            .args(["-KILL", &format!("-{}", pid)])
+            .output();
+        
+        // Also try killing just the PID in case it wasn't in a process group
+        let _ = Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .output();
+    }
+    
+    // If group kill failed (process wasn't in its own group), fall back to recursive kill
+    if pgid_result.is_err() || pgid_result.map(|o| !o.status.success()).unwrap_or(true) {
+        // Fallback: recursively find and kill children
+        if let Ok(output) = Command::new("pgrep")
+            .args(["-P", &pid.to_string()])
+            .output()
+        {
+            if output.status.success() {
+                let children = String::from_utf8_lossy(&output.stdout);
+                for child_pid in children.lines() {
+                    if let Ok(cpid) = child_pid.trim().parse::<u32>() {
+                        kill_process_tree(cpid);
+                    }
                 }
             }
         }
+        
+        // Kill the process itself
+        let _ = Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .output();
     }
-
-    // Now kill this process
-    let _ = Command::new("kill")
-        .args(["-9", &pid.to_string()])
-        .output();
 }
 
 /// Kill the process using a specific port (basic version)
@@ -505,6 +547,8 @@ pub fn acquire_port(config: PortAcquisitionConfig) -> Result<PortAcquisitionResu
 /// Returns the number of processes that were killed.
 pub fn cleanup_stale_moldable_instances() -> usize {
     let mut killed_count = 0;
+    let mut cleaned_ai_port = None;
+    let mut cleaned_api_port = None;
     
     if let Some(lock) = read_lock_file() {
         info!(
@@ -534,6 +578,7 @@ pub fn cleanup_stale_moldable_instances() -> usize {
                 killed_count += 1;
             }
         }
+        cleaned_ai_port = Some(lock.ai_server_port);
         
         // Kill any processes on the API server port
         if !is_port_available(lock.api_server_port) {
@@ -542,9 +587,34 @@ pub fn cleanup_stale_moldable_instances() -> usize {
                 killed_count += 1;
             }
         }
+        cleaned_api_port = Some(lock.api_server_port);
         
         // Delete the old lock file
         delete_lock_file();
+    } else {
+        info!("No lock file found, checking default ports for stale processes");
+    }
+    
+    // FALLBACK: Also clean default ports in case lock file was missing/corrupted
+    // This ensures we catch zombies even when the lock file doesn't exist
+    if cleaned_ai_port != Some(DEFAULT_AI_SERVER_PORT) && !is_port_available(DEFAULT_AI_SERVER_PORT) {
+        info!(
+            "Cleaning up stale process on default AI server port {}",
+            DEFAULT_AI_SERVER_PORT
+        );
+        if kill_port_aggressive(DEFAULT_AI_SERVER_PORT).unwrap_or(false) {
+            killed_count += 1;
+        }
+    }
+    
+    if cleaned_api_port != Some(DEFAULT_API_SERVER_PORT) && !is_port_available(DEFAULT_API_SERVER_PORT) {
+        info!(
+            "Cleaning up stale process on default API server port {}",
+            DEFAULT_API_SERVER_PORT
+        );
+        if kill_port_aggressive(DEFAULT_API_SERVER_PORT).unwrap_or(false) {
+            killed_count += 1;
+        }
     }
     
     killed_count
@@ -898,6 +968,58 @@ mod tests {
     fn test_kill_process_tree_nonexistent() {
         // Killing a non-existent process should not panic
         kill_process_tree(999999998);
+    }
+    
+    #[test]
+    fn test_kill_process_tree_kills_spawned_process() {
+        use std::os::unix::process::CommandExt;
+        
+        // Spawn a process in its own process group (like we do for apps)
+        let mut child = Command::new("sleep")
+            .arg("60")
+            .process_group(0)
+            .spawn()
+            .expect("Failed to spawn sleep process");
+        
+        let pid = child.id();
+        
+        // Verify it's running
+        assert!(Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false));
+        
+        // Kill it using our function
+        kill_process_tree(pid);
+        
+        // Wait for the process to actually exit (use wait() which blocks until done)
+        let _ = child.wait();
+        
+        // Verify it's no longer running
+        let still_running = Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        assert!(!still_running, "Process {} should be dead after kill_process_tree", pid);
+    }
+    
+    #[test]
+    fn test_kill_process_tree_handles_already_dead_process() {
+        use std::os::unix::process::CommandExt;
+        
+        // Spawn a process that exits immediately
+        let mut child = Command::new("true")
+            .process_group(0)
+            .spawn()
+            .expect("Failed to spawn true");
+        
+        let pid = child.id();
+        let _ = child.wait(); // Wait for it to finish
+        
+        // Now try to kill the already-dead process - should not panic
+        kill_process_tree(pid);
     }
     
     #[test]

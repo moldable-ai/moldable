@@ -3,16 +3,15 @@ import {
   Check,
   Copy,
   FileText,
-  FolderOpen,
+  Search,
   Terminal,
   Trash2,
   X,
 } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { Button, cn } from '@moldable-ai/ui'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Button, Input, cn } from '@moldable-ai/ui'
 import { isTauri } from '../lib/app-manager'
 import { invoke } from '@tauri-apps/api/core'
-import { open } from '@tauri-apps/plugin-shell'
 
 interface SystemLogsProps {
   isOpen: boolean
@@ -30,6 +29,7 @@ export function SystemLogs({
   const [logPath, setLogPath] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [isClearing, setIsClearing] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
   const logsEndRef = useRef<HTMLDivElement>(null)
   const logsContainerRef = useRef<HTMLDivElement>(null)
   const [isUserScrolledUp, setIsUserScrolledUp] = useState(false)
@@ -83,17 +83,6 @@ export function SystemLogs({
     setTimeout(() => setCopied(false), 2000)
   }, [logs])
 
-  const handleRevealInFinder = useCallback(async () => {
-    if (!logPath) return
-    try {
-      // Get the directory containing the log file
-      const logDir = logPath.substring(0, logPath.lastIndexOf('/'))
-      await open(logDir)
-    } catch (err) {
-      console.error('Failed to reveal log file:', err)
-    }
-  }, [logPath])
-
   const handleClearLogs = useCallback(async () => {
     if (!isTauri()) return
 
@@ -108,8 +97,6 @@ export function SystemLogs({
     }
   }, [])
 
-  if (!isOpen) return null
-
   // Parse log level from line for coloring
   const getLogLevel = (line: string): 'error' | 'warn' | 'info' | 'debug' => {
     if (line.includes(' ERROR ') || line.includes('[ERROR]')) return 'error'
@@ -117,6 +104,15 @@ export function SystemLogs({
     if (line.includes(' DEBUG ') || line.includes('[DEBUG]')) return 'debug'
     return 'info'
   }
+
+  // Filter logs based on search query
+  const filteredLogs = useMemo(() => {
+    if (!searchQuery.trim()) return logs
+    const query = searchQuery.toLowerCase()
+    return logs.filter((line) => line.toLowerCase().includes(query))
+  }, [logs, searchQuery])
+
+  if (!isOpen) return null
 
   const content = (
     <div
@@ -131,9 +127,6 @@ export function SystemLogs({
         <div className="flex items-center gap-2">
           <Terminal className="text-muted-foreground size-4" />
           <span className="font-medium">System Logs</span>
-          <span className="text-muted-foreground text-xs">
-            ({logs.length} lines)
-          </span>
         </div>
         <div className="flex items-center gap-2">
           <Button
@@ -145,16 +138,6 @@ export function SystemLogs({
           >
             <Trash2 className="size-3.5" />
             {isClearing ? 'Clearing...' : 'Clear'}
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleRevealInFinder}
-            className="cursor-pointer gap-1.5"
-            disabled={!logPath}
-          >
-            <FolderOpen className="size-3.5" />
-            Show in Finder
           </Button>
           <Button
             variant="outline"
@@ -187,13 +170,26 @@ export function SystemLogs({
         </div>
       </div>
 
-      {/* Info banner */}
-      <div className="border-border bg-muted/50 flex items-center gap-2 border-b px-4 py-2 text-xs">
-        <FileText className="text-muted-foreground size-3.5" />
-        <span className="text-muted-foreground">
-          These logs can help diagnose issues. Copy and share them when
-          reporting bugs.
-        </span>
+      {/* Search and info bar */}
+      <div className="border-border bg-muted/50 flex items-center gap-3 border-b px-4 py-2">
+        <div className="relative max-w-xs flex-1">
+          <Search className="text-muted-foreground absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2" />
+          <Input
+            type="text"
+            placeholder="Search logs..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="bg-background h-7 pl-8 text-xs"
+          />
+        </div>
+        <div className="flex items-center gap-2 text-xs">
+          <FileText className="text-muted-foreground size-3.5" />
+          <span className="text-muted-foreground">
+            {searchQuery
+              ? `${filteredLogs.length} of ${logs.length} lines`
+              : `${logs.length} lines`}
+          </span>
+        </div>
         {logPath && (
           <span className="text-muted-foreground/70 ml-auto font-mono text-[10px]">
             {logPath}
@@ -212,9 +208,13 @@ export function SystemLogs({
             <div className="text-muted-foreground flex h-full items-center justify-center">
               No logs yet. Logs will appear here as you use the app.
             </div>
+          ) : filteredLogs.length === 0 ? (
+            <div className="text-muted-foreground flex h-full items-center justify-center">
+              No logs match &quot;{searchQuery}&quot;
+            </div>
           ) : (
             <div className="space-y-0.5">
-              {logs.map((line, i) => {
+              {filteredLogs.map((line, i) => {
                 const level = getLogLevel(line)
                 return (
                   <div
@@ -236,7 +236,7 @@ export function SystemLogs({
           )}
         </div>
         {/* Scroll to bottom button */}
-        {isUserScrolledUp && logs.length > 0 && (
+        {isUserScrolledUp && filteredLogs.length > 0 && (
           <Button
             variant="secondary"
             size="icon"

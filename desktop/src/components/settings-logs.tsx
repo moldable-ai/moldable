@@ -1,22 +1,14 @@
-import {
-  ArrowDown,
-  Check,
-  Copy,
-  FolderOpen,
-  Terminal,
-  Trash2,
-} from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { Button, cn } from '@moldable-ai/ui'
+import { ArrowDown, Check, Copy, Search, Terminal, Trash2 } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Button, Input, cn } from '@moldable-ai/ui'
 import { isTauri } from '../lib/app-manager'
 import { invoke } from '@tauri-apps/api/core'
-import { open } from '@tauri-apps/plugin-shell'
 
 export function SettingsLogs() {
   const [logs, setLogs] = useState<string[]>([])
-  const [logPath, setLogPath] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [isClearing, setIsClearing] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
   const logsContainerRef = useRef<HTMLDivElement>(null)
   const [isUserScrolledUp, setIsUserScrolledUp] = useState(false)
 
@@ -24,12 +16,10 @@ export function SettingsLogs() {
     if (!isTauri()) return
 
     try {
-      const [lines, path] = await Promise.all([
-        invoke<string[]>('get_system_logs', { maxLines: 2000 }),
-        invoke<string>('get_system_log_path'),
-      ])
+      const lines = await invoke<string[]>('get_system_logs', {
+        maxLines: 2000,
+      })
       setLogs(lines)
-      setLogPath(path)
     } catch (err) {
       console.error('Failed to fetch system logs:', err)
       setLogs([`Error loading logs: ${err}`])
@@ -68,16 +58,6 @@ export function SettingsLogs() {
     setTimeout(() => setCopied(false), 2000)
   }, [logs])
 
-  const handleRevealInFinder = useCallback(async () => {
-    if (!logPath) return
-    try {
-      const logDir = logPath.substring(0, logPath.lastIndexOf('/'))
-      await open(logDir)
-    } catch (err) {
-      console.error('Failed to reveal log file:', err)
-    }
-  }, [logPath])
-
   const handleClearLogs = useCallback(async () => {
     if (!isTauri()) return
 
@@ -99,6 +79,12 @@ export function SettingsLogs() {
     return 'info'
   }
 
+  const filteredLogs = useMemo(() => {
+    if (!searchQuery.trim()) return logs
+    const query = searchQuery.toLowerCase()
+    return logs.filter((line) => line.toLowerCase().includes(query))
+  }, [logs, searchQuery])
+
   return (
     <div className="flex flex-col gap-6">
       <div>
@@ -110,13 +96,25 @@ export function SettingsLogs() {
 
       <div className="border-border flex h-[500px] flex-col overflow-hidden rounded-lg border">
         {/* Header */}
-        <div className="border-border bg-muted/30 flex items-center justify-between border-b px-4 py-2">
+        <div className="border-border bg-muted/30 flex items-center justify-between gap-3 border-b px-4 py-2">
           <div className="flex items-center gap-2">
             <Terminal className="text-muted-foreground size-4" />
             <span className="text-sm font-medium">Logs</span>
             <span className="text-muted-foreground text-xs">
-              ({logs.length} lines)
+              {searchQuery
+                ? `(${filteredLogs.length} of ${logs.length})`
+                : `(${logs.length} lines)`}
             </span>
+          </div>
+          <div className="relative max-w-xs flex-1">
+            <Search className="text-muted-foreground absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2" />
+            <Input
+              type="text"
+              placeholder="Search logs..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="bg-background h-7 pl-8 text-xs"
+            />
           </div>
           <div className="flex items-center gap-2">
             <Button
@@ -128,16 +126,6 @@ export function SettingsLogs() {
             >
               <Trash2 className="size-3.5" />
               {isClearing ? 'Clearing...' : 'Clear'}
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={handleRevealInFinder}
-              className="h-7 cursor-pointer gap-1.5 px-2"
-              disabled={!logPath}
-            >
-              <FolderOpen className="size-3.5" />
-              Finder
             </Button>
             <Button
               variant="ghost"
@@ -171,9 +159,13 @@ export function SettingsLogs() {
               <div className="text-muted-foreground flex h-full items-center justify-center">
                 No logs yet. Logs will appear here as you use the app.
               </div>
+            ) : filteredLogs.length === 0 ? (
+              <div className="text-muted-foreground flex h-full items-center justify-center">
+                No logs match &quot;{searchQuery}&quot;
+              </div>
             ) : (
               <div className="space-y-0.5">
-                {logs.map((line, i) => {
+                {filteredLogs.map((line, i) => {
                   const level = getLogLevel(line)
                   return (
                     <div
@@ -194,7 +186,7 @@ export function SettingsLogs() {
             )}
           </div>
           {/* Scroll to bottom button */}
-          {isUserScrolledUp && logs.length > 0 && (
+          {isUserScrolledUp && filteredLogs.length > 0 && (
             <Button
               variant="secondary"
               size="icon"

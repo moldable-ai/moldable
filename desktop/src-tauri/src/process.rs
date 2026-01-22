@@ -1,6 +1,13 @@
 //! App process management for Moldable
 //!
 //! Handles starting, stopping, and monitoring app processes.
+//!
+//! ## Process Group Management
+//!
+//! All spawned processes are placed in their own process group using `process_group(0)`.
+//! This allows reliable cleanup of the entire process tree by sending signals to the
+//! negative PGID (e.g., `kill -TERM -<pgid>`), which delivers the signal to all processes
+//! in that group.
 
 use crate::apps::{get_registered_apps, update_registered_app_port};
 use crate::codemods::run_pending_codemods;
@@ -22,6 +29,10 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::State;
+
+// Unix-specific imports for process group management
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 // ============================================================================
 // STATE TYPES
@@ -832,11 +843,11 @@ fn start_app_internal_with_options(
     // Ensure app data directory exists
     let _ = std::fs::create_dir_all(&app_data_dir);
 
-    info!(
-        "Starting app {} with PATH containing node: {}",
-        app_id,
-        runtime::get_node_path().unwrap_or_else(|| "NOT FOUND".to_string())
-    );
+    info!("══════════════════════════════════════════════════════════════════");
+    info!("  STARTING APP: {}", app_id);
+    info!("  Path: {}", working_dir);
+    info!("  Port: {}", port.map(|p| p.to_string()).unwrap_or_else(|| "auto".to_string()));
+    info!("══════════════════════════════════════════════════════════════════");
 
     // Start the process with piped stderr/stdout
     let mut cmd = Command::new(&command);
@@ -859,6 +870,11 @@ fn start_app_internal_with_options(
     for (k, v) in env_vars {
         cmd.env(k, v);
     }
+
+    // Create a new process group for this app (Unix only)
+    // This allows us to kill the entire process tree by sending signals to -PGID
+    #[cfg(unix)]
+    cmd.process_group(0);
 
     let mut child = cmd
         .stdout(Stdio::piped())
@@ -1213,11 +1229,46 @@ pub fn cleanup_all_orphaned_apps(
     let mut total_killed = 0;
 
     for app in &apps {
-        let (killed, messages) = cleanup_orphaned_instances(&app.path);
+        let mut messages = Vec::new();
+        
+        // Step 1: Clean up based on .moldable.instances.json
+        let (killed, instance_messages) = cleanup_orphaned_instances(&app.path);
         if killed > 0 {
             info!("Cleaned up {} orphaned instance(s) for {}", killed, app.id);
             total_killed += killed;
         }
+        messages.extend(instance_messages);
+        
+        // Step 2: Also clean up by port as a fallback (in case instances file was missing/corrupted)
+        // This ensures we catch zombies even if .moldable.instances.json doesn't exist
+        let port = app.port;
+        if port > 0 && !crate::ports::is_port_available(port) {
+            info!(
+                "Port {} for app {} is in use, attempting cleanup",
+                port, app.id
+            );
+            match crate::ports::kill_port_aggressive(port) {
+                Ok(true) => {
+                    info!("Killed process on port {} for app {}", port, app.id);
+                    total_killed += 1;
+                    messages.push(format!(
+                        "[moldable] Startup cleanup: killed stale process on port {}",
+                        port
+                    ));
+                }
+                Ok(false) => {
+                    // Port is in use but couldn't kill - might be a non-moldable process
+                    warn!(
+                        "Port {} is in use but couldn't kill process (may be non-moldable)",
+                        port
+                    );
+                }
+                Err(e) => {
+                    warn!("Error killing process on port {}: {}", port, e);
+                }
+            }
+        }
+        
         if !messages.is_empty() {
             append_app_logs(state, &app.id, messages);
         }

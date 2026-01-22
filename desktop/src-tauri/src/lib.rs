@@ -198,24 +198,34 @@ fn run_shutdown_cleanup(
     audio_capture_state: &Arc<Mutex<Option<CommandChild>>>,
     reason: &str,
 ) {
+    // Atomically check and set the cleanup flag to prevent double cleanup
     if cleanup_guard.swap(true, Ordering::SeqCst) {
+        info!("Shutdown cleanup already ran, skipping (triggered by: {})", reason);
         return;
     }
 
-    info!("Shutdown cleanup triggered: {}", reason);
+    info!("=== SHUTDOWN CLEANUP START: {} ===", reason);
 
+    info!("Stopping all moldable apps...");
     let temp_state = AppState(app_state.clone());
     cleanup_all_apps(&temp_state);
 
+    info!("Stopping AI server...");
     cleanup_ai_server(ai_server_state);
+    
+    info!("Stopping audio capture...");
     audio::cleanup_audio_capture(audio_capture_state);
 
     delete_lock_file();
-    info!("Lock file deleted");
+    info!("=== SHUTDOWN CLEANUP COMPLETE ===");
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    info!("══════════════════════════════════════════════════════════════════");
+    info!("  MOLDABLE STARTING UP - v{}", env!("CARGO_PKG_VERSION"));
+    info!("══════════════════════════════════════════════════════════════════");
+
     let app_state = AppState(Arc::new(Mutex::new(AppStateInner {
         processes: HashMap::new(),
         last_errors: HashMap::new(),
@@ -509,14 +519,26 @@ pub fn run() {
         .expect("error while building tauri application");
 
     app.run(move |_app_handle, event| {
-        if let tauri::RunEvent::ExitRequested { .. } = event {
-            run_shutdown_cleanup(
-                &cleanup_guard_for_run_event,
-                &app_state_for_run_event,
-                &ai_server_for_run_event,
-                &audio_capture_for_run_event,
-                "exit requested",
-            );
+        match event {
+            tauri::RunEvent::ExitRequested { .. } => {
+                run_shutdown_cleanup(
+                    &cleanup_guard_for_run_event,
+                    &app_state_for_run_event,
+                    &ai_server_for_run_event,
+                    &audio_capture_for_run_event,
+                    "exit requested",
+                );
+            }
+            tauri::RunEvent::Exit => {
+                run_shutdown_cleanup(
+                    &cleanup_guard_for_run_event,
+                    &app_state_for_run_event,
+                    &ai_server_for_run_event,
+                    &audio_capture_for_run_event,
+                    "exit",
+                );
+            }
+            _ => {}
         }
     });
 }
