@@ -421,10 +421,12 @@ async function handleChat(
   let isAborted = false
 
   // Listen for client disconnect to abort the request.
-  // Note: req 'close' fires when request body is done being read (normal behavior).
-  // We only treat it as an abort if we've started streaming (headers sent) but haven't finished.
-  req.on('close', () => {
-    if (res.headersSent && !res.writableEnded) {
+  // We listen to res.on('close') because that fires when the client closes the connection
+  // during response streaming (e.g., when user clicks stop button).
+  // Note: req.on('close') fires when request body is done being read, which is NOT
+  // when the client disconnects during response streaming.
+  res.on('close', () => {
+    if (!res.writableEnded) {
       console.log('⚠️ Client disconnected mid-stream, aborting...')
       isAborted = true
       abortController.abort()
@@ -799,6 +801,10 @@ async function handleChat(
               tools,
               stopWhen: stepCountIs(1000),
               abortSignal: abortController.signal,
+              // Handle abort cleanup - called when stream is aborted via AbortSignal
+              onAbort: ({ steps }) => {
+                console.log(`⚠️ Stream aborted after ${steps.length} step(s)`)
+              },
             })
 
             if (DEBUG_CHAT_REQUESTS) {
