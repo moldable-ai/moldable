@@ -246,6 +246,37 @@ export function App() {
     homeDir().then(setUserHomeDir).catch(console.error)
   }, [])
 
+  // Refocus app iframe when chat is hidden (minimized or collapsed)
+  const prevChatStateRef = useRef({
+    minimized: isChatMinimized,
+    expanded: isChatExpanded,
+  })
+  useEffect(() => {
+    const prev = prevChatStateRef.current
+    const justMinimized = !prev.minimized && isChatMinimized
+    const justCollapsed = prev.expanded && !isChatExpanded
+
+    if (justMinimized || justCollapsed) {
+      // Small delay to let animations start
+      const timer = setTimeout(() => {
+        const iframe = document.querySelector<HTMLIFrameElement>(
+          'iframe[data-app-iframe]',
+        )
+        iframe?.focus()
+      }, 100)
+      prevChatStateRef.current = {
+        minimized: isChatMinimized,
+        expanded: isChatExpanded,
+      }
+      return () => clearTimeout(timer)
+    }
+
+    prevChatStateRef.current = {
+      minimized: isChatMinimized,
+      expanded: isChatExpanded,
+    }
+  }, [isChatMinimized, isChatExpanded])
+
   // Track workspace changes to handle app refresh/navigation
   const prevWorkspaceRef = useRef(activeWorkspace?.id)
   const workspaceJustChanged = useRef(false)
