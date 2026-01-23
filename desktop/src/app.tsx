@@ -328,9 +328,26 @@ export function App() {
     }
   }, [isChatMinimized])
 
-  // Listen for apps requesting to populate chat input
+  // Cmd+W - forward to active app iframe so apps can handle it (e.g., close file tabs)
+  // This is captured by Tauri menu to prevent macOS from closing the entire window
   useEffect(() => {
-    const handleMessage = (event: MessageEvent) => {
+    const unlisten = listen('close-tab', () => {
+      // Find the app iframe and forward the event
+      const iframe = document.querySelector<HTMLIFrameElement>(
+        'iframe[data-app-iframe]',
+      )
+      if (iframe?.contentWindow) {
+        iframe.contentWindow.postMessage({ type: 'moldable:close-tab' }, '*')
+      }
+    })
+    return () => {
+      unlisten.then((fn) => fn())
+    }
+  }, [])
+
+  // Listen for apps requesting to populate chat input or select folders
+  useEffect(() => {
+    const handleMessage = async (event: MessageEvent) => {
       // Only handle messages from app iframes
       if (
         !event.origin.startsWith('http://127.0.0.1:') &&
@@ -351,6 +368,35 @@ export function App() {
             ? event.data.text
             : undefined
         setAppChatInstructions(nextInstructions)
+      }
+
+      // Handle folder selection requests from apps
+      if (event.data?.type === 'moldable:select-folder') {
+        const { requestId, title } = event.data
+        try {
+          const { open } = await import('@tauri-apps/plugin-dialog')
+          const selected = await open({
+            directory: true,
+            multiple: false,
+            title: title || 'Select Folder',
+          })
+          const path =
+            typeof selected === 'string' ? selected : (selected?.[0] ?? null)
+
+          // Find the iframe that sent the message and respond
+          const iframe = document.querySelector('iframe')
+          iframe?.contentWindow?.postMessage(
+            { type: 'moldable:folder-selected', requestId, path },
+            '*',
+          )
+        } catch {
+          // User cancelled or error
+          const iframe = document.querySelector('iframe')
+          iframe?.contentWindow?.postMessage(
+            { type: 'moldable:folder-selected', requestId, path: null },
+            '*',
+          )
+        }
       }
     }
 

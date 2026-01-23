@@ -363,6 +363,13 @@ pub fn run() {
                 .accelerator("CmdOrCtrl+M")
                 .build(app)?;
 
+            // Capture Cmd+W to forward to apps (e.g., for closing tabs in code editor)
+            // instead of letting macOS close the entire window
+            let close_tab = MenuItemBuilder::new("Close Tab")
+                .id("close_tab")
+                .accelerator("CmdOrCtrl+W")
+                .build(app)?;
+
             // Build "Moldable" app menu with About, Hide, Quit, etc.
             let icon = {
                 let png_bytes = include_bytes!("../icons/128x128.png");
@@ -402,12 +409,15 @@ pub fn run() {
                 .select_all()
                 .build()?;
 
+            // Note: We capture Cmd+W with a custom "Close Tab" menu item instead of 
+            // using .close_window(). This forwards the shortcut to apps (e.g., for 
+            // closing tabs in Code Editor). Users can still quit with Cmd+Q.
             let window_menu = SubmenuBuilder::new(app, "Window")
+                .item(&close_tab)
                 .item(&toggle_chat)
                 .separator()
                 .minimize()
                 .maximize()
-                .close_window()
                 .build()?;
 
             let menu = MenuBuilder::new(app)
@@ -422,6 +432,9 @@ pub fn run() {
             app.on_menu_event(move |app_handle, event| {
                 if event.id().as_ref() == "toggle_chat" {
                     let _ = app_handle.emit("toggle-chat", ());
+                } else if event.id().as_ref() == "close_tab" {
+                    // Forward to frontend so apps can handle it (e.g., close file tabs)
+                    let _ = app_handle.emit("close-tab", ());
                 }
             });
 

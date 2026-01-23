@@ -441,6 +441,7 @@ Fix it, verify, and then give a concise explanation in simple terms.`
             src={appUrl}
             className="absolute inset-0 size-full border-0"
             title={app.name}
+            data-app-iframe
             allow="microphone; camera; display-capture"
             onLoad={() => setIsLoading(false)}
             onError={() => setIsLoading(false)}
