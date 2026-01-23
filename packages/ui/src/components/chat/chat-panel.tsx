@@ -1,6 +1,12 @@
 'use client'
 
-import { AlertCircle, ChevronDown, MessageCircle, Plus } from 'lucide-react'
+import {
+  AlertCircle,
+  ChevronDown,
+  Code2,
+  MessageCircle,
+  Plus,
+} from 'lucide-react'
 import {
   type ChangeEvent,
   type FormEvent,
@@ -110,6 +116,12 @@ export interface ChatPanelProps {
   toolProgress?: Record<string, ToolProgressData>
   /** Callback for tool approval responses */
   onApprovalResponse?: ApprovalResponseHandler
+  /** Whether the chat is in "edit this app" mode (injects app context into system prompt) */
+  isEditingApp?: boolean
+  /** Callback when "edit this app" mode is toggled */
+  onEditingAppChange?: (editing: boolean) => void
+  /** Whether to show the editing app toggle (only shown when an app is active) */
+  showEditingAppToggle?: boolean
 }
 
 /**
@@ -145,6 +157,9 @@ export function ChatPanel({
   onAddApiKey,
   toolProgress = {},
   onApprovalResponse,
+  isEditingApp = true,
+  onEditingAppChange,
+  showEditingAppToggle = false,
 }: ChatPanelProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -390,6 +405,35 @@ export function ChatPanel({
                       disabled={isResponding}
                     />
                   )}
+                {/* Edit app toggle - only shown when viewing an app */}
+                {showEditingAppToggle && onEditingAppChange && (
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          onClick={() => onEditingAppChange(!isEditingApp)}
+                          className={cn(
+                            'ml-1',
+                            isEditingApp
+                              ? 'text-primary bg-primary/10 hover:bg-primary/20'
+                              : 'text-muted-foreground hover:text-foreground',
+                          )}
+                        >
+                          <Code2 className="size-4" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom">
+                        <p>
+                          {isEditingApp
+                            ? 'Editing this app (click to disable)'
+                            : 'Not editing app (click to enable)'}
+                        </p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                )}
               </div>
               <div className="flex items-center gap-1">
                 {conversations &&

@@ -72,6 +72,10 @@ export function ChatContainer({
   aiServerPort,
   apiServerPort,
 }: ChatContainerProps) {
+  // When enabled (default), AI knows to edit the active app's source code
+  // When disabled, the app's own chat instructions take over (e.g., Code Editor editing user's project)
+  const [isEditingApp, setIsEditingApp] = useState(true)
+
   const {
     messages,
     status,
@@ -89,7 +93,8 @@ export function ChatContainer({
   } = useMoldableChat({
     activeWorkspaceId: workspaceId,
     registeredApps,
-    activeApp,
+    // Only pass activeApp when isEditingApp is true - otherwise let the app's own instructions take over
+    activeApp: isEditingApp ? activeApp : null,
     availableKeys,
     appChatInstructions,
     aiServerPort,
@@ -332,6 +337,10 @@ export function ChatContainer({
       onAddApiKey={onAddApiKey}
       toolProgress={toolProgress}
       onApprovalResponse={handleApprovalResponse}
+      // Show the "edit app" toggle only when viewing an app
+      showEditingAppToggle={!!activeApp}
+      isEditingApp={isEditingApp}
+      onEditingAppChange={setIsEditingApp}
     />
   )
 }
