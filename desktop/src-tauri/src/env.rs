@@ -7,6 +7,7 @@
 //! - API key detection and storage
 
 use crate::paths::{get_env_file_path, get_home_dir, get_shared_env_file_path};
+use crate::preferences::load_shared_config;
 use crate::types::{AppEnvStatus, MoldableManifest};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -197,7 +198,19 @@ fn read_codex_cli_credentials() -> Option<CodexCliCredential> {
     read_codex_keychain_credentials().or_else(read_codex_file_credentials)
 }
 
+fn is_codex_cli_enabled() -> bool {
+    let config = load_shared_config();
+    config
+        .preferences
+        .get("useCodexCliAuth")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true)
+}
+
 fn read_codex_cli_access_token() -> Option<CodexCliCredential> {
+    if !is_codex_cli_enabled() {
+        return None;
+    }
     let creds = read_codex_cli_credentials()?;
     let now = system_time_to_ms(SystemTime::now()).unwrap_or(0);
     if creds.expires_ms <= now + CODEX_NEAR_EXPIRY_MS {

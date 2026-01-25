@@ -1,11 +1,19 @@
 import { Check, ExternalLink, Loader2 } from 'lucide-react'
-import { useCallback, useMemo, useState } from 'react'
-import { Button, Input } from '@moldable-ai/ui'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Button, Input, Switch } from '@moldable-ai/ui'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-shell'
 import { AnimatePresence, motion } from 'framer-motion'
 
 type KeyProvider = 'openrouter' | 'anthropic' | 'openai' | null
+
+interface ApiKeyInfo {
+  provider: string
+  env_var: string
+  is_configured: boolean
+  masked_value: string | null
+  source?: 'env' | 'codex-cli' | null
+}
 
 interface OnboardingApiKeyProps {
   onComplete: () => void
@@ -42,11 +50,49 @@ export function OnboardingApiKey({
 }: OnboardingApiKeyProps) {
   const [apiKey, setApiKey] = useState('')
   const [isSaving, setIsSaving] = useState(false)
+  const [isContinuingWithCodex, setIsContinuingWithCodex] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [saveSuccess, setSaveSuccess] = useState(false)
+  const [useCodexCli, setUseCodexCli] = useState(true)
+  const [codexDetected, setCodexDetected] = useState(false)
+  const [isCheckingCodex, setIsCheckingCodex] = useState(false)
 
   const detectedProvider = useMemo(() => detectKeyProvider(apiKey), [apiKey])
   const isValidKey = apiKey.trim().length > 20 && detectedProvider !== null
+
+  const refreshCodexStatus = useCallback(async () => {
+    setIsCheckingCodex(true)
+    try {
+      const [pref, keys] = await Promise.all([
+        invoke<unknown>('get_shared_preference', { key: 'useCodexCliAuth' }),
+        invoke<ApiKeyInfo[]>('get_api_key_status'),
+      ])
+      const prefValue = typeof pref === 'boolean' ? pref : true
+      setUseCodexCli(prefValue)
+
+      const openaiKey = keys.find((key) => key.provider === 'OpenAI')
+      const detected = openaiKey?.source === 'codex-cli'
+      setCodexDetected(!!detected)
+
+      if (detected && typeof pref !== 'boolean') {
+        await invoke('set_shared_preference', {
+          key: 'useCodexCliAuth',
+          value: true,
+        })
+        setUseCodexCli(true)
+      }
+    } catch (error) {
+      console.error('Failed to refresh Codex CLI status:', error)
+      setUseCodexCli(true)
+      setCodexDetected(false)
+    } finally {
+      setIsCheckingCodex(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    refreshCodexStatus()
+  }, [refreshCodexStatus])
 
   const handleSave = useCallback(async () => {
     if (!isValidKey) return
@@ -74,6 +120,36 @@ export function OnboardingApiKey({
       setIsSaving(false)
     }
   }, [apiKey, isValidKey, onHealthRetry, onComplete])
+
+  const handleCodexToggle = useCallback(
+    async (value: boolean) => {
+      setUseCodexCli(value)
+      try {
+        await invoke('set_shared_preference', {
+          key: 'useCodexCliAuth',
+          value,
+        })
+        await onHealthRetry()
+      } catch (error) {
+        console.error('Failed to update Codex CLI preference:', error)
+        setUseCodexCli(!value)
+      }
+    },
+    [onHealthRetry],
+  )
+
+  const handleContinueWithCodex = useCallback(async () => {
+    if (!codexDetected || !useCodexCli) return
+    setIsContinuingWithCodex(true)
+    try {
+      await onHealthRetry()
+      onComplete()
+    } catch (error) {
+      console.error('Error continuing with Codex CLI:', error)
+    } finally {
+      setIsContinuingWithCodex(false)
+    }
+  }, [codexDetected, useCodexCli, onHealthRetry, onComplete])
 
   const handleOpenUrl = useCallback(async (url: string) => {
     await open(url)
@@ -112,6 +188,64 @@ export function OnboardingApiKey({
             variants={fadeIn}
             transition={{ duration: 0.2 }}
           >
+            <div className="bg-muted/30 flex flex-col gap-3 rounded-lg p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium">Use Codex CLI OAuth</p>
+                  <p className="text-muted-foreground text-xs">
+                    If you already signed into Codex CLI, Moldable can use that
+                    automatically.
+                  </p>
+                </div>
+                <Switch
+                  checked={useCodexCli}
+                  onCheckedChange={handleCodexToggle}
+                  className="cursor-pointer"
+                />
+              </div>
+              {useCodexCli && codexDetected && (
+                <p className="text-muted-foreground text-xs">
+                  Codex CLI detected and connected.
+                </p>
+              )}
+              {useCodexCli && !codexDetected && (
+                <p className="text-muted-foreground text-xs">
+                  Codex CLI not detected yet.
+                </p>
+              )}
+              <Button
+                variant="outline"
+                className="w-full cursor-pointer"
+                onClick={refreshCodexStatus}
+                disabled={isCheckingCodex}
+              >
+                {isCheckingCodex ? (
+                  <>
+                    <Loader2 className="mr-2 size-4 animate-spin" />
+                    Checking...
+                  </>
+                ) : (
+                  'Check Codex CLI'
+                )}
+              </Button>
+              {useCodexCli && codexDetected && !apiKey.trim() && (
+                <Button
+                  className="w-full cursor-pointer"
+                  onClick={handleContinueWithCodex}
+                  disabled={isContinuingWithCodex}
+                >
+                  {isContinuingWithCodex ? (
+                    <>
+                      <Loader2 className="mr-2 size-4 animate-spin" />
+                      Continuing...
+                    </>
+                  ) : (
+                    'Continue with Codex CLI'
+                  )}
+                </Button>
+              )}
+            </div>
+
             <Input
               type="password"
               placeholder="OpenRouter, Anthropic, or OpenAI API key"

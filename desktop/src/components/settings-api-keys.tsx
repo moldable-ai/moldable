@@ -1,6 +1,6 @@
 import { ExternalLink, Key, Loader2, Plus, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
-import { Button, Input } from '@moldable-ai/ui'
+import { Button, Input, Switch } from '@moldable-ai/ui'
 import { invoke } from '@tauri-apps/api/core'
 import { open as openUrl } from '@tauri-apps/plugin-shell'
 import { toast } from 'sonner'
@@ -43,9 +43,26 @@ export function SettingsApiKeys({ onKeysChanged }: SettingsApiKeysProps) {
   const [newApiKey, setNewApiKey] = useState('')
   const [isSaving, setSaving] = useState(false)
   const [removingKey, setRemovingKey] = useState<string | null>(null)
+  const [useCodexCli, setUseCodexCli] = useState(true)
 
   const detectedProvider = detectKeyProvider(newApiKey)
   const isValidKey = newApiKey.trim().length > 20 && detectedProvider !== null
+
+  const loadCodexPreference = useCallback(async () => {
+    try {
+      const value = await invoke<unknown>('get_shared_preference', {
+        key: 'useCodexCliAuth',
+      })
+      if (typeof value === 'boolean') {
+        setUseCodexCli(value)
+      } else {
+        setUseCodexCli(true)
+      }
+    } catch (error) {
+      console.error('Failed to load Codex CLI preference:', error)
+      setUseCodexCli(true)
+    }
+  }, [])
 
   const loadApiKeys = useCallback(async (): Promise<ApiKeyInfo[]> => {
     try {
@@ -64,7 +81,8 @@ export function SettingsApiKeys({ onKeysChanged }: SettingsApiKeysProps) {
 
   useEffect(() => {
     loadApiKeys()
-  }, [loadApiKeys])
+    loadCodexPreference()
+  }, [loadApiKeys, loadCodexPreference])
 
   const handleSaveKey = useCallback(async () => {
     if (!isValidKey) return
@@ -121,10 +139,30 @@ export function SettingsApiKeys({ onKeysChanged }: SettingsApiKeysProps) {
     }
   }, [loadApiKeys])
 
+  const handleCodexToggle = useCallback(
+    async (value: boolean) => {
+      setUseCodexCli(value)
+      try {
+        await invoke('set_shared_preference', {
+          key: 'useCodexCliAuth',
+          value,
+        })
+        await loadApiKeys()
+        onKeysChanged?.()
+      } catch (error) {
+        console.error('Failed to update Codex CLI preference:', error)
+        toast.error('Failed to update Codex CLI preference')
+        setUseCodexCli(!value)
+      }
+    },
+    [loadApiKeys, onKeysChanged],
+  )
+
   const configuredKeys = apiKeys.filter((k) => k.is_configured)
   const hasAnyKey = configuredKeys.length > 0
   const openaiKey = apiKeys.find((key) => key.provider === 'OpenAI')
-  const shouldShowCodexSync = !openaiKey?.is_configured && !newApiKey
+  const shouldShowCodexSync =
+    useCodexCli && !openaiKey?.is_configured && !newApiKey
 
   return (
     <div className="flex flex-col gap-6">
@@ -278,11 +316,28 @@ export function SettingsApiKeys({ onKeysChanged }: SettingsApiKeysProps) {
             </Button>
           )}
 
-          {shouldShowCodexSync && (
-            <div className="bg-muted/30 flex flex-col gap-2 rounded-lg p-4">
+          <div className="bg-muted/30 flex flex-col gap-3 rounded-lg p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium">Use Codex CLI OAuth</p>
+                <p className="text-muted-foreground text-xs">
+                  When enabled, Moldable will use your Codex CLI sign-in for
+                  OpenAI Codex models. Turn this off to force manual keys or
+                  OpenRouter fallback.
+                </p>
+              </div>
+              <Switch
+                checked={useCodexCli}
+                onCheckedChange={handleCodexToggle}
+                className="cursor-pointer"
+              />
+            </div>
+            {useCodexCli && openaiKey?.source === 'codex-cli' && (
               <p className="text-muted-foreground text-xs">
-                Prefer Codex OAuth? We can sync automatically from Codex CLI.
+                Codex CLI detected and connected.
               </p>
+            )}
+            {shouldShowCodexSync && (
               <Button
                 variant="outline"
                 className="w-full cursor-pointer"
@@ -290,8 +345,8 @@ export function SettingsApiKeys({ onKeysChanged }: SettingsApiKeysProps) {
               >
                 Check Codex CLI
               </Button>
-            </div>
-          )}
+            )}
+          </div>
 
           {/* Help links */}
           <div className="text-muted-foreground border-t pt-4 text-xs">

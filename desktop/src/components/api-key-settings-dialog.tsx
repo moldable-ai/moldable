@@ -8,6 +8,7 @@ import {
   DialogHeader,
   DialogTitle,
   Input,
+  Switch,
 } from '@moldable-ai/ui'
 import { invoke } from '@tauri-apps/api/core'
 import { open as openUrl } from '@tauri-apps/plugin-shell'
@@ -57,9 +58,26 @@ export function ApiKeySettingsDialog({
   const [newApiKey, setNewApiKey] = useState('')
   const [isSaving, setSaving] = useState(false)
   const [removingKey, setRemovingKey] = useState<string | null>(null)
+  const [useCodexCli, setUseCodexCli] = useState(true)
 
   const detectedProvider = detectKeyProvider(newApiKey)
   const isValidKey = newApiKey.trim().length > 20 && detectedProvider !== null
+
+  const loadCodexPreference = useCallback(async () => {
+    try {
+      const value = await invoke<unknown>('get_shared_preference', {
+        key: 'useCodexCliAuth',
+      })
+      if (typeof value === 'boolean') {
+        setUseCodexCli(value)
+      } else {
+        setUseCodexCli(true)
+      }
+    } catch (error) {
+      console.error('Failed to load Codex CLI preference:', error)
+      setUseCodexCli(true)
+    }
+  }, [])
 
   const loadApiKeys = useCallback(async (): Promise<ApiKeyInfo[]> => {
     try {
@@ -79,10 +97,11 @@ export function ApiKeySettingsDialog({
   useEffect(() => {
     if (open) {
       loadApiKeys()
+      loadCodexPreference()
       setShowAddForm(false)
       setNewApiKey('')
     }
-  }, [open, loadApiKeys])
+  }, [open, loadApiKeys, loadCodexPreference])
 
   const handleSaveKey = useCallback(async () => {
     if (!isValidKey) return
@@ -139,10 +158,30 @@ export function ApiKeySettingsDialog({
     }
   }, [loadApiKeys])
 
+  const handleCodexToggle = useCallback(
+    async (value: boolean) => {
+      setUseCodexCli(value)
+      try {
+        await invoke('set_shared_preference', {
+          key: 'useCodexCliAuth',
+          value,
+        })
+        await loadApiKeys()
+        onKeysChanged?.()
+      } catch (error) {
+        console.error('Failed to update Codex CLI preference:', error)
+        toast.error('Failed to update Codex CLI preference')
+        setUseCodexCli(!value)
+      }
+    },
+    [loadApiKeys, onKeysChanged],
+  )
+
   const configuredKeys = apiKeys.filter((k) => k.is_configured)
   const hasAnyKey = configuredKeys.length > 0
   const openaiKey = apiKeys.find((key) => key.provider === 'OpenAI')
-  const shouldShowCodexSync = !openaiKey?.is_configured && !newApiKey
+  const shouldShowCodexSync =
+    useCodexCli && !openaiKey?.is_configured && !newApiKey
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -296,12 +335,27 @@ export function ApiKeySettingsDialog({
                 </Button>
               )}
 
-              {shouldShowCodexSync && (
-                <div className="bg-muted/50 flex flex-col gap-2 rounded-lg p-3">
+              <div className="bg-muted/50 flex flex-col gap-3 rounded-lg p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium">Use Codex CLI OAuth</p>
+                    <p className="text-muted-foreground text-xs">
+                      When enabled, Moldable will use your Codex CLI sign-in for
+                      OpenAI Codex models.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={useCodexCli}
+                    onCheckedChange={handleCodexToggle}
+                    className="cursor-pointer"
+                  />
+                </div>
+                {useCodexCli && openaiKey?.source === 'codex-cli' && (
                   <p className="text-muted-foreground text-xs">
-                    Prefer Codex OAuth? We can sync automatically from Codex
-                    CLI.
+                    Codex CLI detected and connected.
                   </p>
+                )}
+                {shouldShowCodexSync && (
                   <Button
                     variant="outline"
                     className="w-full cursor-pointer"
@@ -309,8 +363,8 @@ export function ApiKeySettingsDialog({
                   >
                     Check Codex CLI
                   </Button>
-                </div>
-              )}
+                )}
+              </div>
 
               {/* Help links */}
               <div className="text-muted-foreground border-t pt-4 text-xs">

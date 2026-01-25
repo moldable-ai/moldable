@@ -175,6 +175,24 @@ function isCodexModel(model: string): boolean {
   return model.toLowerCase().includes('codex')
 }
 
+function shouldUseCodexCliAuth(): boolean {
+  const configPath = join(MOLDABLE_HOME, 'shared', 'config.json')
+  if (!existsSync(configPath)) return true
+
+  try {
+    const raw = readFileSync(configPath, 'utf-8')
+    const parsed = JSON.parse(raw) as {
+      preferences?: Record<string, unknown>
+    }
+    const pref = parsed?.preferences?.useCodexCliAuth
+    if (typeof pref === 'boolean') return pref
+  } catch {
+    return true
+  }
+
+  return true
+}
+
 function resolveOpenAIAuth(model?: string): {
   apiKey?: string
   source: OpenAIAuthSource
@@ -185,6 +203,10 @@ function resolveOpenAIAuth(model?: string): {
   }
 
   if (model && !isCodexModel(model)) {
+    return { source: 'none' }
+  }
+
+  if (!shouldUseCodexCliAuth()) {
     return { source: 'none' }
   }
 
