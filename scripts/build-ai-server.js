@@ -47,7 +47,10 @@ async function main() {
 
   const targetTriple = getTargetTriple()
   const bunTarget = getBunTarget()
-  const outputName = `moldable-ai-server-${targetTriple}`
+  const outputName =
+    platform === 'win32'
+      ? `moldable-ai-server-${targetTriple}.exe`
+      : `moldable-ai-server-${targetTriple}`
 
   console.log(`   Target: ${targetTriple}`)
   console.log(`   Bun target: ${bunTarget}`)
@@ -80,7 +83,10 @@ async function main() {
 
     // Also copy to debug directory for dev mode (pnpm desktop / tauri dev)
     if (existsSync(DEBUG_DIR)) {
-      const debugPath = join(DEBUG_DIR, 'moldable-ai-server')
+      const debugPath = join(
+        DEBUG_DIR,
+        platform === 'win32' ? 'moldable-ai-server.exe' : 'moldable-ai-server',
+      )
       cpSync(outputPath, debugPath)
       if (platform !== 'win32') {
         execSync(`chmod +x "${debugPath}"`)

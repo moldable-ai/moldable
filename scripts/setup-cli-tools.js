@@ -61,7 +61,8 @@ const TOOLS = [
 
 async function commandExists(cmd) {
   try {
-    await execAsync(`which ${cmd}`)
+    const resolver = process.platform === 'win32' ? 'where' : 'which'
+    await execAsync(`${resolver} ${cmd}`)
     return true
   } catch {
     return false
@@ -91,11 +92,28 @@ function getPackageManager() {
     }
   }
 
+  if (platform === 'win32') {
+    try {
+      execSync('where winget', { stdio: 'ignore' })
+      return 'winget'
+    } catch {}
+
+    try {
+      execSync('where choco', { stdio: 'ignore' })
+      return 'choco'
+    } catch {}
+  }
+
   return null
 }
 
 async function installTool(tool, packageManager) {
-  const pkg = packageManager === 'brew' ? tool.brew : tool.apt
+  const pkg =
+    packageManager === 'brew'
+      ? tool.brew
+      : packageManager === 'apt'
+        ? tool.apt
+        : tool.name
 
   console.log(`  Installing ${tool.name} via ${packageManager}...`)
 
@@ -105,6 +123,12 @@ async function installTool(tool, packageManager) {
     } else if (packageManager === 'apt') {
       // apt requires sudo - we'll try without and let it fail gracefully
       await execAsync(`sudo apt install -y ${pkg}`)
+    } else if (packageManager === 'winget') {
+      const wingetId =
+        tool.name === 'ripgrep' ? 'BurntSushi.ripgrep' : 'sharkdp.fd'
+      await execAsync(`winget install --id ${wingetId} -e`)
+    } else if (packageManager === 'choco') {
+      await execAsync(`choco install -y ${pkg}`)
     }
     return true
   } catch (error) {

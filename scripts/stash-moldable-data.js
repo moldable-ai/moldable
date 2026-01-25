@@ -7,7 +7,6 @@
  *   pnpm data:restore            - Copy ~/.moldable-bak back to ~/.moldable (keeps backup)
  *   pnpm data:restore -- --force - Same, but overwrites existing ~/.moldable if it exists
  */
-import { execSync } from 'child_process'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -116,7 +115,7 @@ function restore(force = false) {
     console.log(
       '  ⏳ Copying ~/.moldable-bak → ~/.moldable (this may take a while)...',
     )
-    execSync(`rsync -a "${BACKUP_DIR}/" "${MOLDABLE_DIR}/"`)
+    fs.cpSync(BACKUP_DIR, MOLDABLE_DIR, { recursive: true, force: true })
     console.log('  ✓ Copied ~/.moldable-bak → ~/.moldable')
     console.log('')
     console.log('  Your original Moldable data has been restored.')

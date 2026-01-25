@@ -14,6 +14,8 @@ Instead of buying apps or hoping someone builds what you need, you describe it �
 
 Organize your apps into **workspaces** — Personal, Work, Side Projects — each isolated with its own data and configuration. Switch instantly between contexts without losing state.
 
+Moldable Gateway can forward Telegram/WhatsApp (and other) messages into your local AI server. Those sessions show up in the desktop app under **Agents** so they stay separate from in-app conversations.
+
 **Website**: [moldable.sh](https://moldable.sh)
 
 ## Repository Structure

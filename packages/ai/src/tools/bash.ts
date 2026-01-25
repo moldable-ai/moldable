@@ -58,6 +58,34 @@ export function getAugmentedPath(): string {
   paths.push('/opt/homebrew/bin') // macOS ARM
   paths.push('/usr/local/bin') // macOS Intel / Linux
 
+  if (process.platform === 'win32') {
+    const appData = process.env.APPDATA
+    const localAppData = process.env.LOCALAPPDATA
+    const programFiles = process.env.ProgramFiles
+    const programFilesX86 = process.env['ProgramFiles(x86)']
+
+    if (appData) {
+      paths.push(path.join(appData, 'npm'))
+      paths.push(path.join(appData, 'nvm'))
+    }
+
+    if (localAppData) {
+      paths.push(path.join(localAppData, 'pnpm'))
+    }
+
+    if (programFiles) {
+      paths.push(path.join(programFiles, 'nodejs'))
+    }
+
+    if (programFilesX86) {
+      paths.push(path.join(programFilesX86, 'nodejs'))
+    }
+
+    paths.push('C:\\\\Windows\\\\System32')
+    paths.push('C:\\\\Windows')
+    paths.push('C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0')
+  }
+
   // System paths
   paths.push('/usr/bin')
   paths.push('/bin')
@@ -80,7 +108,7 @@ export function getAugmentedPath(): string {
     paths.push(existingPath)
   }
 
-  return paths.join(':')
+  return paths.join(path.delimiter)
 }
 
 /**
@@ -422,6 +450,15 @@ export type CommandProgressUpdate = {
   stderr: string
 }
 
+function getShellCommand(command: string): { shell: string; args: string[] } {
+  if (process.platform === 'win32') {
+    const shell = process.env.COMSPEC || 'cmd.exe'
+    return { shell, args: ['/d', '/s', '/c', command] }
+  }
+
+  return { shell: '/bin/bash', args: ['-lc', command] }
+}
+
 /**
  * Execute a command with optional sandboxing and progress streaming
  */
@@ -478,8 +515,8 @@ async function executeCommand(
     let stderr = ''
     let killed = false
 
-    const child = spawn(finalCommand, {
-      shell: '/bin/bash',
+    const { shell, args } = getShellCommand(finalCommand)
+    const child = spawn(shell, args, {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {

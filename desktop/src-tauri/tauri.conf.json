@@ -61,7 +61,13 @@
       "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; img-src 'self' data: blob: asset: https://asset.localhost http://asset.localhost https://raw.githubusercontent.com; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https://*.anthropic.com https://*.openai.com ipc: http://ipc.localhost; frame-src 'self' http://localhost:* http://127.0.0.1:*;",
       "assetProtocol": {
         "enable": true,
-        "scope": ["**", "$HOME/.moldable/**", "$HOME/moldable/**"]
+        "scope": [
+          "**",
+          "$HOME/.moldable/**",
+          "$HOME/moldable/**",
+          "$USERPROFILE/.moldable/**",
+          "$USERPROFILE/moldable/**"
+        ]
       }
     }
   },

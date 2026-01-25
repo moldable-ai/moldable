@@ -17,7 +17,9 @@
       "identifier": "fs:allow-read-file",
       "allow": [
         { "path": "$HOME/.moldable/**" },
-        { "path": "$HOME/moldable/**" }
+        { "path": "$HOME/moldable/**" },
+        { "path": "$USERPROFILE/.moldable/**" },
+        { "path": "$USERPROFILE/moldable/**" }
       ]
     },
     "fs:default",

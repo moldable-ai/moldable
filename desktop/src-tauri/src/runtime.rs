@@ -10,8 +10,10 @@
 
 use log::{info, error, warn};
 use serde::Serialize;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use crate::paths::get_home_dir;
 
 // ============================================================================
 // TYPES
@@ -50,16 +52,44 @@ pub struct DependencyStatus {
 /// - Production: Moldable.app/Contents/Resources/node/bin/
 /// - Development: desktop/src-tauri/resources/node/bin/
 pub fn get_bundled_node_bin_dir() -> Option<String> {
+    let node_name = if cfg!(target_os = "windows") { "node.exe" } else { "node" };
+
+    let resolve_from_resources = |resources_dir: &Path| -> Option<PathBuf> {
+        let bin_dir = resources_dir.join("node").join("bin");
+        if bin_dir.join(node_name).exists() {
+            return Some(bin_dir);
+        }
+
+        let root_dir = resources_dir.join("node");
+        if root_dir.join(node_name).exists() {
+            return Some(root_dir);
+        }
+
+        None
+    };
+
+    if let Ok(resource_dir) = std::env::var("MOLDABLE_RESOURCE_DIR") {
+        let base = PathBuf::from(resource_dir);
+        if let Some(dir) = resolve_from_resources(&base) {
+            return Some(dir.to_string_lossy().to_string());
+        }
+    }
+
     // Try to find via current executable (production)
     if let Ok(exe_path) = std::env::current_exe() {
         // On macOS: /path/to/Moldable.app/Contents/MacOS/Moldable
         // Resources are at: /path/to/Moldable.app/Contents/Resources/
-        if let Some(macos_dir) = exe_path.parent() {
-            if let Some(contents_dir) = macos_dir.parent() {
-                let resources_dir = contents_dir.join("Resources").join("node").join("bin");
-                if resources_dir.join("node").exists() {
-                    return Some(resources_dir.to_string_lossy().to_string());
+        if let Some(exe_dir) = exe_path.parent() {
+            if let Some(contents_dir) = exe_dir.parent() {
+                let resources_dir = contents_dir.join("Resources");
+                if let Some(dir) = resolve_from_resources(&resources_dir) {
+                    return Some(dir.to_string_lossy().to_string());
                 }
+            }
+
+            let resources_dir = exe_dir.join("resources");
+            if let Some(dir) = resolve_from_resources(&resources_dir) {
+                return Some(dir.to_string_lossy().to_string());
             }
         }
     }
@@ -68,9 +98,12 @@ pub fn get_bundled_node_bin_dir() -> Option<String> {
     if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
         let dev_node_dir = PathBuf::from(&manifest_dir)
             .join("resources")
-            .join("node")
-            .join("bin");
-        if dev_node_dir.join("node").exists() {
+            .join("node");
+        let dev_bin_dir = dev_node_dir.join("bin");
+        if dev_bin_dir.join(node_name).exists() {
+            return Some(dev_bin_dir.to_string_lossy().to_string());
+        }
+        if dev_node_dir.join(node_name).exists() {
             return Some(dev_node_dir.to_string_lossy().to_string());
         }
     }
@@ -80,23 +113,39 @@ pub fn get_bundled_node_bin_dir() -> Option<String> {
 
 /// Get the path to the bundled node binary
 pub fn get_node_path() -> Option<String> {
+    let node_name = if cfg!(target_os = "windows") { "node.exe" } else { "node" };
+
     // 1. Try bundled node first (always preferred)
     if let Some(bin_dir) = get_bundled_node_bin_dir() {
-        let node_path = PathBuf::from(&bin_dir).join("node");
+        let node_path = PathBuf::from(&bin_dir).join(node_name);
         if node_path.exists() {
             return Some(node_path.to_string_lossy().to_string());
         }
     }
     
     // 2. Fallback to system node (for development without bundled runtime)
-    for path in ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"] {
+    #[cfg(target_os = "windows")]
+    let system_paths = [
+        r"C:\Program Files\nodejs\node.exe",
+        r"C:\Program Files (x86)\nodejs\node.exe",
+    ];
+
+    #[cfg(not(target_os = "windows"))]
+    let system_paths = ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"];
+
+    for path in system_paths {
         if Path::new(path).exists() {
-            // Verify it's not an Xcode stub
             if let Ok(output) = Command::new(path).arg("--version").output() {
                 if output.status.success() {
                     return Some(path.to_string());
                 }
             }
+        }
+    }
+
+    if let Ok(output) = Command::new("node").arg("--version").output() {
+        if output.status.success() {
+            return Some("node".to_string());
         }
     }
     
@@ -105,25 +154,55 @@ pub fn get_node_path() -> Option<String> {
 
 /// Get the path to the bundled pnpm binary
 pub fn get_pnpm_path() -> Option<String> {
+    let pnpm_candidates = if cfg!(target_os = "windows") {
+        vec!["pnpm.cmd", "pnpm.exe"]
+    } else {
+        vec!["pnpm"]
+    };
+
     // 1. Try bundled pnpm first
     if let Some(bin_dir) = get_bundled_node_bin_dir() {
-        let pnpm_path = PathBuf::from(&bin_dir).join("pnpm");
-        if pnpm_path.exists() {
-            return Some(pnpm_path.to_string_lossy().to_string());
+        for candidate in &pnpm_candidates {
+            let pnpm_path = PathBuf::from(&bin_dir).join(candidate);
+            if pnpm_path.exists() {
+                return Some(pnpm_path.to_string_lossy().to_string());
+            }
         }
     }
     
     // 2. Fallback to system pnpm
-    let home = std::env::var("HOME").unwrap_or_default();
-    let system_paths = [
+    let home = get_home_dir()
+        .ok()
+        .and_then(|p| p.to_str().map(|s| s.to_string()))
+        .unwrap_or_default();
+    let mut system_paths = vec![
         format!("{home}/.local/share/pnpm/pnpm"),
         "/opt/homebrew/bin/pnpm".to_string(),
         "/usr/local/bin/pnpm".to_string(),
     ];
+
+    if cfg!(target_os = "windows") {
+        if let Ok(app_data) = std::env::var("APPDATA") {
+            system_paths.push(format!("{app_data}\\pnpm\\pnpm.cmd"));
+            system_paths.push(format!("{app_data}\\pnpm\\pnpm.exe"));
+        }
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            system_paths.push(format!("{local_app_data}\\pnpm\\pnpm.exe"));
+            system_paths.push(format!("{local_app_data}\\pnpm\\pnpm.cmd"));
+        }
+    }
     
     for path in system_paths {
         if Path::new(&path).exists() {
             return Some(path);
+        }
+    }
+
+    if cfg!(target_os = "windows") {
+        if let Ok(output) = Command::new("pnpm").arg("--version").output() {
+            if output.status.success() {
+                return Some("pnpm".to_string());
+            }
         }
     }
     
@@ -133,16 +212,33 @@ pub fn get_pnpm_path() -> Option<String> {
 /// Get the path to npm (for installing pnpm if needed)
 #[allow(dead_code)]
 pub fn get_npm_path() -> Option<String> {
+    let npm_candidates = if cfg!(target_os = "windows") {
+        vec!["npm.cmd", "npm.exe"]
+    } else {
+        vec!["npm"]
+    };
+
     // 1. Try bundled npm first
     if let Some(bin_dir) = get_bundled_node_bin_dir() {
-        let npm_path = PathBuf::from(&bin_dir).join("npm");
-        if npm_path.exists() {
-            return Some(npm_path.to_string_lossy().to_string());
+        for candidate in &npm_candidates {
+            let npm_path = PathBuf::from(&bin_dir).join(candidate);
+            if npm_path.exists() {
+                return Some(npm_path.to_string_lossy().to_string());
+            }
         }
     }
     
     // 2. Fallback to system npm
-    for path in ["/opt/homebrew/bin/npm", "/usr/local/bin/npm", "/usr/bin/npm"] {
+    #[cfg(target_os = "windows")]
+    let system_paths = [
+        r"C:\Program Files\nodejs\npm.cmd",
+        r"C:\Program Files (x86)\nodejs\npm.cmd",
+    ];
+
+    #[cfg(not(target_os = "windows"))]
+    let system_paths = ["/opt/homebrew/bin/npm", "/usr/local/bin/npm", "/usr/bin/npm"];
+
+    for path in system_paths {
         if Path::new(path).exists() {
             return Some(path.to_string());
         }
@@ -160,37 +256,61 @@ pub fn get_npm_path() -> Option<String> {
 /// This ensures spawned processes can find node and pnpm regardless of
 /// the user's shell configuration.
 pub fn build_runtime_path() -> String {
-    let mut path_parts: Vec<String> = Vec::new();
+    let mut path_parts: Vec<PathBuf> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
     
     // 1. Bundled node directory (always first)
     if let Some(bundled_bin) = get_bundled_node_bin_dir() {
-        path_parts.push(bundled_bin);
+        let bin_path = PathBuf::from(bundled_bin);
+        let key = bin_path.to_string_lossy().to_string();
+        if seen.insert(key) {
+            path_parts.push(bin_path);
+        }
     }
     
     // 2. Common system paths
-    let system_paths = [
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        "/usr/bin",
-        "/bin",
-    ];
+    let system_paths = if cfg!(target_os = "windows") {
+        vec![
+            r"C:\Windows\System32",
+            r"C:\Windows",
+            r"C:\Windows\System32\WindowsPowerShell\v1.0",
+            r"C:\Program Files\nodejs",
+            r"C:\Program Files (x86)\nodejs",
+        ]
+    } else {
+        vec![
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+        ]
+    };
     
     for path in system_paths {
-        if !path_parts.contains(&path.to_string()) {
-            path_parts.push(path.to_string());
+        let buf = PathBuf::from(path);
+        let key = buf.to_string_lossy().to_string();
+        if seen.insert(key) {
+            path_parts.push(buf);
         }
     }
     
     // 3. Append existing PATH
-    if let Ok(existing_path) = std::env::var("PATH") {
-        for part in existing_path.split(':') {
-            if !part.is_empty() && !path_parts.contains(&part.to_string()) {
-                path_parts.push(part.to_string());
+    if let Some(existing_path) = std::env::var_os("PATH") {
+        for part in std::env::split_paths(&existing_path) {
+            if part.as_os_str().is_empty() {
+                continue;
+            }
+            let key = part.to_string_lossy().to_string();
+            if seen.insert(key) {
+                path_parts.push(part);
             }
         }
     }
-    
-    path_parts.join(":")
+
+    std::env::join_paths(path_parts)
+        .ok()
+        .and_then(|p| p.into_string().ok())
+        .unwrap_or_default()
 }
 
 // ============================================================================
@@ -217,8 +337,12 @@ pub fn check_dependencies() -> DependencyStatus {
             status.node_path = Some(node_path.clone());
             
             // Determine source
-            if node_path.contains("Resources/node") || node_path.contains("resources/node") {
-                status.node_source = Some(NodeSource::Bundled);
+            if let Some(bundled) = get_bundled_node_bin_dir() {
+                if node_path.starts_with(&bundled) {
+                    status.node_source = Some(NodeSource::Bundled);
+                } else {
+                    status.node_source = Some(NodeSource::System);
+                }
             } else {
                 status.node_source = Some(NodeSource::System);
             }
@@ -229,7 +353,7 @@ pub fn check_dependencies() -> DependencyStatus {
     if let Some(pnpm_path) = get_pnpm_path() {
         // pnpm needs node in PATH to run
         let path = build_runtime_path();
-        if let Ok(output) = Command::new(&pnpm_path)
+        if let Ok(output) = command_for_path(&pnpm_path)
             .arg("--version")
             .env("PATH", &path)
             .output()
@@ -249,7 +373,7 @@ pub fn check_dependencies() -> DependencyStatus {
 
 /// Get version from a command
 fn get_command_version(cmd_path: &str, arg: &str) -> Option<String> {
-    Command::new(cmd_path)
+    command_for_path(cmd_path)
         .arg(arg)
         .output()
         .ok()
@@ -257,6 +381,19 @@ fn get_command_version(cmd_path: &str, arg: &str) -> Option<String> {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+fn command_for_path(cmd_path: &str) -> Command {
+    #[cfg(target_os = "windows")]
+    {
+        if cmd_path.ends_with(".cmd") || cmd_path.ends_with(".bat") {
+            let mut cmd = Command::new("cmd");
+            cmd.args(["/d", "/s", "/c", cmd_path]);
+            return cmd;
+        }
+    }
+
+    Command::new(cmd_path)
 }
 
 // ============================================================================
@@ -315,7 +452,7 @@ fn run_pnpm_install(app_dir: &Path) -> Result<(), String> {
     let pnpm_path = ensure_pnpm_installed()?;
     let path = build_runtime_path();
 
-    let output = Command::new(&pnpm_path)
+    let output = command_for_path(&pnpm_path)
         .arg("install")
         .current_dir(app_dir)
         .env("PATH", &path)
@@ -421,7 +558,12 @@ mod tests {
         // This may return Some or None depending on environment
         let result = get_bundled_node_bin_dir();
         if let Some(path) = result {
-            assert!(Path::new(&path).join("node").exists());
+            let node_name = if cfg!(target_os = "windows") {
+                "node.exe"
+            } else {
+                "node"
+            };
+            assert!(Path::new(&path).join(node_name).exists());
         }
     }
 
@@ -448,12 +590,17 @@ mod tests {
         let path = build_runtime_path();
         
         // Should contain common paths
-        assert!(path.contains("/usr/bin"));
+        if cfg!(target_os = "windows") {
+            assert!(path.to_lowercase().contains("windows\\system32"));
+        } else {
+            assert!(path.contains("/usr/bin"));
+        }
         assert!(!path.is_empty());
         
         // Should not have duplicates
-        let parts: Vec<&str> = path.split(':').collect();
-        let unique: std::collections::HashSet<&str> = parts.iter().cloned().collect();
+        let parts: Vec<_> = std::env::split_paths(std::ffi::OsStr::new(&path)).collect();
+        let unique: std::collections::HashSet<_> =
+            parts.iter().map(|p| p.to_string_lossy()).collect();
         assert_eq!(parts.len(), unique.len());
     }
 

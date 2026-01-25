@@ -37,24 +37,24 @@ pub fn save_workspaces_config(config: &WorkspacesConfig) -> Result<(), String> {
 
 /// Ensure workspace directories exist
 pub fn ensure_workspace_dirs(workspace_id: &str) -> Result<(), String> {
-    let home = std::env::var("HOME").map_err(|_| "Could not get HOME directory")?;
-    let workspace_dir = format!("{}/.moldable/workspaces/{}", home, workspace_id);
+    let moldable_root = get_moldable_root()?;
+    let workspace_dir = moldable_root.join("workspaces").join(workspace_id);
 
     // Create workspace directories
     let dirs = [
-        format!("{}/apps", workspace_dir),
-        format!("{}/conversations", workspace_dir),
-        format!("{}/config", workspace_dir),
+        workspace_dir.join("apps"),
+        workspace_dir.join("conversations"),
+        workspace_dir.join("config"),
     ];
 
     for dir in &dirs {
         std::fs::create_dir_all(dir)
-            .map_err(|e| format!("Failed to create directory {}: {}", dir, e))?;
+            .map_err(|e| format!("Failed to create directory {:?}: {}", dir, e))?;
     }
 
     // Create empty config.json if it doesn't exist
-    let config_path = format!("{}/config.json", workspace_dir);
-    if !std::path::Path::new(&config_path).exists() {
+    let config_path = workspace_dir.join("config.json");
+    if !config_path.exists() {
         let default_config = MoldableConfig::default();
         let content = serde_json::to_string_pretty(&default_config)
             .map_err(|e| format!("Failed to serialize config: {}", e))?;
@@ -141,8 +141,7 @@ pub fn ensure_default_workspace() -> Result<(), String> {
 
 /// Ensure bundled scripts are installed in ~/.moldable/shared/scripts/
 pub fn ensure_bundled_scripts(app_handle: &tauri::AppHandle) -> Result<(), String> {
-    let home = std::env::var("HOME").map_err(|_| "Could not get HOME directory")?;
-    let scripts_dir = PathBuf::from(format!("{}/.moldable/shared/scripts", home));
+    let scripts_dir = get_moldable_root()?.join("shared").join("scripts");
 
     // Ensure scripts directory exists
     std::fs::create_dir_all(&scripts_dir)
@@ -193,8 +192,7 @@ pub fn ensure_bundled_scripts(app_handle: &tauri::AppHandle) -> Result<(), Strin
 
 /// Ensure bundled app template is installed in ~/.moldable/cache/app-template/
 pub fn ensure_bundled_app_template(app_handle: &tauri::AppHandle) -> Result<(), String> {
-    let home = std::env::var("HOME").map_err(|_| "Could not get HOME directory")?;
-    let template_dest = PathBuf::from(format!("{}/.moldable/cache/app-template", home));
+    let template_dest = get_moldable_root()?.join("cache").join("app-template");
 
     // Try to get from bundled resources first (production)
     let resource_dir = app_handle
@@ -1056,7 +1054,8 @@ mod tests {
 
         // Both point to the same shared path
         assert_eq!(read_personal.apps[0].path, read_work.apps[0].path);
-        assert!(read_personal.apps[0].path.contains("shared/apps/notes"));
+        let normalized = read_personal.apps[0].path.replace('\\', "/");
+        assert!(normalized.contains("shared/apps/notes"));
     }
 
     #[test]

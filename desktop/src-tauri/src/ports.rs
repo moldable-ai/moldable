@@ -8,6 +8,7 @@
 //! - Lock file management for tracking Moldable instances
 //! - Robust port acquisition with retry logic
 
+use crate::paths::get_moldable_root;
 use crate::types::PortInfo;
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
@@ -73,8 +74,11 @@ pub struct MoldableLock {
 
 /// Get the path to the lock file
 pub fn get_lock_file_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(format!("{}/.moldable/cache/moldable.lock", home))
+    if let Ok(root) = get_moldable_root() {
+        return root.join("cache").join("moldable.lock");
+    }
+
+    std::env::temp_dir().join("moldable.lock")
 }
 
 /// Read the current lock file if it exists
@@ -117,11 +121,30 @@ pub fn delete_lock_file() {
 
 /// Check if a process with the given PID is running
 pub fn is_process_running(pid: u32) -> bool {
-    Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(output) = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {}", pid), "/FO", "CSV", "/NH"])
+            .output()
+        {
+            if !output.status.success() {
+                return false;
+            }
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            return !stdout.trim().is_empty()
+                && !stdout.to_lowercase().contains("no tasks are running");
+        }
+        false
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
 }
 
 /// Get the current process ID
@@ -138,6 +161,82 @@ pub fn current_timestamp() -> u64 {
 }
 
 // ============================================================================
+// WINDOWS HELPERS
+// ============================================================================
+
+#[cfg(target_os = "windows")]
+fn local_port_matches(address: &str, port: u16) -> bool {
+    let port_str = port.to_string();
+    match address.rfind(':') {
+        Some(idx) => address[idx + 1..].trim_end() == port_str,
+        None => false,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn netstat_pids(port: u16, listen_only: bool) -> Vec<u32> {
+    let output = match Command::new("netstat").args(["-ano", "-p", "tcp"]).output() {
+        Ok(out) => out,
+        Err(_) => return Vec::new(),
+    };
+
+    if !output.status.success() {
+        return Vec::new();
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut pids = Vec::new();
+
+    for line in stdout.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 5 || parts[0] != "TCP" {
+            continue;
+        }
+
+        let local_addr = parts[1];
+        let state = parts[3];
+        let pid_str = parts[4];
+
+        if listen_only && state != "LISTENING" {
+            continue;
+        }
+
+        if !local_port_matches(local_addr, port) {
+            continue;
+        }
+
+        if let Ok(pid) = pid_str.parse::<u32>() {
+            pids.push(pid);
+        }
+    }
+
+    pids
+}
+
+#[cfg(target_os = "windows")]
+fn tasklist_process_name(pid: u32) -> Option<String> {
+    let output = Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {}", pid), "/FO", "CSV", "/NH"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let line = stdout.lines().find(|l| !l.trim().is_empty())?.trim().to_string();
+
+    if line.to_lowercase().contains("no tasks are running") {
+        return None;
+    }
+
+    let trimmed = line.trim_matches('"');
+    let parts: Vec<&str> = trimmed.split("\",\"").collect();
+    parts.first().map(|name| name.to_string())
+}
+
+// ============================================================================
 // PORT AVAILABILITY
 // ============================================================================
 
@@ -147,6 +246,17 @@ pub fn current_timestamp() -> u64 {
 /// trigger the macOS firewall prompt for the Moldable app itself.
 #[tauri::command]
 pub fn is_port_available(port: u16) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        if !netstat_pids(port, true).is_empty() {
+            return false;
+        }
+
+        // Fallback bind check (loopback only)
+        return TcpListener::bind(format!("127.0.0.1:{}", port)).is_ok();
+    }
+
+    #[cfg(not(target_os = "windows"))]
     // First, try the most reliable check: ask the OS if anything is LISTENing.
     // This avoids edge cases where bind checks can be misleading across interfaces.
     if let Ok(output) = Command::new("lsof")
@@ -174,6 +284,12 @@ pub fn is_port_available(port: u16) -> bool {
 /// Check if any process is using a port (including TIME_WAIT, CLOSE_WAIT, etc.)
 /// This is more aggressive than is_port_available which only checks LISTEN state.
 pub fn is_port_in_any_state(port: u16) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        return !netstat_pids(port, false).is_empty();
+    }
+
+    #[cfg(not(target_os = "windows"))]
     // Check for any TCP connection on this port (not just LISTEN)
     if let Ok(output) = Command::new("lsof")
         .args(["-nP", "-iTCP", &format!(":{}", port), "-t"])
@@ -225,6 +341,20 @@ pub async fn check_port(port: u16) -> bool {
 /// Get information about what process is using a port
 #[tauri::command]
 pub fn get_port_info(port: u16) -> Option<PortInfo> {
+    #[cfg(target_os = "windows")]
+    {
+        let pid = netstat_pids(port, false).into_iter().next()?;
+        let process_name = tasklist_process_name(pid);
+
+        return Some(PortInfo {
+            port,
+            pid: Some(pid),
+            process_name,
+            command: None,
+        });
+    }
+
+    #[cfg(not(target_os = "windows"))]
     // Use lsof to find process using port (macOS/Linux)
     // Don't filter by TCP state to catch all listeners including IPv6
     let output = Command::new("lsof")
@@ -272,39 +402,47 @@ pub fn get_port_info(port: u16) -> Option<PortInfo> {
 /// - One signal kills everything in the group
 /// - Works even if children have been reparented to init (PPID=1)
 /// - No race conditions from walking the tree
+#[cfg(target_os = "windows")]
+pub fn kill_process_tree(pid: u32) {
+    let _ = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .output();
+}
+
+#[cfg(not(target_os = "windows"))]
 pub fn kill_process_tree(pid: u32) {
     // Strategy:
     // 1. First try to kill the entire process group (most reliable)
     // 2. Fall back to killing individual process if group kill fails
-    
+
     // Try killing the process group first (sends signal to all processes in group)
     // The negative PID tells kill to send to the process group, not just the process
     let pgid_result = Command::new("kill")
         .args(["-TERM", &format!("-{}", pid)])
         .output();
-    
+
     // Give processes a moment to handle SIGTERM gracefully
     std::thread::sleep(Duration::from_millis(100));
-    
+
     // Check if the main process is still running
     let still_running = Command::new("kill")
         .args(["-0", &pid.to_string()])
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);
-    
+
     if still_running {
         // Process didn't respond to SIGTERM, force kill with SIGKILL
         let _ = Command::new("kill")
             .args(["-KILL", &format!("-{}", pid)])
             .output();
-        
+
         // Also try killing just the PID in case it wasn't in a process group
         let _ = Command::new("kill")
             .args(["-9", &pid.to_string()])
             .output();
     }
-    
+
     // If group kill failed (process wasn't in its own group), fall back to recursive kill
     if pgid_result.is_err() || pgid_result.map(|o| !o.status.success()).unwrap_or(true) {
         // Fallback: recursively find and kill children
@@ -321,7 +459,7 @@ pub fn kill_process_tree(pid: u32) {
                 }
             }
         }
-        
+
         // Kill the process itself
         let _ = Command::new("kill")
             .args(["-9", &pid.to_string()])
@@ -332,6 +470,26 @@ pub fn kill_process_tree(pid: u32) {
 /// Kill the process using a specific port (basic version)
 #[tauri::command]
 pub fn kill_port(port: u16) -> Result<bool, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut killed_any = false;
+        for pid in netstat_pids(port, true) {
+            let result = Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .output();
+            if result.is_ok() {
+                killed_any = true;
+            }
+        }
+
+        if killed_any {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        return Ok(killed_any);
+    }
+
+    #[cfg(not(target_os = "windows"))]
     // Use lsof to find process using port
     let output = Command::new("lsof")
         .args(["-i", &format!(":{}", port), "-t", "-sTCP:LISTEN"])
@@ -367,6 +525,28 @@ pub fn kill_port(port: u16) -> Result<bool, String> {
 /// Aggressively kill all processes using a port (including non-LISTEN states)
 /// This uses multiple techniques to ensure the port is freed.
 pub fn kill_port_aggressive(port: u16) -> Result<bool, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut killed_any = false;
+
+        for pid in netstat_pids(port, true) {
+            kill_process_tree(pid);
+            killed_any = true;
+        }
+
+        for pid in netstat_pids(port, false) {
+            kill_process_tree(pid);
+            killed_any = true;
+        }
+
+        if killed_any {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+
+        return Ok(killed_any);
+    }
+
+    #[cfg(not(target_os = "windows"))]
     let mut killed_any = false;
     
     // Technique 1: Kill processes in LISTEN state (with process tree)
@@ -970,6 +1150,7 @@ mod tests {
         kill_process_tree(999999998);
     }
     
+    #[cfg(unix)]
     #[test]
     fn test_kill_process_tree_kills_spawned_process() {
         use std::os::unix::process::CommandExt;
@@ -1005,6 +1186,7 @@ mod tests {
         assert!(!still_running, "Process {} should be dead after kill_process_tree", pid);
     }
     
+    #[cfg(unix)]
     #[test]
     fn test_kill_process_tree_handles_already_dead_process() {
         use std::os::unix::process::CommandExt;

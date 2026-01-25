@@ -11,6 +11,10 @@ import os from 'os'
 import path from 'path'
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
+const isWindows = process.platform === 'win32'
+const describeBash = isWindows ? describe.skip : describe
+const describeWindows = isWindows ? describe : describe.skip
+
 // Wrap isDangerousCommand to use the default patterns for testing
 const isDangerousCommand = (command: string) =>
   isDangerousCommandRaw(command, BUILTIN_DANGEROUS_PATTERNS)
@@ -44,7 +48,7 @@ async function execCommand(
   return result as CommandResult
 }
 
-describe('createBashTools', () => {
+describeBash('createBashTools', () => {
   let tempDir: string
   let tools: ReturnType<typeof createBashTools>
 
@@ -243,6 +247,37 @@ describe('createBashTools', () => {
       expect(typeof status.supported).toBe('boolean')
       expect(typeof status.enabled).toBe('boolean')
     })
+  })
+})
+
+describeWindows('createBashTools (windows)', () => {
+  let tempDir: string
+  let tools: ReturnType<typeof createBashTools>
+
+  beforeEach(async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bash-test-'))
+    tools = createBashTools({
+      cwd: tempDir,
+      disableSandbox: true,
+    })
+  })
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true })
+    await resetSandbox()
+  })
+
+  it('executes simple commands via cmd', async () => {
+    const result = await execCommand(tools, { command: 'echo hello' })
+
+    expect(result.success).toBe(true)
+    expect(result.stdout?.toLowerCase()).toContain('hello')
+  })
+
+  it('returns exit code for failed commands via cmd', async () => {
+    const result = await execCommand(tools, { command: 'exit /b 42' })
+    expect(result.success).toBe(false)
+    expect(result.exitCode).toBe(42)
   })
 })
 
@@ -457,23 +492,29 @@ describe('getAugmentedPath', () => {
     const augmentedPath = getAugmentedPath()
 
     expect(typeof augmentedPath).toBe('string')
-    expect(augmentedPath).toContain(':')
+    expect(augmentedPath).toContain(path.delimiter)
   })
 
   it('includes standard system paths', () => {
     const augmentedPath = getAugmentedPath()
 
     // Should always include these standard paths
-    expect(augmentedPath).toContain('/usr/bin')
-    expect(augmentedPath).toContain('/bin')
+    if (process.platform === 'win32') {
+      expect(augmentedPath.toLowerCase()).toContain('windows\\system32')
+    } else {
+      expect(augmentedPath).toContain('/usr/bin')
+      expect(augmentedPath).toContain('/bin')
+    }
   })
 
   it('includes homebrew paths', () => {
     const augmentedPath = getAugmentedPath()
 
     // Should include homebrew paths (even if they don't exist on the system)
-    expect(augmentedPath).toContain('/opt/homebrew/bin')
-    expect(augmentedPath).toContain('/usr/local/bin')
+    if (process.platform !== 'win32') {
+      expect(augmentedPath).toContain('/opt/homebrew/bin')
+      expect(augmentedPath).toContain('/usr/local/bin')
+    }
   })
 
   it('includes existing PATH at the end', () => {
@@ -512,7 +553,9 @@ describe('getAugmentedPath', () => {
 
     if (nvmExists) {
       // If nvm exists, the path should include an nvm node bin directory
-      expect(augmentedPath).toMatch(/\.nvm\/versions\/node\/v[^:]+\/bin/)
+      if (process.platform !== 'win32') {
+        expect(augmentedPath).toMatch(/\.nvm\/versions\/node\/v[^:]+\/bin/)
+      }
     }
     // If nvm doesn't exist, we just verify the function doesn't crash
   })
@@ -529,7 +572,10 @@ describe('getAugmentedPath', () => {
       })
 
       // Try to find node - this should work with the augmented PATH
-      const result = await execCommand(tools, { command: 'which node' })
+      const resolver = process.platform === 'win32' ? 'where' : 'which'
+      const result = await execCommand(tools, {
+        command: `${resolver} node`,
+      })
 
       // On a system with node installed (via nvm, homebrew, etc.),
       // this should succeed. If node isn't installed at all, this test

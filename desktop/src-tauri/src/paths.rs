@@ -11,13 +11,46 @@ use crate::types::WorkspacesConfig;
 use std::path::PathBuf;
 
 // ============================================================================
+// HOME DIRECTORY
+// ============================================================================
+
+/// Resolve the user's home directory across platforms.
+pub fn get_home_dir() -> Result<PathBuf, String> {
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            return Ok(PathBuf::from(home));
+        }
+    }
+
+    if let Ok(profile) = std::env::var("USERPROFILE") {
+        if !profile.is_empty() {
+            return Ok(PathBuf::from(profile));
+        }
+    }
+
+    if let (Ok(drive), Ok(path)) = (std::env::var("HOMEDRIVE"), std::env::var("HOMEPATH")) {
+        if !drive.is_empty() && !path.is_empty() {
+            return Ok(PathBuf::from(format!("{}{}", drive, path)));
+        }
+    }
+
+    Err("Could not determine home directory".to_string())
+}
+
+// ============================================================================
 // MOLDABLE ROOT
 // ============================================================================
 
 /// Get the Moldable home directory (~/.moldable)
 pub fn get_moldable_root() -> Result<PathBuf, String> {
-    let home = std::env::var("HOME").map_err(|_| "Could not get HOME directory")?;
-    Ok(PathBuf::from(format!("{}/.moldable", home)))
+    if let Ok(override_home) = std::env::var("MOLDABLE_HOME") {
+        if !override_home.is_empty() {
+            return Ok(PathBuf::from(override_home));
+        }
+    }
+
+    let home = get_home_dir()?;
+    Ok(home.join(".moldable"))
 }
 
 // ============================================================================
@@ -194,66 +227,79 @@ mod tests {
 
     #[test]
     fn test_get_moldable_root() {
-        // Should work if HOME is set
-        if std::env::var("HOME").is_ok() {
-            let root = get_moldable_root();
-            assert!(root.is_ok());
-            let path = root.unwrap();
+        let root = get_moldable_root();
+        if let Ok(path) = root {
             assert!(path.to_string_lossy().contains(".moldable"));
         }
     }
 
     #[test]
-    fn test_get_workspaces_file_path() {
-        if std::env::var("HOME").is_ok() {
-            let path = get_workspaces_file_path();
-            assert!(path.is_ok());
-            assert!(path.unwrap().to_string_lossy().contains("workspaces.json"));
+    fn test_get_home_dir_fallbacks() {
+        let prev_home = std::env::var("HOME").ok();
+        let prev_user = std::env::var("USERPROFILE").ok();
+
+        std::env::remove_var("HOME");
+        std::env::set_var("USERPROFILE", "/tmp/moldable-home");
+
+        let home = get_home_dir().unwrap();
+        assert_eq!(home, PathBuf::from("/tmp/moldable-home"));
+
+        match prev_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
         }
+        match prev_user {
+            Some(value) => std::env::set_var("USERPROFILE", value),
+            None => std::env::remove_var("USERPROFILE"),
+        }
+    }
+
+    #[test]
+    fn test_get_workspaces_file_path() {
+        let path = get_workspaces_file_path();
+        assert!(path.is_ok());
+        assert!(path.unwrap().to_string_lossy().contains("workspaces.json"));
     }
 
     #[test]
     fn test_get_shared_paths() {
-        if std::env::var("HOME").is_ok() {
-            let apps = get_shared_apps_dir();
-            assert!(apps.is_ok());
-            assert!(apps.unwrap().to_string_lossy().contains("shared/apps"));
+        let apps = get_shared_apps_dir();
+        assert!(apps.is_ok());
+        let apps_path = apps.unwrap().to_string_lossy().replace('\\', "/");
+        assert!(apps_path.contains("shared/apps"));
 
-            let scripts = get_shared_scripts_dir();
-            assert!(scripts.is_ok());
-            assert!(scripts.unwrap().to_string_lossy().contains("shared/scripts"));
+        let scripts = get_shared_scripts_dir();
+        assert!(scripts.is_ok());
+        let scripts_path = scripts.unwrap().to_string_lossy().replace('\\', "/");
+        assert!(scripts_path.contains("shared/scripts"));
 
-            let cache = get_cache_dir();
-            assert!(cache.is_ok());
-            assert!(cache.unwrap().to_string_lossy().contains("cache"));
-        }
+        let cache = get_cache_dir();
+        assert!(cache.is_ok());
+        let cache_path = cache.unwrap().to_string_lossy().replace('\\', "/");
+        assert!(cache_path.contains("cache"));
     }
 
     #[test]
     fn test_get_env_paths() {
-        if std::env::var("HOME").is_ok() {
-            let shared_env = get_shared_env_file_path();
-            assert!(shared_env.is_ok());
-            assert!(shared_env.unwrap().to_string_lossy().contains("shared/.env"));
-        }
+        let shared_env = get_shared_env_file_path();
+        assert!(shared_env.is_ok());
+        let env_path = shared_env.unwrap().to_string_lossy().replace('\\', "/");
+        assert!(env_path.contains("shared/.env"));
     }
 
     #[test]
     fn test_workspace_dir() {
-        if std::env::var("HOME").is_ok() {
-            let dir = get_workspace_dir("test-workspace");
-            assert!(dir.is_ok());
-            assert!(dir.unwrap().to_string_lossy().contains("workspaces/test-workspace"));
-        }
+        let dir = get_workspace_dir("test-workspace");
+        assert!(dir.is_ok());
+        let dir_path = dir.unwrap().to_string_lossy().replace('\\', "/");
+        assert!(dir_path.contains("workspaces/test-workspace"));
     }
 
     #[test]
     fn test_config_file_path_for_workspace() {
-        if std::env::var("HOME").is_ok() {
-            let path = get_config_file_path_for_workspace("personal");
-            assert!(path.is_ok());
-            let path_str = path.unwrap().to_string_lossy().to_string();
-            assert!(path_str.contains("workspaces/personal/config.json"));
-        }
+        let path = get_config_file_path_for_workspace("personal");
+        assert!(path.is_ok());
+        let path_str = path.unwrap().to_string_lossy().replace('\\', "/");
+        assert!(path_str.contains("workspaces/personal/config.json"));
     }
 }

@@ -1,16 +1,22 @@
 import { getAugmentedPath, resolveExecutablePath } from './paths.js'
 import { existsSync } from 'fs'
 import { homedir } from 'os'
-import { join } from 'path'
+import { delimiter, join } from 'path'
 import { describe, expect, it } from 'vitest'
 
 describe('paths', () => {
   describe('resolveExecutablePath', () => {
     it('should return absolute paths unchanged', () => {
-      expect(resolveExecutablePath('/usr/bin/node')).toBe('/usr/bin/node')
-      expect(resolveExecutablePath('/opt/homebrew/bin/npm')).toBe(
-        '/opt/homebrew/bin/npm',
-      )
+      if (process.platform === 'win32') {
+        expect(
+          resolveExecutablePath('C:\\\\Windows\\\\System32\\\\cmd.exe'),
+        ).toBe('C:\\\\Windows\\\\System32\\\\cmd.exe')
+      } else {
+        expect(resolveExecutablePath('/usr/bin/node')).toBe('/usr/bin/node')
+        expect(resolveExecutablePath('/opt/homebrew/bin/npm')).toBe(
+          '/opt/homebrew/bin/npm',
+        )
+      }
     })
 
     it('should expand tilde to home directory', () => {
@@ -31,9 +37,11 @@ describe('paths', () => {
       const npxResult = resolveExecutablePath('npx')
 
       // Results should either be absolute paths or the original command
-      expect(nodeResult.startsWith('/') || nodeResult === 'node').toBeTruthy()
-      expect(npmResult.startsWith('/') || npmResult === 'npm').toBeTruthy()
-      expect(npxResult.startsWith('/') || npxResult === 'npx').toBeTruthy()
+      const isAbsolute = (value: string) =>
+        value.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(value)
+      expect(isAbsolute(nodeResult) || nodeResult === 'node').toBeTruthy()
+      expect(isAbsolute(npmResult) || npmResult === 'npm').toBeTruthy()
+      expect(isAbsolute(npxResult) || npxResult === 'npx').toBeTruthy()
     })
 
     it('should handle all resolvable command names', () => {
@@ -67,15 +75,13 @@ describe('paths', () => {
 
     it('should include common executable locations', () => {
       const path = getAugmentedPath()
-      const paths = path.split(':')
+      const paths = path.split(delimiter)
 
       // Should include at least some common paths
-      const commonPaths = [
-        '/opt/homebrew/bin',
-        '/usr/local/bin',
-        '/usr/bin',
-        '/bin',
-      ]
+      const commonPaths =
+        process.platform === 'win32'
+          ? ['C:\\\\Windows\\\\System32', 'C:\\\\Windows']
+          : ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin']
 
       const hasCommonPaths = commonPaths.some((p) => paths.includes(p))
       expect(hasCommonPaths).toBe(true)
@@ -92,7 +98,7 @@ describe('paths', () => {
     it('should have paths separated by colons', () => {
       const path = getAugmentedPath()
       // Should have multiple paths separated by colons
-      expect(path.split(':').length).toBeGreaterThan(1)
+      expect(path.split(delimiter).length).toBeGreaterThan(1)
     })
 
     it('should check NVM directory if it exists', () => {
@@ -101,7 +107,9 @@ describe('paths', () => {
 
       if (existsSync(nvmDir)) {
         // If NVM exists, the path should include an NVM bin directory
-        expect(path).toContain('.nvm/versions/node')
+        if (process.platform !== 'win32') {
+          expect(path).toContain('.nvm/versions/node')
+        }
       }
       // If NVM doesn't exist, test still passes
     })
@@ -114,7 +122,9 @@ describe('paths', () => {
       // Node should be found on most dev machines
       // Either it's resolved to an absolute path or returns 'node'
       if (nodePath !== 'node') {
-        expect(nodePath.startsWith('/')).toBe(true)
+        expect(
+          nodePath.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(nodePath),
+        ).toBe(true)
         expect(existsSync(nodePath)).toBe(true)
       }
     })

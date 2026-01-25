@@ -28,7 +28,7 @@ export interface SystemPromptOptions {
   currentDate?: Date
   /** Active workspace ID (e.g., "personal", "work") */
   activeWorkspaceId?: string
-  /** Moldable home directory path (e.g., /Users/rob/.moldable) - where all user apps/data live */
+  /** Moldable home directory path (e.g., /Users/rob/.moldable or C:\\Users\\Rob\\.moldable) - where all user apps/data live */
   moldableHome?: string
   /** Operating system info */
   osInfo?: string
@@ -121,9 +121,9 @@ When building user interfaces for Moldable apps:
 
 ### Directory Paths
 
-All Moldable apps and data live in \`~/.moldable/\` (e.g., \`/Users/rob/.moldable/\`).
+All Moldable apps and data live in \`~/.moldable/\` (e.g., \`/Users/rob/.moldable/\` on macOS/Linux or \`C:\\Users\\Rob\\.moldable\\\` on Windows).
 
-**Always expand \`~\` to the user's home directory** (use \`$HOME\` environment variable if needed).
+**Always expand \`~\` to the user's home directory** (use \`$HOME\` on macOS/Linux or \`%USERPROFILE%\` on Windows if needed).
 
 When creating or finding apps:
 - ✅ \`~/.moldable/shared/apps/my-app/\` — Correct location for app source code

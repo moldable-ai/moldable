@@ -1,5 +1,5 @@
 import { ArrowLeft, Play, RotateCcw, Terminal } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AppConfig } from './lib/app-manager'
 import {
   addAppFromFolder,
@@ -20,6 +20,7 @@ import {
   useWorkspaceConfig,
 } from './hooks/use-workspace-config'
 import { useWorkspaces } from './hooks/use-workspaces'
+import { AgentSessionsDialog } from './components/agent-sessions-dialog'
 import { ApiKeyDialog } from './components/api-key-dialog'
 import { AppLogs } from './components/app-logs'
 import { AppUpdateDialog } from './components/app-update-dialog'
@@ -218,6 +219,7 @@ export function App() {
   const [reloadKey, setReloadKey] = useState(0)
   const [isChatExpanded, setIsChatExpanded] = useState(false)
   const [isChatMinimized, setIsChatMinimized] = useState(false)
+  const [isAgentsDialogOpen, setIsAgentsDialogOpen] = useState(false)
   const [suggestedChatInput, setSuggestedChatInput] = useState<
     string | undefined
   >()
@@ -245,6 +247,21 @@ export function App() {
   useEffect(() => {
     homeDir().then(setUserHomeDir).catch(console.error)
   }, [])
+
+  const activeAppDataDir = useMemo(() => {
+    if (!userHomeDir || !activeApp || !activeWorkspace) return null
+    const separator = userHomeDir.includes('\\') ? '\\' : '/'
+    const home = userHomeDir.replace(/[\\/]+$/, '')
+    return [
+      home,
+      '.moldable',
+      'workspaces',
+      activeWorkspace.id,
+      'apps',
+      activeApp.id,
+      'data',
+    ].join(separator)
+  }, [activeApp, activeWorkspace, userHomeDir])
 
   // Refocus app iframe when chat is hidden (minimized or collapsed)
   const prevChatStateRef = useRef({
@@ -613,6 +630,8 @@ export function App() {
           onDeleteApp={deleteApp}
           onChatToggle={handleChatToggle}
           isChatActive={isChatExpanded}
+          onOpenAgents={() => setIsAgentsDialogOpen(true)}
+          isAgentsActive={isAgentsDialogOpen}
           onOpenSettings={() => setIsSettingsOpen(true)}
         />
 
@@ -654,13 +673,13 @@ export function App() {
           icon: app.iconPath || app.icon,
         }))}
         activeApp={
-          activeApp && userHomeDir && activeWorkspace
+          activeApp && activeAppDataDir && activeWorkspace
             ? {
                 id: activeApp.id,
                 name: activeApp.name,
                 icon: activeApp.iconPath || activeApp.icon,
                 workingDir: activeApp.workingDir,
-                dataDir: `${userHomeDir}/.moldable/workspaces/${activeWorkspace.id}/apps/${activeApp.id}/data`,
+                dataDir: activeAppDataDir,
               }
             : null
         }
@@ -734,6 +753,13 @@ export function App() {
         }
         dangerousPatterns={dangerousPatterns}
         onDangerousPatternsChange={setDangerousPatterns}
+      />
+
+      <AgentSessionsDialog
+        open={isAgentsDialogOpen}
+        onOpenChange={setIsAgentsDialogOpen}
+        aiServerPort={health.port}
+        workspaceId={activeWorkspace?.id}
       />
     </div>
   )

@@ -12,13 +12,15 @@ import { promisify } from 'util'
 import { z } from 'zod/v4'
 
 const execAsync = promisify(exec)
+const isWindows = process.platform === 'win32'
 
 /**
  * Check if a command exists on the system
  */
 async function commandExists(cmd: string): Promise<boolean> {
   try {
-    await execAsync(`which ${cmd}`)
+    const resolver = process.platform === 'win32' ? 'where' : 'which'
+    await execAsync(`${resolver} ${cmd}`)
     return true
   } catch {
     return false
@@ -166,6 +168,8 @@ export function createSearchTools(options: SearchToolsOptions = {}) {
 
           if (hasRg) {
             result = await grepWithRipgrep(input, searchPath, internalLimit)
+          } else if (isWindows) {
+            result = await grepWithNode(input, searchPath, internalLimit)
           } else {
             result = await grepWithGrep(
               input,
@@ -250,6 +254,8 @@ export function createSearchTools(options: SearchToolsOptions = {}) {
 
           if (hasFd) {
             result = await findWithFd(input.pattern, searchDir, internalLimit)
+          } else if (isWindows) {
+            result = await findWithNode(input.pattern, searchDir, internalLimit)
           } else {
             result = await findWithFind(input.pattern, searchDir, internalLimit)
           }
@@ -429,6 +435,64 @@ async function grepWithGrep(
   }
 }
 
+// Windows-friendly fallback (no grep)
+async function grepWithNode(
+  input: GrepInput,
+  searchPath: string,
+  limit: number,
+): Promise<{
+  success: boolean
+  matches: Array<{ file: string; line: number; content: string }>
+  totalMatches: number
+  truncated: boolean
+}> {
+  const matches: Array<{ file: string; line: number; content: string }> = []
+  const regex = new RegExp(
+    input.pattern,
+    input.caseInsensitive ? 'i' : undefined,
+  )
+  const fileType = input.fileType?.toLowerCase()
+  const globRegex = input.glob ? globToRegex(input.glob) : null
+
+  const files = await walkFiles(searchPath)
+  for (const file of files) {
+    if (matches.length >= limit) break
+
+    if (fileType && !file.toLowerCase().endsWith(`.${fileType}`)) {
+      continue
+    }
+
+    if (globRegex) {
+      const normalized = file.replace(/\\\\/g, '/')
+      if (!globRegex.test(normalized)) {
+        continue
+      }
+    }
+
+    let contents: string
+    try {
+      contents = await fs.readFile(file, 'utf8')
+    } catch {
+      continue
+    }
+
+    const lines = contents.split(/\\r?\\n/)
+    for (let i = 0; i < lines.length; i++) {
+      if (regex.test(lines[i])) {
+        matches.push({ file, line: i + 1, content: lines[i] })
+        if (matches.length >= limit) break
+      }
+    }
+  }
+
+  return {
+    success: true,
+    matches,
+    totalMatches: matches.length,
+    truncated: matches.length >= limit,
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // fd implementation (preferred)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -438,13 +502,45 @@ async function findWithFd(
   searchDir: string,
   limit: number,
 ): Promise<{ success: boolean; files: string[]; count: number }> {
-  const { stdout } = await execAsync(
-    `fd --type f --glob "${pattern}" "${searchDir}" 2>/dev/null | head -${limit}`,
-    { maxBuffer: 5 * 1024 * 1024, shell: '/bin/bash' },
-  )
+  const args = [
+    '--type',
+    'f',
+    '--glob',
+    pattern,
+    '--max-results',
+    String(limit),
+    searchDir,
+  ]
+  const escapedArgs = args.map((a) => `"${a.replace(/"/g, '\\"')}"`)
+  const { stdout } = await execAsync(`fd ${escapedArgs.join(' ')}`, {
+    maxBuffer: 5 * 1024 * 1024,
+  })
 
   const files = stdout.trim().split('\n').filter(Boolean)
   const sortedFiles = await sortByMtime(files)
+
+  return {
+    success: true,
+    files: sortedFiles,
+    count: sortedFiles.length,
+  }
+}
+
+// Windows-friendly fallback (no fd/find)
+async function findWithNode(
+  pattern: string,
+  searchDir: string,
+  limit: number,
+): Promise<{ success: boolean; files: string[]; count: number }> {
+  const globRegex = globToRegex(pattern)
+  const files = await walkFiles(searchDir)
+  const matches = files.filter((file) => {
+    const normalized = file.replace(/\\\\/g, '/')
+    return globRegex.test(normalized)
+  })
+
+  const limited = matches.slice(0, limit)
+  const sortedFiles = await sortByMtime(limited)
 
   return {
     success: true,
@@ -496,4 +592,38 @@ async function sortByMtime(files: string[]): Promise<string[]> {
 
   filesWithMtime.sort((a, b) => b.mtime - a.mtime)
   return filesWithMtime.map((f) => f.file)
+}
+
+async function walkFiles(root: string): Promise<string[]> {
+  const results: string[] = []
+  let entries: Array<import('fs').Dirent>
+
+  try {
+    entries = await fs.readdir(root, { withFileTypes: true })
+  } catch {
+    return results
+  }
+
+  for (const entry of entries) {
+    const fullPath = path.join(root, entry.name)
+    if (entry.isDirectory()) {
+      if (entry.name === 'node_modules' || entry.name.startsWith('.git')) {
+        continue
+      }
+      results.push(...(await walkFiles(fullPath)))
+    } else if (entry.isFile()) {
+      results.push(fullPath)
+    }
+  }
+
+  return results
+}
+
+function globToRegex(pattern: string): RegExp {
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&')
+  const regex = escaped
+    .replace(/\\\*\\\*/g, '.*')
+    .replace(/\\\*/g, '[^/]*')
+    .replace(/\\\?/g, '.')
+  return new RegExp(`^${regex}$`, 'i')
 }

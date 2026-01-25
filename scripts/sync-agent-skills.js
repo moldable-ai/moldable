@@ -14,9 +14,10 @@
  *   pnpm sync:skills --init       # Initialize config with Anthropic skills
  */
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 
-const MOLDABLE_DIR = path.join(process.env.HOME, '.moldable')
+const MOLDABLE_DIR = path.join(os.homedir(), '.moldable')
 // Skills config is shared across all workspaces
 const CONFIG_PATH = path.join(MOLDABLE_DIR, 'shared', 'config', 'skills.json')
 const SKILLS_DIR = path.join(MOLDABLE_DIR, 'shared', 'skills')

@@ -269,19 +269,24 @@ describe('AI Server', () => {
   })
 
   describe('Health Check Response Format', () => {
-    it('should have correct health response structure', () => {
-      // Simulate health check response generation
-      const generateHealthResponse = (
-        env: Record<string, string | undefined>,
-      ) => ({
-        status: 'ok',
-        version: '0.1.0',
-        hasAnthropicKey: !!env.ANTHROPIC_API_KEY,
-        hasOpenAIKey: !!env.OPENAI_API_KEY,
-        hasOpenRouterKey: !!env.OPENROUTER_API_KEY,
-        mcpServers: [],
-      })
+    const generateHealthResponse = (
+      env: Record<string, string | undefined>,
+      options?: { hasCodexCli?: boolean },
+    ) => ({
+      status: 'ok',
+      version: '0.1.0',
+      hasAnthropicKey: !!env.ANTHROPIC_API_KEY,
+      hasOpenAIKey: !!env.OPENAI_API_KEY || !!options?.hasCodexCli,
+      hasOpenRouterKey: !!env.OPENROUTER_API_KEY,
+      openaiAuthSource: env.OPENAI_API_KEY
+        ? 'env'
+        : options?.hasCodexCli
+          ? 'codex-cli'
+          : undefined,
+      mcpServers: [],
+    })
 
+    it('should have correct health response structure', () => {
       const response = generateHealthResponse({
         ANTHROPIC_API_KEY: 'test-key',
         OPENAI_API_KEY: undefined,
@@ -293,7 +298,22 @@ describe('AI Server', () => {
       expect(response.hasAnthropicKey).toBe(true)
       expect(response.hasOpenAIKey).toBe(false)
       expect(response.hasOpenRouterKey).toBe(true)
+      expect(response.openaiAuthSource).toBeUndefined()
       expect(response.mcpServers).toEqual([])
+    })
+
+    it('should report OpenAI auth when Codex CLI is available', () => {
+      const response = generateHealthResponse(
+        {
+          ANTHROPIC_API_KEY: undefined,
+          OPENAI_API_KEY: undefined,
+          OPENROUTER_API_KEY: undefined,
+        },
+        { hasCodexCli: true },
+      )
+
+      expect(response.hasOpenAIKey).toBe(true)
+      expect(response.openaiAuthSource).toBe('codex-cli')
     })
   })
 
@@ -332,11 +352,16 @@ describe('AI Server', () => {
           anthropicApiKey?: string
           openaiApiKey?: string
           openrouterApiKey?: string
+          openaiCodexToken?: string
         },
       ): { valid: boolean; error?: string } => {
         const isAnthropic = model.startsWith('anthropic/')
         const isOpenRouter = model.startsWith('openrouter/')
         const isOpenAI = model.startsWith('openai/')
+        const isCodex = isOpenAI && model.includes('codex')
+        const openaiKey =
+          apiKeys.openaiApiKey ||
+          (isCodex ? apiKeys.openaiCodexToken : undefined)
 
         // Anthropic models: need Anthropic key OR OpenRouter
         if (
@@ -354,7 +379,7 @@ describe('AI Server', () => {
           return { valid: false, error: 'OPENROUTER_API_KEY not configured' }
         }
         // OpenAI models: need OpenAI key OR OpenRouter
-        if (isOpenAI && !apiKeys.openaiApiKey && !apiKeys.openrouterApiKey) {
+        if (isOpenAI && !openaiKey && !apiKeys.openrouterApiKey) {
           return {
             valid: false,
             error: 'OPENAI_API_KEY or OPENROUTER_API_KEY required',
@@ -428,6 +453,13 @@ describe('AI Server', () => {
       // OpenAI model with OpenRouter key (fallback)
       expect(
         validateApiKeys('openai/gpt-5.2-codex', { openrouterApiKey: 'key' }),
+      ).toEqual({
+        valid: true,
+      })
+
+      // OpenAI Codex model with Codex CLI token
+      expect(
+        validateApiKeys('openai/gpt-5.2-codex', { openaiCodexToken: 'token' }),
       ).toEqual({
         valid: true,
       })
@@ -1040,17 +1072,52 @@ describe('AI Server', () => {
   describe('Environment Variable Loading', () => {
     it('should prioritize env paths correctly', () => {
       // Simulate the env path priority logic
+      const moldableHome =
+        process.env.MOLDABLE_HOME ?? join(homedir(), '.moldable')
       const getEnvPaths = (dirname: string) => [
-        join(homedir(), '.moldable', 'shared', '.env'),
+        join(moldableHome, 'shared', '.env'),
         join(dirname, '..', '..', '..', '.moldable', 'shared', '.env'),
         join(dirname, '..', '..', '..', '.env'),
       ]
 
       const paths = getEnvPaths('/test/packages/ai-server/src')
+      const normalize = (p: string) => p.replace(/\\/g, '/')
+      const first = paths[0] ?? ''
+      const second = paths[1] ?? ''
+      const third = paths[2] ?? ''
 
-      expect(paths[0]).toContain('.moldable/shared/.env')
-      expect(paths[1]).toContain('.moldable/shared/.env')
-      expect(paths[2]).toMatch(/\.env$/)
+      expect(normalize(first)).toContain('.moldable/shared/.env')
+      expect(normalize(second)).toContain('.moldable/shared/.env')
+      expect(third).toMatch(/\.env$/)
+    })
+
+    it('should honor MOLDABLE_HOME when set', () => {
+      const prevHome = process.env.MOLDABLE_HOME
+      process.env.MOLDABLE_HOME = '/custom/moldable'
+      const moldableHome =
+        process.env.MOLDABLE_HOME ?? join(homedir(), '.moldable')
+      const paths = [
+        join(moldableHome, 'shared', '.env'),
+        join(
+          '/test/packages/ai-server/src',
+          '..',
+          '..',
+          '..',
+          '.moldable',
+          'shared',
+          '.env',
+        ),
+      ]
+
+      const normalize = (p: string) => p.replace(/\\/g, '/')
+      const first = paths[0] ?? ''
+      expect(normalize(first)).toContain('/custom/moldable/shared/.env')
+
+      if (prevHome === undefined) {
+        delete process.env.MOLDABLE_HOME
+      } else {
+        process.env.MOLDABLE_HOME = prevHome
+      }
     })
   })
 

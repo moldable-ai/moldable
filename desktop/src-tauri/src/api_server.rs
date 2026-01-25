@@ -4,7 +4,10 @@
 //! operations that require access to Rust-side functionality.
 
 use crate::apps::{find_available_port, register_app, unregister_app};
-use crate::paths::{get_shared_apps_dir, get_workspace_dir, get_workspaces_config_internal, get_config_file_path_for_workspace};
+use crate::paths::{
+    get_config_file_path_for_workspace, get_moldable_root, get_shared_apps_dir, get_workspace_dir,
+    get_workspaces_config_internal,
+};
 use crate::ports::{acquire_port, PortAcquisitionConfig, DEFAULT_API_SERVER_PORT};
 use crate::registry::uninstall_app_from_shared;
 use crate::runtime::ensure_node_modules_installed;
@@ -344,24 +347,24 @@ async fn create_app_handler(
     }
 
     // Get paths
-    let home = match std::env::var("HOME") {
-        Ok(h) => h,
-        Err(_) => {
+    let moldable_root = match get_moldable_root() {
+        Ok(root) => root,
+        Err(err) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(CreateAppResponse {
                     success: false,
-                    error: Some("Could not get HOME directory".to_string()),
+                    error: Some(err),
                     ..Default::default()
                 }),
             );
         }
     };
-    
-    info!("Creating app with HOME={}", home);
 
-    let template_path = PathBuf::from(format!("{}/.moldable/cache/app-template", home));
-    let apps_dir = PathBuf::from(format!("{}/.moldable/shared/apps", home));
+    info!("Creating app with MOLDABLE_HOME={}", moldable_root.display());
+
+    let template_path = moldable_root.join("cache").join("app-template");
+    let apps_dir = moldable_root.join("shared").join("apps");
     let dest_dir = apps_dir.join(&req.app_id);
 
     // Check if template exists

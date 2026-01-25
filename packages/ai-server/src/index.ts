@@ -21,6 +21,23 @@ import {
   parseManifest,
   removeMcpServer,
 } from '@moldable-ai/mcp'
+import { readCodexCliCredentialsCached } from './codex-cli-credentials.js'
+import {
+  type GatewayMessage,
+  type GatewaySession,
+  buildGatewaySessionTitle,
+  deleteGatewaySession,
+  listGatewaySessions,
+  loadGatewaySession,
+  saveGatewaySession,
+} from './gateway-sessions.js'
+import {
+  type GatewayChatRequest,
+  buildGatewayContext,
+  normalizeGatewayMessages,
+  resolveGatewaySessionId,
+  toGatewayMessages,
+} from './gateway.js'
 import {
   type UIMessage,
   convertToModelMessages,
@@ -52,12 +69,15 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const WORKSPACE_ROOT = process.env.MOLDABLE_WORKSPACE || null
 
 // Moldable home directory - where all user data, apps, and configs live
-const MOLDABLE_HOME = join(homedir(), '.moldable')
+const MOLDABLE_HOME = process.env.MOLDABLE_HOME ?? join(homedir(), '.moldable')
+
+const CODEX_CLI_SYNC_TTL_MS = 5 * 60 * 1000
+const CODEX_CLI_NEAR_EXPIRY_MS = 10 * 60 * 1000
 
 // Try multiple locations for .env file
 // Priority: shared/.env (user home) > dev workspace shared/.env > dev .env
 const envPaths = [
-  join(homedir(), '.moldable', 'shared', '.env'), // User's shared env for all workspaces
+  join(MOLDABLE_HOME, 'shared', '.env'), // User's shared env for all workspaces
   join(__dirname, '..', '..', '..', '.moldable', 'shared', '.env'), // Dev workspace
   join(__dirname, '..', '..', '..', '.env'), // Dev fallback
 ]
@@ -93,7 +113,7 @@ const DEBUG_CHAT_REQUESTS =
 // MCP client manager (singleton)
 // MCPs are shared across all workspaces
 const mcpManager = new McpClientManager(
-  join(homedir(), '.moldable', 'shared', 'config', 'mcp.json'),
+  join(MOLDABLE_HOME, 'shared', 'config', 'mcp.json'),
 )
 let mcpServers: McpServerInfo[] = []
 
@@ -147,6 +167,39 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
   'Access-Control-Allow-Headers':
     'Content-Type, Authorization, User-Agent, X-Requested-With',
+}
+
+type OpenAIAuthSource = 'env' | 'codex-cli' | 'none'
+
+function isCodexModel(model: string): boolean {
+  return model.toLowerCase().includes('codex')
+}
+
+function resolveOpenAIAuth(model?: string): {
+  apiKey?: string
+  source: OpenAIAuthSource
+} {
+  const envKey = process.env.OPENAI_API_KEY?.trim()
+  if (envKey) {
+    return { apiKey: envKey, source: 'env' }
+  }
+
+  if (model && !isCodexModel(model)) {
+    return { source: 'none' }
+  }
+
+  const creds = readCodexCliCredentialsCached({ ttlMs: CODEX_CLI_SYNC_TTL_MS })
+  if (!creds) return { source: 'none' }
+
+  const now = Date.now()
+  if (
+    typeof creds.expires === 'number' &&
+    creds.expires <= now + CODEX_CLI_NEAR_EXPIRY_MS
+  ) {
+    return { source: 'none' }
+  }
+
+  return { apiKey: creds.access, source: 'codex-cli' }
 }
 
 // Parse JSON body
@@ -411,6 +464,39 @@ function removeDanglingToolCalls<T extends { role: string; content: unknown }>(
   return result
 }
 
+type ApiKeys = {
+  anthropicApiKey?: string
+  openaiApiKey?: string
+  openrouterApiKey?: string
+}
+
+function apiKeysFromEnv(model?: string): ApiKeys {
+  const openaiAuth = resolveOpenAIAuth(model)
+  return {
+    anthropicApiKey: process.env.ANTHROPIC_API_KEY,
+    openaiApiKey: openaiAuth.apiKey,
+    openrouterApiKey: process.env.OPENROUTER_API_KEY,
+  }
+}
+
+function validateApiKeys(model: string, apiKeys: ApiKeys): string | null {
+  const isAnthropic = model.startsWith('anthropic/')
+  const isOpenRouter = model.startsWith('openrouter/')
+  const isOpenAI = model.startsWith('openai/')
+
+  if (isAnthropic && !apiKeys.anthropicApiKey && !apiKeys.openrouterApiKey) {
+    return 'ANTHROPIC_API_KEY or OPENROUTER_API_KEY required'
+  }
+  if (isOpenRouter && !apiKeys.openrouterApiKey) {
+    return 'OPENROUTER_API_KEY not configured'
+  }
+  if (isOpenAI && !apiKeys.openaiApiKey && !apiKeys.openrouterApiKey) {
+    return 'OPENAI_API_KEY or OPENROUTER_API_KEY required'
+  }
+
+  return null
+}
+
 // Handle chat request - using AI SDK's UIMessage format for useChat compatibility
 async function handleChat(
   req: IncomingMessage,
@@ -483,30 +569,10 @@ async function handleChat(
     }
 
     // Get API keys from environment
-    const apiKeys = {
-      anthropicApiKey: process.env.ANTHROPIC_API_KEY,
-      openaiApiKey: process.env.OPENAI_API_KEY,
-      openrouterApiKey: process.env.OPENROUTER_API_KEY,
-    }
-
-    // Check if we have a valid API key (direct or via OpenRouter fallback)
-    const isAnthropic = model.startsWith('anthropic/')
-    const isOpenRouter = model.startsWith('openrouter/')
-    const isOpenAI = model.startsWith('openai/')
-
-    // Anthropic models: need Anthropic key OR OpenRouter
-    if (isAnthropic && !apiKeys.anthropicApiKey && !apiKeys.openrouterApiKey) {
-      sendError(res, 'ANTHROPIC_API_KEY or OPENROUTER_API_KEY required', 500)
-      return
-    }
-    // OpenRouter-native models: need OpenRouter key
-    if (isOpenRouter && !apiKeys.openrouterApiKey) {
-      sendError(res, 'OPENROUTER_API_KEY not configured', 500)
-      return
-    }
-    // OpenAI models: need OpenAI key OR OpenRouter
-    if (isOpenAI && !apiKeys.openaiApiKey && !apiKeys.openrouterApiKey) {
-      sendError(res, 'OPENAI_API_KEY or OPENROUTER_API_KEY required', 500)
+    const apiKeys = apiKeysFromEnv(model)
+    const apiKeyError = validateApiKeys(model, apiKeys)
+    if (apiKeyError) {
+      sendError(res, apiKeyError, 500)
       return
     }
 
@@ -889,6 +955,197 @@ async function handleChat(
   }
 }
 
+async function handleGatewayChat(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  try {
+    const body = (await parseBody(req)) as GatewayChatRequest
+    if (!body.messages || !Array.isArray(body.messages)) {
+      sendError(res, 'messages array is required', 400)
+      return
+    }
+
+    const model = (body.model as LLMProvider) || DEFAULT_MODEL
+    const reasoningEffort = body.reasoningEffort || 'medium'
+
+    const apiKeys = apiKeysFromEnv(model)
+    const apiKeyError = validateApiKeys(model, apiKeys)
+    if (apiKeyError) {
+      sendError(res, apiKeyError, 500)
+      return
+    }
+
+    const uiMessages = normalizeGatewayMessages(body.messages)
+    const modelMessages = await convertToModelMessages(uiMessages)
+    const fixedMessages = removeDanglingToolCalls(modelMessages)
+
+    const toolsBasePath = WORKSPACE_ROOT || MOLDABLE_HOME
+    const toolsOutputDir = body.activeWorkspaceId
+      ? join(
+          MOLDABLE_HOME,
+          'workspaces',
+          body.activeWorkspaceId,
+          'gateway-tool-output',
+        )
+      : join(MOLDABLE_HOME, 'shared', 'gateway-tool-output')
+
+    const mcpTools = createMcpTools(mcpManager)
+    const toolNamesForPrompt = [
+      'readFile',
+      'writeFile',
+      'editFile',
+      'deleteFile',
+      'listDirectory',
+      'fileExists',
+      'runCommand',
+      'grep',
+      'globFileSearch',
+      'webSearch',
+      'scaffoldApp',
+      'readToolOutput',
+      'listSkillRepos',
+      'listAvailableSkills',
+      'syncSkills',
+      'addSkillRepo',
+      'updateSkillSelection',
+      'initSkillsConfig',
+      ...Object.keys(mcpTools),
+    ]
+
+    const systemMessage = await buildSystemPrompt({
+      developmentWorkspace: WORKSPACE_ROOT || undefined,
+      activeWorkspaceId: body.activeWorkspaceId,
+      moldableHome: MOLDABLE_HOME,
+      currentDate: new Date(),
+      availableTools: toolNamesForPrompt,
+      registeredApps: [],
+      activeApp: null,
+      appChatInstructions: null,
+    })
+
+    const gatewayContext = buildGatewayContext(body.gateway)
+    const systemWithContext = gatewayContext
+      ? `${systemMessage}\n\n${gatewayContext}`
+      : systemMessage
+
+    const {
+      model: languageModel,
+      temperature,
+      providerOptions,
+    } = getProviderConfig(model, apiKeys, reasoningEffort)
+
+    const moldableTools = createMoldableTools({
+      basePath: toolsBasePath,
+      apiServerPort: body.apiServerPort,
+      requireUnsandboxedApproval: body.requireUnsandboxedApproval ?? true,
+      requireDangerousCommandApproval:
+        body.requireDangerousCommandApproval ?? true,
+      dangerousPatterns: body.dangerousPatterns ?? [],
+      outputDir: toolsOutputDir,
+    })
+
+    const tools = {
+      ...moldableTools,
+      ...mcpTools,
+    }
+
+    const result = streamText({
+      model: languageModel,
+      messages: [
+        { role: 'system', content: systemWithContext },
+        ...fixedMessages,
+      ],
+      temperature,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      providerOptions: providerOptions as any,
+      tools,
+      stopWhen: stepCountIs(1000),
+    })
+
+    const text = await result.text
+
+    const sessionId = resolveGatewaySessionId(body)
+    const storedMessages: GatewayMessage[] = [
+      ...toGatewayMessages(body.messages),
+      { role: 'assistant', text, timestamp: Math.floor(Date.now() / 1000) },
+    ]
+
+    const now = new Date().toISOString()
+    const existing = loadGatewaySession(sessionId, {
+      moldableHome: MOLDABLE_HOME,
+      workspaceId: body.activeWorkspaceId,
+    })
+    const session: GatewaySession = {
+      id: sessionId,
+      title: buildGatewaySessionTitle(storedMessages),
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      messageCount: storedMessages.length,
+      messages: storedMessages,
+      channel: body.gateway?.channel,
+      peerId: body.gateway?.peerId,
+      displayName: body.gateway?.displayName,
+      isGroup: body.gateway?.isGroup,
+      agentId: body.gateway?.agentId,
+      sessionKey: body.gateway?.sessionKey ?? sessionId,
+    }
+
+    saveGatewaySession(session, {
+      moldableHome: MOLDABLE_HOME,
+      workspaceId: body.activeWorkspaceId,
+    })
+
+    sendJson(res, { text, sessionId })
+  } catch (error) {
+    console.error('❌ Gateway chat error:', error)
+    sendError(
+      res,
+      error instanceof Error ? error.message : 'Gateway chat failed',
+      500,
+    )
+  }
+}
+
+function handleGatewaySessions(
+  res: ServerResponse,
+  workspaceId?: string | null,
+): void {
+  const sessions = listGatewaySessions({
+    moldableHome: MOLDABLE_HOME,
+    workspaceId,
+  })
+  sendJson(res, sessions)
+}
+
+function handleGatewaySession(
+  res: ServerResponse,
+  id: string,
+  workspaceId?: string | null,
+): void {
+  const session = loadGatewaySession(id, {
+    moldableHome: MOLDABLE_HOME,
+    workspaceId,
+  })
+  if (!session) {
+    sendError(res, 'Session not found', 404)
+    return
+  }
+  sendJson(res, session)
+}
+
+function handleDeleteGatewaySession(
+  res: ServerResponse,
+  id: string,
+  workspaceId?: string | null,
+): void {
+  deleteGatewaySession(id, {
+    moldableHome: MOLDABLE_HOME,
+    workspaceId,
+  })
+  sendJson(res, { ok: true })
+}
+
 /**
  * Format error messages to be more user-friendly
  * Handles AI SDK specific error types: https://ai-sdk.dev/docs/reference/ai-sdk-errors
@@ -1078,12 +1335,16 @@ function handleHealth(res: ServerResponse): void {
   // Re-read .env to pick up newly added API keys
   reloadEnvFile()
 
+  const openaiAuth = resolveOpenAIAuth()
+
   sendJson(res, {
     status: 'ok',
     version: '0.1.0',
     hasAnthropicKey: !!process.env.ANTHROPIC_API_KEY,
-    hasOpenAIKey: !!process.env.OPENAI_API_KEY,
+    hasOpenAIKey: !!openaiAuth.apiKey,
     hasOpenRouterKey: !!process.env.OPENROUTER_API_KEY,
+    openaiAuthSource:
+      openaiAuth.source === 'none' ? undefined : openaiAuth.source,
     mcpServers: mcpServers.map((s) => ({
       name: s.name,
       status: s.status,
@@ -1168,13 +1429,7 @@ async function handleAddMcpServer(
     return
   }
 
-  const mcpConfigPath = join(
-    homedir(),
-    '.moldable',
-    'shared',
-    'config',
-    'mcp.json',
-  )
+  const mcpConfigPath = join(MOLDABLE_HOME, 'shared', 'config', 'mcp.json')
 
   try {
     addMcpServer(
@@ -1198,13 +1453,7 @@ async function handleRemoveMcpServer(
   name: string,
   res: ServerResponse,
 ): Promise<void> {
-  const mcpConfigPath = join(
-    homedir(),
-    '.moldable',
-    'shared',
-    'config',
-    'mcp.json',
-  )
+  const mcpConfigPath = join(MOLDABLE_HOME, 'shared', 'config', 'mcp.json')
 
   try {
     removeMcpServer(name, mcpConfigPath)
@@ -1243,13 +1492,7 @@ async function handleUpdateMcpServer(
     return
   }
 
-  const mcpConfigPath = join(
-    homedir(),
-    '.moldable',
-    'shared',
-    'config',
-    'mcp.json',
-  )
+  const mcpConfigPath = join(MOLDABLE_HOME, 'shared', 'config', 'mcp.json')
 
   try {
     // Validate required fields based on type
@@ -1293,13 +1536,7 @@ async function handleToggleMcpServer(
     return
   }
 
-  const mcpConfigPath = join(
-    homedir(),
-    '.moldable',
-    'shared',
-    'config',
-    'mcp.json',
-  )
+  const mcpConfigPath = join(MOLDABLE_HOME, 'shared', 'config', 'mcp.json')
 
   try {
     // Get current config
@@ -1418,13 +1655,7 @@ async function handleInstallBundle(
     }
 
     // Install to MCP config
-    const mcpConfigPath = join(
-      homedir(),
-      '.moldable',
-      'shared',
-      'config',
-      'mcp.json',
-    )
+    const mcpConfigPath = join(MOLDABLE_HOME, 'shared', 'config', 'mcp.json')
     const result = installBundleFromExtracted(
       installDir,
       userConfig || {},
@@ -1808,6 +2039,33 @@ const server = createServer(async (req, res) => {
   // Route requests
   if (url.pathname === '/api/chat' && req.method === 'POST') {
     await handleChat(req, res)
+  } else if (url.pathname === '/api/gateway/chat' && req.method === 'POST') {
+    await handleGatewayChat(req, res)
+  } else if (url.pathname === '/api/gateway/sessions' && req.method === 'GET') {
+    const workspaceId = url.searchParams.get('workspaceId')
+    handleGatewaySessions(res, workspaceId)
+  } else if (
+    url.pathname.startsWith('/api/gateway/sessions/') &&
+    req.method === 'GET'
+  ) {
+    const sessionId = decodeURIComponent(url.pathname.split('/').pop() || '')
+    const workspaceId = url.searchParams.get('workspaceId')
+    if (!sessionId) {
+      sendError(res, 'Session ID required', 400)
+      return
+    }
+    handleGatewaySession(res, sessionId, workspaceId)
+  } else if (
+    url.pathname.startsWith('/api/gateway/sessions/') &&
+    req.method === 'DELETE'
+  ) {
+    const sessionId = decodeURIComponent(url.pathname.split('/').pop() || '')
+    const workspaceId = url.searchParams.get('workspaceId')
+    if (!sessionId) {
+      sendError(res, 'Session ID required', 400)
+      return
+    }
+    handleDeleteGatewaySession(res, sessionId, workspaceId)
   } else if (url.pathname === '/health' && req.method === 'GET') {
     handleHealth(res)
   } else if (url.pathname === '/api/mcp/servers' && req.method === 'GET') {
@@ -1884,10 +2142,17 @@ server.listen(port, host, async () => {
   console.log(
     `   Development workspace: ${WORKSPACE_ROOT || '(not configured)'}`,
   )
+  const openaiAuth = resolveOpenAIAuth()
   console.log(
     `   Anthropic API key: ${process.env.ANTHROPIC_API_KEY ? '✓' : '✗'}`,
   )
-  console.log(`   OpenAI API key: ${process.env.OPENAI_API_KEY ? '✓' : '✗'}`)
+  const openaiLabel =
+    openaiAuth.source === 'env'
+      ? '✓'
+      : openaiAuth.source === 'codex-cli'
+        ? '✓ (Codex CLI)'
+        : '✗'
+  console.log(`   OpenAI API key: ${openaiLabel}`)
   console.log(
     `   OpenRouter API key: ${process.env.OPENROUTER_API_KEY ? '✓' : '✗'}`,
   )

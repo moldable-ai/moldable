@@ -1,4 +1,4 @@
-import { Grid2x2, MessageSquare, Plus, Settings } from 'lucide-react'
+import { Bot, Grid2x2, MessageSquare, Plus, Settings } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { cn } from '@moldable-ai/ui'
 import {
@@ -26,6 +26,8 @@ interface SidebarProps {
   onDeleteApp?: (appId: string) => void
   onChatToggle?: () => void
   isChatActive?: boolean
+  onOpenAgents?: () => void
+  isAgentsActive?: boolean
   onOpenSettings?: () => void
 }
 
@@ -78,6 +80,8 @@ export function Sidebar({
   onDeleteApp: _onDeleteApp,
   onChatToggle,
   isChatActive = false,
+  onOpenAgents,
+  isAgentsActive = false,
   onOpenSettings,
 }: SidebarProps) {
   const [isAddAppDialogOpen, setIsAddAppDialogOpen] = useState(false)
@@ -133,7 +137,7 @@ export function Sidebar({
             onClick={() => onSelectApp(null)}
             className={cn(
               'mb-2 flex size-9 cursor-pointer items-center justify-center rounded-lg outline-none transition-all',
-              activeApp === null && !isChatActive
+              activeApp === null && !isChatActive && !isAgentsActive
                 ? 'bg-muted'
                 : 'hover:bg-muted/50',
             )}
@@ -163,6 +167,26 @@ export function Sidebar({
         </TooltipTrigger>
         <TooltipContent side="right" sideOffset={8}>
           Toggle Chat
+        </TooltipContent>
+      </Tooltip>
+
+      {/* Agents button - gateway sessions */}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            onClick={onOpenAgents}
+            className={cn(
+              'mb-4 flex size-9 cursor-pointer items-center justify-center rounded-lg outline-none transition-all',
+              isAgentsActive
+                ? 'bg-primary/10 text-primary'
+                : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+            )}
+          >
+            <Bot className="size-4" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="right" sideOffset={8}>
+          Agents
         </TooltipContent>
       </Tooltip>
 

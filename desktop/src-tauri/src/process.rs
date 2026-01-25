@@ -16,6 +16,7 @@ use crate::install_state::{
     format_install_state_lines, read_install_state, update_install_state_safe,
 };
 use crate::paths::get_workspaces_config_internal;
+use crate::paths::{get_home_dir, get_moldable_root};
 use crate::ports::kill_process_tree;
 use crate::runtime;
 use crate::types::{AppInstance, AppStatus, RegisteredApp};
@@ -33,6 +34,9 @@ use tauri::State;
 // Unix-specific imports for process group management
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
+
+#[cfg(target_os = "windows")]
+use sysinfo::{Pid, ProcessExt, System};
 
 // ============================================================================
 // STATE TYPES
@@ -232,48 +236,89 @@ pub fn with_script_args_forwarded(
 }
 
 fn is_pid_running(pid: u32) -> bool {
-    Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    #[cfg(target_os = "windows")]
+    {
+        let mut system = System::new();
+        system.refresh_processes();
+        return system.process(Pid::from_u32(pid)).is_some();
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
 }
 
 fn command_line_for_pid(pid: u32) -> Option<String> {
-    let output = Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "command="])
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
+    #[cfg(target_os = "windows")]
+    {
+        let mut system = System::new();
+        system.refresh_processes();
+        let process = system.process(Pid::from_u32(pid))?;
+        let cmd = process.cmd().join(" ");
+        if cmd.is_empty() {
+            None
+        } else {
+            Some(cmd)
+        }
     }
 
-    let command = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if command.is_empty() {
-        None
-    } else {
-        Some(command)
+    #[cfg(not(target_os = "windows"))]
+    {
+        let output = Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "command="])
+            .output()
+            .ok()?;
+
+        if !output.status.success() {
+            return None;
+        }
+
+        let command = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if command.is_empty() {
+            None
+        } else {
+            Some(command)
+        }
     }
 }
 
 fn parent_pid_for_pid(pid: u32) -> Option<u32> {
-    let output = Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "ppid="])
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
+    #[cfg(target_os = "windows")]
+    {
+        let mut system = System::new();
+        system.refresh_processes();
+        let process = system.process(Pid::from_u32(pid))?;
+        process.parent().map(|p| p.as_u32())
     }
 
-    let parent_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    parent_str.parse::<u32>().ok()
+    #[cfg(not(target_os = "windows"))]
+    {
+        let output = Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "ppid="])
+            .output()
+            .ok()?;
+
+        if !output.status.success() {
+            return None;
+        }
+
+        let parent_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        parent_str.parse::<u32>().ok()
+    }
 }
 
 fn command_line_contains_app_path(command: &str, working_dir: &Path) -> bool {
     let path = working_dir.to_string_lossy();
-    command.contains(path.as_ref())
+    if cfg!(target_os = "windows") {
+        command.to_lowercase().contains(&path.to_lowercase())
+    } else {
+        command.contains(path.as_ref())
+    }
 }
 
 fn parent_chain_contains_app_path(pid: u32, working_dir: &Path, max_depth: usize) -> bool {
@@ -830,15 +875,20 @@ fn start_app_internal_with_options(
     let env_vars = get_merged_env_vars();
 
     // Get MOLDABLE_HOME path and workspace-aware data dir
-    let home = std::env::var("HOME").unwrap_or_default();
-    let moldable_home = format!("{}/.moldable", home);
+    let home = get_home_dir()
+        .ok()
+        .and_then(|p| p.to_str().map(|s| s.to_string()))
+        .unwrap_or_default();
+    let moldable_root = get_moldable_root().unwrap_or_else(|_| std::path::PathBuf::from(&home));
     let active_workspace = get_workspaces_config_internal()
         .map(|c| c.active_workspace)
         .unwrap_or_else(|_| "personal".to_string());
-    let app_data_dir = format!(
-        "{}/workspaces/{}/apps/{}/data",
-        moldable_home, active_workspace, app_id
-    );
+    let app_data_dir = moldable_root
+        .join("workspaces")
+        .join(&active_workspace)
+        .join("apps")
+        .join(&app_id)
+        .join("data");
 
     // Ensure app data directory exists
     let _ = std::fs::create_dir_all(&app_data_dir);
@@ -857,8 +907,8 @@ fn start_app_internal_with_options(
         // Moldable-provided runtime vars
         .env("MOLDABLE_APP_ID", &app_id)
         .env("MOLDABLE_HOST", "127.0.0.1")
-        .env("MOLDABLE_HOME", &moldable_home)
-        .env("MOLDABLE_APP_DATA_DIR", &app_data_dir)
+        .env("MOLDABLE_HOME", moldable_root.to_string_lossy().to_string())
+        .env("MOLDABLE_APP_DATA_DIR", app_data_dir.to_string_lossy().to_string())
         .env("HOME", &home);
 
     if let Some(p) = port {
@@ -1769,6 +1819,7 @@ mod tests {
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_verify_pid_ownership_rejects_unrelated_process() {
         let temp_dir = TempDir::new().unwrap();
@@ -1924,6 +1975,7 @@ mod tests {
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_handle_next_lock_returns_running_when_port_unresponsive() {
         let temp_dir = create_temp_dir("moldable-next-lock-running");

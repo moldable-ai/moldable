@@ -1,7 +1,7 @@
 import { execSync } from 'child_process'
 import { existsSync, readdirSync } from 'fs'
 import { homedir } from 'os'
-import { join } from 'path'
+import { delimiter, join } from 'path'
 
 /**
  * Common executable names that need path resolution
@@ -24,7 +24,9 @@ const RESOLVABLE_COMMANDS = [
  */
 export function resolveExecutablePath(command: string): string {
   // If it's already an absolute path, return as-is
-  if (command.startsWith('/') || command.startsWith('~')) {
+  const isWindowsAbsolute =
+    /^[a-zA-Z]:[\\/]/.test(command) || command.startsWith('\\\\')
+  if (command.startsWith('/') || command.startsWith('~') || isWindowsAbsolute) {
     return command.replace(/^~/, homedir())
   }
 
@@ -49,6 +51,7 @@ export function resolveExecutablePath(command: string): string {
  */
 function findExecutable(name: string): string | null {
   const home = homedir()
+  const isWindows = process.platform === 'win32'
 
   // Build list of paths to check based on the executable
   const searchPaths: string[] = []
@@ -90,23 +93,59 @@ function findExecutable(name: string): string | null {
   searchPaths.push(join(home, 'Library', 'pnpm'))
   searchPaths.push(join(home, '.pnpm-global', 'bin'))
 
+  if (isWindows) {
+    const appData = process.env.APPDATA
+    const localAppData = process.env.LOCALAPPDATA
+    const programFiles = process.env.ProgramFiles
+    const programFilesX86 = process.env['ProgramFiles(x86)']
+
+    if (appData) {
+      searchPaths.push(join(appData, 'npm'))
+      searchPaths.push(join(appData, 'nvm'))
+    }
+
+    if (localAppData) {
+      searchPaths.push(join(localAppData, 'pnpm'))
+    }
+
+    if (programFiles) {
+      searchPaths.push(join(programFiles, 'nodejs'))
+    }
+
+    if (programFilesX86) {
+      searchPaths.push(join(programFilesX86, 'nodejs'))
+    }
+
+    searchPaths.push('C:\\\\Windows\\\\System32')
+    searchPaths.push('C:\\\\Windows')
+  }
+
   // Check each path
+  const candidates = isWindows
+    ? [name, `${name}.exe`, `${name}.cmd`, `${name}.bat`]
+    : [name]
   for (const dir of searchPaths) {
-    const fullPath = join(dir, name)
-    if (existsSync(fullPath)) {
-      return fullPath
+    for (const candidate of candidates) {
+      const fullPath = join(dir, candidate)
+      if (existsSync(fullPath)) {
+        return fullPath
+      }
     }
   }
 
   // Try 'which' command as fallback (works in dev, might not in prod)
   try {
-    const result = execSync(`which ${name}`, {
+    const resolver = isWindows ? 'where' : 'which'
+    const result = execSync(`${resolver} ${name}`, {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: 5000,
     }).trim()
-    if (result && existsSync(result)) {
-      return result
+    if (result) {
+      const first = result.split(/\r?\n/)[0]?.trim()
+      if (first && existsSync(first)) {
+        return first
+      }
     }
   } catch {
     // which command failed, continue
@@ -122,6 +161,7 @@ function findExecutable(name: string): string | null {
 export function getAugmentedPath(): string {
   const home = homedir()
   const paths: string[] = []
+  const isWindows = process.platform === 'win32'
 
   // NVM paths
   const nvmDir = join(home, '.nvm', 'versions', 'node')
@@ -168,11 +208,38 @@ export function getAugmentedPath(): string {
     paths.push(pnpmPath)
   }
 
+  if (isWindows) {
+    const appData = process.env.APPDATA
+    const localAppData = process.env.LOCALAPPDATA
+    const programFiles = process.env.ProgramFiles
+    const programFilesX86 = process.env['ProgramFiles(x86)']
+
+    if (appData) {
+      paths.push(join(appData, 'npm'))
+      paths.push(join(appData, 'nvm'))
+    }
+
+    if (localAppData) {
+      paths.push(join(localAppData, 'pnpm'))
+    }
+
+    if (programFiles) {
+      paths.push(join(programFiles, 'nodejs'))
+    }
+
+    if (programFilesX86) {
+      paths.push(join(programFilesX86, 'nodejs'))
+    }
+
+    paths.push('C:\\\\Windows\\\\System32')
+    paths.push('C:\\\\Windows')
+  }
+
   // Add existing PATH
   const existingPath = process.env.PATH || ''
   if (existingPath) {
     paths.push(existingPath)
   }
 
-  return paths.join(':')
+  return paths.join(delimiter)
 }

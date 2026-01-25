@@ -10,6 +10,7 @@ interface ApiKeyInfo {
   env_var: string
   is_configured: boolean
   masked_value: string | null
+  source?: 'env' | 'codex-cli' | null
 }
 
 type KeyProvider = 'openrouter' | 'anthropic' | 'openai' | null
@@ -46,14 +47,16 @@ export function SettingsApiKeys({ onKeysChanged }: SettingsApiKeysProps) {
   const detectedProvider = detectKeyProvider(newApiKey)
   const isValidKey = newApiKey.trim().length > 20 && detectedProvider !== null
 
-  const loadApiKeys = useCallback(async () => {
+  const loadApiKeys = useCallback(async (): Promise<ApiKeyInfo[]> => {
     try {
       setIsLoading(true)
       const keys = await invoke<ApiKeyInfo[]>('get_api_key_status')
       setApiKeys(keys)
+      return keys
     } catch (error) {
       console.error('Failed to load API keys:', error)
       toast.error('Failed to load API keys')
+      return []
     } finally {
       setIsLoading(false)
     }
@@ -106,8 +109,22 @@ export function SettingsApiKeys({ onKeysChanged }: SettingsApiKeysProps) {
     await openUrl(url)
   }, [])
 
+  const handleCheckCodexCli = useCallback(async () => {
+    const keys = await loadApiKeys()
+    const openaiKey = keys.find((key) => key.provider === 'OpenAI')
+    if (openaiKey?.source === 'codex-cli') {
+      toast.success('Codex CLI detected and synced')
+    } else {
+      toast.info(
+        'Codex CLI not detected. Open Codex CLI once to sign in, then try again.',
+      )
+    }
+  }, [loadApiKeys])
+
   const configuredKeys = apiKeys.filter((k) => k.is_configured)
   const hasAnyKey = configuredKeys.length > 0
+  const openaiKey = apiKeys.find((key) => key.provider === 'OpenAI')
+  const shouldShowCodexSync = !openaiKey?.is_configured && !newApiKey
 
   return (
     <div className="flex flex-col gap-6">
@@ -115,7 +132,7 @@ export function SettingsApiKeys({ onKeysChanged }: SettingsApiKeysProps) {
         <h2 className="text-base font-semibold">API Keys</h2>
         <p className="text-muted-foreground text-xs">
           Manage your LLM provider API keys. These are stored locally in your
-          ~/.moldable/shared/.env file.
+          ~/.moldable/shared/.env file or synced from Codex CLI when available.
         </p>
       </div>
 
@@ -130,7 +147,7 @@ export function SettingsApiKeys({ onKeysChanged }: SettingsApiKeysProps) {
             <div className="flex flex-col gap-2">
               {configuredKeys.map((key) => (
                 <div
-                  key={key.env_var}
+                  key={`${key.env_var}:${key.source ?? 'env'}`}
                   className="bg-muted/30 flex items-center justify-between rounded-lg px-4 py-3"
                 >
                   <div className="flex items-center gap-2.5">
@@ -144,6 +161,11 @@ export function SettingsApiKeys({ onKeysChanged }: SettingsApiKeysProps) {
                       <span className="text-muted-foreground font-mono text-xs">
                         {key.masked_value}
                       </span>
+                      {key.source === 'codex-cli' && (
+                        <span className="text-muted-foreground text-[11px]">
+                          Codex CLI
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
@@ -155,19 +177,23 @@ export function SettingsApiKeys({ onKeysChanged }: SettingsApiKeysProps) {
                     >
                       <ExternalLink className="size-4" />
                     </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-8 cursor-pointer px-2 text-red-500 hover:bg-red-500/10 hover:text-red-500"
-                      onClick={() => handleRemoveKey(key.env_var, key.provider)}
-                      disabled={removingKey === key.env_var}
-                    >
-                      {removingKey === key.env_var ? (
-                        <Loader2 className="size-4 animate-spin" />
-                      ) : (
-                        <Trash2 className="size-4" />
-                      )}
-                    </Button>
+                    {key.source !== 'codex-cli' && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 cursor-pointer px-2 text-red-500 hover:bg-red-500/10 hover:text-red-500"
+                        onClick={() =>
+                          handleRemoveKey(key.env_var, key.provider)
+                        }
+                        disabled={removingKey === key.env_var}
+                      >
+                        {removingKey === key.env_var ? (
+                          <Loader2 className="size-4 animate-spin" />
+                        ) : (
+                          <Trash2 className="size-4" />
+                        )}
+                      </Button>
+                    )}
                   </div>
                 </div>
               ))}
@@ -250,6 +276,21 @@ export function SettingsApiKeys({ onKeysChanged }: SettingsApiKeysProps) {
               <Plus className="mr-2 size-4" />
               Add API Key
             </Button>
+          )}
+
+          {shouldShowCodexSync && (
+            <div className="bg-muted/30 flex flex-col gap-2 rounded-lg p-4">
+              <p className="text-muted-foreground text-xs">
+                Prefer Codex OAuth? We can sync automatically from Codex CLI.
+              </p>
+              <Button
+                variant="outline"
+                className="w-full cursor-pointer"
+                onClick={handleCheckCodexCli}
+              >
+                Check Codex CLI
+              </Button>
+            </div>
           )}
 
           {/* Help links */}

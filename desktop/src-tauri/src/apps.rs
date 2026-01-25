@@ -3,7 +3,7 @@
 //! Handles registering apps in workspace config, detecting apps in folders,
 //! and listing available apps from local development workspaces.
 
-use crate::paths::get_config_file_path;
+use crate::paths::{get_config_file_path, get_config_file_path_for_workspace, get_home_dir};
 use crate::ports::{find_free_port, is_port_available};
 use crate::runtime::get_pnpm_path;
 use crate::types::{AvailableApp, MoldableConfig, MoldableManifest, RegisteredApp};
@@ -155,11 +155,7 @@ fn write_config_atomic(config_path: &Path, config: &MoldableConfig) -> Result<()
 pub fn get_registered_apps_for_workspace(
     workspace_id: String,
 ) -> Result<Vec<RegisteredApp>, String> {
-    let home = std::env::var("HOME").map_err(|_| "Could not get HOME directory")?;
-    let config_path = std::path::PathBuf::from(format!(
-        "{}/.moldable/workspaces/{}/config.json",
-        home, workspace_id
-    ));
+    let config_path = get_config_file_path_for_workspace(&workspace_id)?;
 
     if !config_path.exists() {
         return Ok(Vec::new());
@@ -419,18 +415,18 @@ pub fn list_available_apps() -> Result<Vec<AvailableApp>, String> {
 
     // Try configured workspace path first, then fallback to common development locations
     let workspace = workspace_path.or_else(|| {
-        let home = std::env::var("HOME").ok()?;
+        let home = get_home_dir().ok()?;
         let candidates = [
-            format!("{}/moldable", home),
-            format!("{}/code/moldable", home),
-            format!("{}/dev/moldable", home),
-            format!("{}/projects/moldable", home),
+            home.join("moldable"),
+            home.join("code").join("moldable"),
+            home.join("dev").join("moldable"),
+            home.join("projects").join("moldable"),
         ];
 
         for candidate in candidates {
-            let apps_dir = Path::new(&candidate).join("apps");
+            let apps_dir = candidate.join("apps");
             if apps_dir.exists() && apps_dir.is_dir() {
-                return Some(candidate);
+                return Some(candidate.to_string_lossy().to_string());
             }
         }
         None

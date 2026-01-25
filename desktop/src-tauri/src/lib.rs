@@ -358,6 +358,13 @@ pub fn run() {
                 let window = app.get_webview_window("main").unwrap();
                 window.open_devtools();
             }
+
+            if let Ok(resource_dir) = app.path().resource_dir() {
+                std::env::set_var(
+                    "MOLDABLE_RESOURCE_DIR",
+                    resource_dir.to_string_lossy().to_string(),
+                );
+            }
             
             // CRITICAL: Clean up any stale instances from previous runs FIRST
             // This must happen before we try to start our servers

@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "icon": "tauri icon public/app-icon.png && rm -rf src-tauri/icons/ios src-tauri/icons/android",
-    "clean": "rm -rf dist .turbo src-tauri/target",
+    "clean": "node scripts/clean.js",
     "lint": "eslint . --ext .ts,.tsx --max-warnings 0",
     "check-types": "tsc --noEmit",
     "test": "vitest run",

@@ -627,7 +627,14 @@ export async function getMoldableRoot(): Promise<string> {
   }
 
   // Browser fallback
-  cachedRoot = '/Users/rob/moldable'
+  const env = (
+    globalThis as {
+      process?: { env?: Record<string, string | undefined> }
+    }
+  ).process?.env
+  const home = env ? (env.HOME ?? env.USERPROFILE) : undefined
+  const separator = home?.includes('\\') ? '\\' : '/'
+  cachedRoot = home ? `${home}${separator}.moldable` : '~/.moldable'
   return cachedRoot
 }
 

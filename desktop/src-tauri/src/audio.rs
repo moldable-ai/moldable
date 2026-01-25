@@ -54,6 +54,10 @@ pub async fn start_audio_capture(
     channels: u32,
     state: State<'_, AudioCaptureState>,
 ) -> Result<bool, String> {
+    if !cfg!(target_os = "macos") {
+        return Err("System audio capture is only supported on macOS 14.2+".to_string());
+    }
+
     // Check if already running
     {
         let capture_state = state.0.lock().map_err(|e| e.to_string())?;

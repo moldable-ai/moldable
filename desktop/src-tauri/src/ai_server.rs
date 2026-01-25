@@ -29,24 +29,65 @@ const AI_SERVER_FALLBACK_END: u16 = DEFAULT_AI_SERVER_PORT + 99;
 /// - Finds processes regardless of what port they're using
 /// - Doesn't accidentally kill unrelated processes on those ports
 fn cleanup_stale_ai_servers() {
-    // Use pgrep to find processes with our tag in their environment/command
-    // Note: On macOS, pgrep -f searches command line. For env vars we use a different approach.
-    
-    // First, try to find node processes running moldable-ai-server
-    if let Ok(output) = Command::new("pgrep")
-        .args(["-f", "moldable-ai-server"])
-        .output()
+    #[cfg(target_os = "windows")]
     {
-        if output.status.success() {
-            let pids = String::from_utf8_lossy(&output.stdout);
-            let our_pid = std::process::id();
-            
-            for line in pids.lines() {
-                if let Ok(pid) = line.trim().parse::<u32>() {
-                    // Don't kill ourselves or our parent
-                    if pid != our_pid {
-                        info!("Killing stale AI server process (pid {})", pid);
-                        kill_process_tree(pid);
+        if let Ok(output) = Command::new("tasklist")
+            .args(["/FO", "CSV", "/NH"])
+            .output()
+        {
+            if output.status.success() {
+                let our_pid = std::process::id();
+                let stdout = String::from_utf8_lossy(&output.stdout);
+
+                for line in stdout.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    let fields: Vec<&str> =
+                        trimmed.trim_matches('"').split("\",\"").collect();
+                    if fields.len() < 2 {
+                        continue;
+                    }
+
+                    let image = fields[0].to_lowercase();
+                    if !image.contains("moldable-ai-server") {
+                        continue;
+                    }
+
+                    if let Ok(pid) = fields[1].parse::<u32>() {
+                        if pid != our_pid {
+                            info!("Killing stale AI server process (pid {})", pid);
+                            kill_process_tree(pid);
+                        }
+                    }
+                }
+            }
+        }
+        return;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Use pgrep to find processes with our tag in their environment/command
+        // Note: On macOS, pgrep -f searches command line. For env vars we use a different approach.
+
+        // First, try to find node processes running moldable-ai-server
+        if let Ok(output) = Command::new("pgrep")
+            .args(["-f", "moldable-ai-server"])
+            .output()
+        {
+            if output.status.success() {
+                let pids = String::from_utf8_lossy(&output.stdout);
+                let our_pid = std::process::id();
+
+                for line in pids.lines() {
+                    if let Ok(pid) = line.trim().parse::<u32>() {
+                        // Don't kill ourselves or our parent
+                        if pid != our_pid {
+                            info!("Killing stale AI server process (pid {})", pid);
+                            kill_process_tree(pid);
+                        }
                     }
                 }
             }
@@ -343,6 +384,7 @@ mod tests {
         // If we get here without panicking, the test passes
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn test_cleanup_stale_ai_servers_does_not_kill_current_process() {
         // The cleanup should skip our own process
@@ -356,5 +398,16 @@ mod tests {
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_cleanup_stale_ai_servers_does_not_kill_current_process_windows() {
+        // The cleanup should skip our own process
+        let our_pid = std::process::id();
+
+        cleanup_stale_ai_servers();
+
+        assert!(crate::ports::is_process_running(our_pid));
     }
 }
