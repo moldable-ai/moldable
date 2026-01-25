@@ -31,6 +31,7 @@ import {
   loadGatewaySession,
   saveGatewaySession,
 } from './gateway-sessions.js'
+import { createGatewayTools } from './gateway-tools.js'
 import {
   type GatewayChatRequest,
   buildGatewayContext,
@@ -70,6 +71,9 @@ const WORKSPACE_ROOT = process.env.MOLDABLE_WORKSPACE || null
 
 // Moldable home directory - where all user data, apps, and configs live
 const MOLDABLE_HOME = process.env.MOLDABLE_HOME ?? join(homedir(), '.moldable')
+const MOLDABLE_GATEWAY_URL =
+  process.env.MOLDABLE_GATEWAY_URL ?? 'http://127.0.0.1:18790'
+const MOLDABLE_GATEWAY_TOKEN = process.env.MOLDABLE_GATEWAY_TOKEN
 
 const CODEX_CLI_SYNC_TTL_MS = 5 * 60 * 1000
 const CODEX_CLI_NEAR_EXPIRY_MS = 10 * 60 * 1000
@@ -109,6 +113,35 @@ const DEBUG_CHAT_REQUESTS =
   process.env.MOLDABLE_DEBUG_PROMPTS === '1' ||
   process.env.MOLDABLE_DEBUG === '1' ||
   process.env.DEBUG === '1'
+
+const SUBAGENT_BLOCKED_TOOLS = new Set([
+  'writeFile',
+  'editFile',
+  'deleteFile',
+  'runCommand',
+  'scaffoldApp',
+  'addSkillRepo',
+  'updateSkillSelection',
+  'initSkillsConfig',
+  'syncSkills',
+  'unregisterApp',
+  'deleteAppData',
+  'deleteApp',
+  'gatewaySpawnSubagent',
+  'gatewayCreateCronJob',
+  'gatewayRunCronJob',
+  'gatewayDeleteCronJob',
+  'gatewayDeleteSubagent',
+])
+
+function filterToolsForSubagent<T extends Record<string, unknown>>(
+  tools: T,
+): T {
+  const filtered = Object.fromEntries(
+    Object.entries(tools).filter(([name]) => !SUBAGENT_BLOCKED_TOOLS.has(name)),
+  )
+  return filtered as T
+}
 
 // MCP client manager (singleton)
 // MCPs are shared across all workspaces
@@ -1001,6 +1034,7 @@ async function handleGatewayChat(
     const uiMessages = normalizeGatewayMessages(body.messages)
     const modelMessages = await convertToModelMessages(uiMessages)
     const fixedMessages = removeDanglingToolCalls(modelMessages)
+    const sessionId = resolveGatewaySessionId(body)
 
     const toolsBasePath = WORKSPACE_ROOT || MOLDABLE_HOME
     const toolsOutputDir = body.activeWorkspaceId
@@ -1012,28 +1046,40 @@ async function handleGatewayChat(
         )
       : join(MOLDABLE_HOME, 'shared', 'gateway-tool-output')
 
+    const moldableTools = createMoldableTools({
+      basePath: toolsBasePath,
+      apiServerPort: body.apiServerPort,
+      requireUnsandboxedApproval: body.requireUnsandboxedApproval ?? true,
+      requireDangerousCommandApproval:
+        body.requireDangerousCommandApproval ?? true,
+      dangerousPatterns: body.dangerousPatterns ?? [],
+      outputDir: toolsOutputDir,
+    })
+
     const mcpTools = createMcpTools(mcpManager)
-    const toolNamesForPrompt = [
-      'readFile',
-      'writeFile',
-      'editFile',
-      'deleteFile',
-      'listDirectory',
-      'fileExists',
-      'runCommand',
-      'grep',
-      'globFileSearch',
-      'webSearch',
-      'scaffoldApp',
-      'readToolOutput',
-      'listSkillRepos',
-      'listAvailableSkills',
-      'syncSkills',
-      'addSkillRepo',
-      'updateSkillSelection',
-      'initSkillsConfig',
-      ...Object.keys(mcpTools),
-    ]
+    const gatewayTools = createGatewayTools({
+      baseUrl: MOLDABLE_GATEWAY_URL,
+      token: MOLDABLE_GATEWAY_TOKEN,
+      context: {
+        sessionKey: body.gateway?.sessionKey ?? sessionId,
+        channel: body.gateway?.channel,
+        chatId: body.gateway?.chatId,
+        peerId: body.gateway?.peerId,
+        isGroup: body.gateway?.isGroup,
+        agentId: body.gateway?.agentId,
+        workspaceId: body.activeWorkspaceId,
+      },
+    })
+
+    let tools = {
+      ...moldableTools,
+      ...mcpTools,
+      ...gatewayTools,
+    }
+    if (body.gateway?.lane === 'subagent') {
+      tools = filterToolsForSubagent(tools)
+    }
+    const toolNamesForPrompt = Object.keys(tools)
 
     const systemMessage = await buildSystemPrompt({
       developmentWorkspace: WORKSPACE_ROOT || undefined,
@@ -1057,21 +1103,6 @@ async function handleGatewayChat(
       providerOptions,
     } = getProviderConfig(model, apiKeys, reasoningEffort)
 
-    const moldableTools = createMoldableTools({
-      basePath: toolsBasePath,
-      apiServerPort: body.apiServerPort,
-      requireUnsandboxedApproval: body.requireUnsandboxedApproval ?? true,
-      requireDangerousCommandApproval:
-        body.requireDangerousCommandApproval ?? true,
-      dangerousPatterns: body.dangerousPatterns ?? [],
-      outputDir: toolsOutputDir,
-    })
-
-    const tools = {
-      ...moldableTools,
-      ...mcpTools,
-    }
-
     const result = streamText({
       model: languageModel,
       messages: [
@@ -1086,8 +1117,6 @@ async function handleGatewayChat(
     })
 
     const text = await result.text
-
-    const sessionId = resolveGatewaySessionId(body)
     const storedMessages: GatewayMessage[] = [
       ...toGatewayMessages(body.messages),
       { role: 'assistant', text, timestamp: Math.floor(Date.now() / 1000) },
@@ -2161,6 +2190,10 @@ const host = getHost()
 server.listen(port, host, async () => {
   console.log(`🤖 Moldable AI server running at http://${host}:${port}`)
   console.log(`   MOLDABLE_HOME: ${MOLDABLE_HOME}`)
+  console.log(`   MOLDABLE_GATEWAY_URL: ${MOLDABLE_GATEWAY_URL}`)
+  console.log(
+    `   MOLDABLE_GATEWAY_TOKEN: ${MOLDABLE_GATEWAY_TOKEN ? '✓' : '✗'}`,
+  )
   console.log(
     `   Development workspace: ${WORKSPACE_ROOT || '(not configured)'}`,
   )

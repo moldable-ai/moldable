@@ -10,6 +10,7 @@ export type GatewayMetadata = {
   isGroup?: boolean
   agentId?: string
   sessionKey?: string
+  lane?: string
 }
 
 export type GatewayMessageInput = {
@@ -73,6 +74,7 @@ export function buildGatewayContext(meta?: GatewayMetadata): string | null {
       : null,
     meta.agentId ? `Agent: ${meta.agentId}` : null,
     meta.sessionKey ? `Session key: ${meta.sessionKey}` : null,
+    meta.lane ? `Lane: ${meta.lane}` : null,
   ].filter(Boolean)
   return lines.length > 1 ? lines.join('\n') : null
 }

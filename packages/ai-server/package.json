@@ -29,7 +29,8 @@
     "ai": "^6.0.27",
     "cors": "^2.8.5",
     "dotenv": "^16.5.0",
-    "fflate": "^0.8.2"
+    "fflate": "^0.8.2",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@moldable-ai/eslint-config": "workspace:*",
