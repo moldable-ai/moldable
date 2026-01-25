@@ -39,6 +39,9 @@ use ports::{cleanup_stale_moldable_instances, create_instance_lock, delete_lock_
 // Conversations
 pub mod conversations;
 
+// Checkpoints (file snapshot/restore for undo)
+pub mod checkpoints;
+
 // Preferences
 pub mod preferences;
 use preferences::{load_shared_config, save_shared_config, migrate_security_preferences};
@@ -329,6 +332,12 @@ pub fn run() {
             conversations::load_conversation,
             conversations::save_conversation,
             conversations::delete_conversation,
+            // Checkpoint commands (from checkpoints module)
+            checkpoints::create_checkpoint,
+            checkpoints::list_checkpoints,
+            checkpoints::restore_checkpoint,
+            checkpoints::cleanup_checkpoints,
+            checkpoints::delete_app_checkpoints,
             // Audio capture commands (from audio module)
             audio::is_system_audio_available,
             audio::start_audio_capture,

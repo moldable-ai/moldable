@@ -191,6 +191,19 @@ export function useChatConversations(workspaceId: string | undefined) {
     setCurrentConversationId(null)
   }, [])
 
+  /**
+   * Ensure a conversation ID exists (generates one if needed)
+   * Call this before creating checkpoints to guarantee an ID exists.
+   */
+  const ensureConversationId = useCallback((): string => {
+    if (currentConversationId) {
+      return currentConversationId
+    }
+    const newId = generateId()
+    setCurrentConversationId(newId)
+    return newId
+  }, [currentConversationId])
+
   return {
     conversations,
     currentConversationId,
@@ -199,5 +212,6 @@ export function useChatConversations(workspaceId: string | undefined) {
     saveConversation,
     deleteConversation,
     newConversation,
+    ensureConversationId,
   }
 }

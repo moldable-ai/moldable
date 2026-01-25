@@ -27,7 +27,7 @@ import {
 } from '../ui/tooltip'
 import { ChatInput } from './chat-input'
 import type { ChatMessage } from './chat-message'
-import { Messages } from './chat-messages'
+import { type MessageCheckpoint, Messages } from './chat-messages'
 import {
   ConversationHistory,
   type ConversationMeta,
@@ -122,6 +122,12 @@ export interface ChatPanelProps {
   onEditingAppChange?: (editing: boolean) => void
   /** Whether to show the editing app toggle (only shown when an app is active) */
   showEditingAppToggle?: boolean
+  /** Map of message ID to checkpoint info */
+  checkpoints?: Map<string, MessageCheckpoint>
+  /** Message ID currently being restored */
+  restoringMessageId?: string | null
+  /** Callback when restore is requested for a message */
+  onRestoreCheckpoint?: (messageId: string) => void
 }
 
 /**
@@ -160,6 +166,9 @@ export function ChatPanel({
   isEditingApp = true,
   onEditingAppChange,
   showEditingAppToggle = false,
+  checkpoints,
+  restoringMessageId,
+  onRestoreCheckpoint,
 }: ChatPanelProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -497,7 +506,13 @@ export function ChatPanel({
                   <ToolApprovalProvider
                     onApprovalResponse={onApprovalResponse ?? null}
                   >
-                    <Messages messages={messages} status={status} />
+                    <Messages
+                      messages={messages}
+                      status={status}
+                      checkpoints={checkpoints}
+                      restoringMessageId={restoringMessageId}
+                      onRestoreCheckpoint={onRestoreCheckpoint}
+                    />
                   </ToolApprovalProvider>
                 </ToolProgressProvider>
                 {/* Missing API key prompt */}

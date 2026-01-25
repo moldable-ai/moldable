@@ -1,14 +1,36 @@
 import { memo } from 'react'
 import { type ChatMessage, Message, ThinkingMessage } from './chat-message'
+import { CheckpointBadge } from './checkpoint-badge'
 
 type ChatStatus = 'ready' | 'submitted' | 'streaming' | 'error'
+
+/**
+ * Checkpoint info for a specific message
+ */
+export interface MessageCheckpoint {
+  messageId: string
+  fileCount: number
+  totalBytes: number
+}
 
 interface MessagesProps {
   messages: ChatMessage[]
   status: ChatStatus
+  /** Map of message ID to checkpoint info */
+  checkpoints?: Map<string, MessageCheckpoint>
+  /** Message ID currently being restored */
+  restoringMessageId?: string | null
+  /** Callback when restore is requested for a message */
+  onRestoreCheckpoint?: (messageId: string) => void
 }
 
-function PureMessages({ messages, status }: MessagesProps) {
+function PureMessages({
+  messages,
+  status,
+  checkpoints,
+  restoringMessageId,
+  onRestoreCheckpoint,
+}: MessagesProps) {
   const lastMessage = messages[messages.length - 1]
 
   const isThinking = (() => {
@@ -39,14 +61,34 @@ function PureMessages({ messages, status }: MessagesProps) {
 
   return (
     <>
-      {messages.map((message, index) => (
-        <Message
-          key={message.id}
-          message={message}
-          isLast={index === messages.length - 1}
-          isStreaming={isStreaming}
-        />
-      ))}
+      {messages.map((message, index) => {
+        const checkpoint = checkpoints?.get(message.id)
+        // Only show checkpoint badge on user messages that have checkpoints
+        const showCheckpointBadge =
+          checkpoint && message.role === 'user' && onRestoreCheckpoint
+
+        return (
+          <div key={message.id} className="group/message-row relative">
+            <Message
+              message={message}
+              isLast={index === messages.length - 1}
+              isStreaming={isStreaming}
+            />
+            {/* Checkpoint badge - positioned at bottom-right of user message */}
+            {showCheckpointBadge && (
+              <div className="absolute bottom-1 right-4 opacity-0 transition-opacity group-hover/message-row:opacity-100">
+                <CheckpointBadge
+                  messageId={message.id}
+                  fileCount={checkpoint.fileCount}
+                  totalBytes={checkpoint.totalBytes}
+                  isRestoring={restoringMessageId === message.id}
+                  onRestore={() => onRestoreCheckpoint(message.id)}
+                />
+              </div>
+            )}
+          </div>
+        )
+      })}
 
       {isThinking && <ThinkingMessage />}
     </>

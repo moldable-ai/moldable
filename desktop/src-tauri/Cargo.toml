@@ -36,6 +36,10 @@ zip = "2"
 tempfile = "3"
 # For decoding PNG icon for About dialog
 image = { version = "0.25", default-features = false, features = ["png"] }
+# For content-addressable checkpoint storage
+sha2 = "0.10"
+# For scanning directories
+walkdir = "2"
 
 [profile.release]
 panic = "abort"

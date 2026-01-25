@@ -5,7 +5,13 @@ export {
   type ChatMessage,
   type ChatMessagePart,
 } from './chat-message'
-export { Messages } from './chat-messages'
+export { Messages, type MessageCheckpoint } from './chat-messages'
+export { CheckpointBadge, type CheckpointBadgeProps } from './checkpoint-badge'
+export {
+  RestoreDialog,
+  type CheckpointInfo,
+  type RestoreDialogProps,
+} from './restore-dialog'
 export { ModelSelector, type ModelOption } from './model-selector'
 export {
   ReasoningEffortSelector,

@@ -402,18 +402,8 @@ function PureMessage({
         animate={{ y: 0, opacity: 1 }}
         data-role={message.role}
       >
-        <div
-          className={cn(
-            'flex w-full min-w-0 items-start gap-4',
-            message.role === 'user' && 'justify-end',
-          )}
-        >
-          <div
-            className={cn(
-              'mt-1 flex min-w-0 flex-col gap-2',
-              message.role === 'user' ? 'max-w-[85%] items-end' : 'w-full',
-            )}
-          >
+        <div className="flex w-full min-w-0 items-start gap-4">
+          <div className="mt-1 flex w-full min-w-0 flex-col gap-2">
             {/* Render content items in chronological order */}
             {contentItems.map((item) => {
               if (
@@ -495,7 +485,7 @@ function PureMessage({
                   <div
                     key={item.id}
                     className={cn('flex min-w-0 flex-col gap-4', {
-                      'bg-secondary text-secondary-foreground w-fit rounded-2xl px-4 py-2.5':
+                      'bg-secondary text-secondary-foreground w-full rounded-2xl px-4 py-2.5 pb-4':
                         message.role === 'user',
                       'w-full': message.role === 'assistant',
                     })}
