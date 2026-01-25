@@ -44,25 +44,42 @@ export function SettingsApiKeys({ onKeysChanged }: SettingsApiKeysProps) {
   const [isSaving, setSaving] = useState(false)
   const [removingKey, setRemovingKey] = useState<string | null>(null)
   const [useCodexCli, setUseCodexCli] = useState(true)
+  const [codexAvailable, setCodexAvailable] = useState(false)
 
   const detectedProvider = detectKeyProvider(newApiKey)
   const isValidKey = newApiKey.trim().length > 20 && detectedProvider !== null
 
-  const loadCodexPreference = useCallback(async () => {
-    try {
-      const value = await invoke<unknown>('get_shared_preference', {
-        key: 'useCodexCliAuth',
-      })
-      if (typeof value === 'boolean') {
-        setUseCodexCli(value)
-      } else {
-        setUseCodexCli(true)
+  const loadCodexPreference = useCallback(
+    async (keys?: ApiKeyInfo[]) => {
+      const openaiKey = (keys ?? apiKeys).find(
+        (key) => key.provider === 'OpenAI',
+      )
+      const detected = openaiKey?.source === 'codex-cli'
+      setCodexAvailable(!!detected)
+
+      try {
+        const value = await invoke<unknown>('get_shared_preference', {
+          key: 'useCodexCliAuth',
+        })
+        const prefValue = typeof value === 'boolean' ? value : true
+
+        if (prefValue && !detected) {
+          setUseCodexCli(false)
+          await invoke('set_shared_preference', {
+            key: 'useCodexCliAuth',
+            value: false,
+          })
+          return
+        }
+
+        setUseCodexCli(prefValue)
+      } catch (error) {
+        console.error('Failed to load Codex CLI preference:', error)
+        setUseCodexCli(false)
       }
-    } catch (error) {
-      console.error('Failed to load Codex CLI preference:', error)
-      setUseCodexCli(true)
-    }
-  }, [])
+    },
+    [apiKeys],
+  )
 
   const loadApiKeys = useCallback(async (): Promise<ApiKeyInfo[]> => {
     try {
@@ -80,8 +97,11 @@ export function SettingsApiKeys({ onKeysChanged }: SettingsApiKeysProps) {
   }, [])
 
   useEffect(() => {
-    loadApiKeys()
-    loadCodexPreference()
+    const run = async () => {
+      const keys = await loadApiKeys()
+      await loadCodexPreference(keys)
+    }
+    run()
   }, [loadApiKeys, loadCodexPreference])
 
   const handleSaveKey = useCallback(async () => {
@@ -95,7 +115,8 @@ export function SettingsApiKeys({ onKeysChanged }: SettingsApiKeysProps) {
       toast.success(`${provider} API key saved`)
       setNewApiKey('')
       setShowAddForm(false)
-      await loadApiKeys()
+      const keys = await loadApiKeys()
+      await loadCodexPreference(keys)
       onKeysChanged?.()
     } catch (error) {
       console.error('Failed to save API key:', error)
@@ -103,7 +124,7 @@ export function SettingsApiKeys({ onKeysChanged }: SettingsApiKeysProps) {
     } finally {
       setSaving(false)
     }
-  }, [newApiKey, isValidKey, loadApiKeys, onKeysChanged])
+  }, [newApiKey, isValidKey, loadApiKeys, loadCodexPreference, onKeysChanged])
 
   const handleRemoveKey = useCallback(
     async (envVar: string, provider: string) => {
@@ -111,7 +132,8 @@ export function SettingsApiKeys({ onKeysChanged }: SettingsApiKeysProps) {
       try {
         await invoke('remove_api_key', { envVar })
         toast.success(`${provider} API key removed`)
-        await loadApiKeys()
+        const keys = await loadApiKeys()
+        await loadCodexPreference(keys)
         onKeysChanged?.()
       } catch (error) {
         console.error('Failed to remove API key:', error)
@@ -120,7 +142,7 @@ export function SettingsApiKeys({ onKeysChanged }: SettingsApiKeysProps) {
         setRemovingKey(null)
       }
     },
-    [loadApiKeys, onKeysChanged],
+    [loadApiKeys, loadCodexPreference, onKeysChanged],
   )
 
   const handleOpenUrl = useCallback(async (url: string) => {
@@ -129,6 +151,7 @@ export function SettingsApiKeys({ onKeysChanged }: SettingsApiKeysProps) {
 
   const handleCheckCodexCli = useCallback(async () => {
     const keys = await loadApiKeys()
+    await loadCodexPreference(keys)
     const openaiKey = keys.find((key) => key.provider === 'OpenAI')
     if (openaiKey?.source === 'codex-cli') {
       toast.success('Codex CLI detected and synced')
@@ -137,17 +160,26 @@ export function SettingsApiKeys({ onKeysChanged }: SettingsApiKeysProps) {
         'Codex CLI not detected. Open Codex CLI once to sign in, then try again.',
       )
     }
-  }, [loadApiKeys])
+  }, [loadApiKeys, loadCodexPreference])
 
   const handleCodexToggle = useCallback(
     async (value: boolean) => {
+      if (value && !codexAvailable) {
+        toast.info(
+          'Codex CLI not detected. Open Codex CLI once to sign in, then try again.',
+        )
+        setUseCodexCli(false)
+        return
+      }
+
       setUseCodexCli(value)
       try {
         await invoke('set_shared_preference', {
           key: 'useCodexCliAuth',
           value,
         })
-        await loadApiKeys()
+        const keys = await loadApiKeys()
+        await loadCodexPreference(keys)
         onKeysChanged?.()
       } catch (error) {
         console.error('Failed to update Codex CLI preference:', error)
@@ -155,14 +187,12 @@ export function SettingsApiKeys({ onKeysChanged }: SettingsApiKeysProps) {
         setUseCodexCli(!value)
       }
     },
-    [loadApiKeys, onKeysChanged],
+    [codexAvailable, loadApiKeys, loadCodexPreference, onKeysChanged],
   )
 
   const configuredKeys = apiKeys.filter((k) => k.is_configured)
   const hasAnyKey = configuredKeys.length > 0
-  const openaiKey = apiKeys.find((key) => key.provider === 'OpenAI')
-  const shouldShowCodexSync =
-    useCodexCli && !openaiKey?.is_configured && !newApiKey
+  const shouldShowCodexSync = !codexAvailable && !newApiKey
 
   return (
     <div className="flex flex-col gap-6">
@@ -332,9 +362,14 @@ export function SettingsApiKeys({ onKeysChanged }: SettingsApiKeysProps) {
                 className="cursor-pointer"
               />
             </div>
-            {useCodexCli && openaiKey?.source === 'codex-cli' && (
+            {useCodexCli && codexAvailable && (
               <p className="text-muted-foreground text-xs">
                 Codex CLI detected and connected.
+              </p>
+            )}
+            {!codexAvailable && (
+              <p className="text-muted-foreground text-xs">
+                Codex CLI not detected. Sign in to Codex CLI to enable this.
               </p>
             )}
             {shouldShowCodexSync && (

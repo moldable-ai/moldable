@@ -68,11 +68,21 @@ export function OnboardingApiKey({
         invoke<ApiKeyInfo[]>('get_api_key_status'),
       ])
       const prefValue = typeof pref === 'boolean' ? pref : true
-      setUseCodexCli(prefValue)
 
       const openaiKey = keys.find((key) => key.provider === 'OpenAI')
       const detected = openaiKey?.source === 'codex-cli'
       setCodexDetected(!!detected)
+
+      if (prefValue && !detected) {
+        setUseCodexCli(false)
+        await invoke('set_shared_preference', {
+          key: 'useCodexCliAuth',
+          value: false,
+        })
+        return
+      }
+
+      setUseCodexCli(prefValue)
 
       if (detected && typeof pref !== 'boolean') {
         await invoke('set_shared_preference', {
@@ -83,7 +93,7 @@ export function OnboardingApiKey({
       }
     } catch (error) {
       console.error('Failed to refresh Codex CLI status:', error)
-      setUseCodexCli(true)
+      setUseCodexCli(false)
       setCodexDetected(false)
     } finally {
       setIsCheckingCodex(false)
@@ -123,6 +133,15 @@ export function OnboardingApiKey({
 
   const handleCodexToggle = useCallback(
     async (value: boolean) => {
+      if (value && !codexDetected) {
+        setUseCodexCli(false)
+        await invoke('set_shared_preference', {
+          key: 'useCodexCliAuth',
+          value: false,
+        })
+        return
+      }
+
       setUseCodexCli(value)
       try {
         await invoke('set_shared_preference', {
@@ -135,7 +154,7 @@ export function OnboardingApiKey({
         setUseCodexCli(!value)
       }
     },
-    [onHealthRetry],
+    [codexDetected, onHealthRetry],
   )
 
   const handleContinueWithCodex = useCallback(async () => {
@@ -203,12 +222,11 @@ export function OnboardingApiKey({
                   className="cursor-pointer"
                 />
               </div>
-              {useCodexCli && codexDetected && (
+              {codexDetected ? (
                 <p className="text-muted-foreground text-xs">
                   Codex CLI detected and connected.
                 </p>
-              )}
-              {useCodexCli && !codexDetected && (
+              ) : (
                 <p className="text-muted-foreground text-xs">
                   Codex CLI not detected yet.
                 </p>

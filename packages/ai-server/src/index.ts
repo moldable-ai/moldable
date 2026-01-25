@@ -3,6 +3,7 @@ import {
   type CommandProgressUpdate,
   DEFAULT_MODEL,
   LLMProvider,
+  type ProviderConfig,
   type ReasoningEffort,
   buildSystemPrompt,
   createMoldableTools,
@@ -25,6 +26,7 @@ import { readCodexCliCredentialsCached } from './codex-cli-credentials.js'
 import {
   type GatewayMessage,
   type GatewaySession,
+  type GatewaySessionMeta,
   buildGatewaySessionTitle,
   deleteGatewaySession,
   listGatewaySessions,
@@ -64,34 +66,53 @@ import { fileURLToPath } from 'url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
-// Development workspace - only relevant when developing Moldable itself
-// This is NOT where user apps go (that's MOLDABLE_HOME/shared/apps/)
-// Only set if explicitly provided via env var or request body
-const WORKSPACE_ROOT = process.env.MOLDABLE_WORKSPACE || null
-
-// Moldable home directory - where all user data, apps, and configs live
-const MOLDABLE_HOME = process.env.MOLDABLE_HOME ?? join(homedir(), '.moldable')
-const MOLDABLE_GATEWAY_URL =
-  process.env.MOLDABLE_GATEWAY_URL ?? 'http://127.0.0.1:18790'
-const MOLDABLE_GATEWAY_TOKEN = process.env.MOLDABLE_GATEWAY_TOKEN
-
-const CODEX_CLI_SYNC_TTL_MS = 5 * 60 * 1000
-const CODEX_CLI_NEAR_EXPIRY_MS = 10 * 60 * 1000
+const DEFAULT_MOLDABLE_HOME =
+  process.env.MOLDABLE_HOME ?? join(homedir(), '.moldable')
 
 // Try multiple locations for .env file
 // Priority: shared/.env (user home) > dev workspace shared/.env > dev .env
 const envPaths = [
-  join(MOLDABLE_HOME, 'shared', '.env'), // User's shared env for all workspaces
+  join(DEFAULT_MOLDABLE_HOME, 'shared', '.env'), // User's shared env for all workspaces
   join(__dirname, '..', '..', '..', '.moldable', 'shared', '.env'), // Dev workspace
   join(__dirname, '..', '..', '..', '.env'), // Dev fallback
 ]
 
 for (const envPath of envPaths) {
   if (existsSync(envPath)) {
-    config({ path: envPath })
+    config({ path: envPath, override: true })
     console.log(`📁 Loaded env from: ${envPath}`)
     break
   }
+}
+
+// Development workspace - only relevant when developing Moldable itself
+// This is NOT where user apps go (that's MOLDABLE_HOME/shared/apps/)
+// Only set if explicitly provided via env var or request body
+const WORKSPACE_ROOT = process.env.MOLDABLE_WORKSPACE || null
+
+// Moldable home directory - where all user data, apps, and configs live
+const MOLDABLE_HOME = process.env.MOLDABLE_HOME ?? DEFAULT_MOLDABLE_HOME
+const MOLDABLE_GATEWAY_URL =
+  process.env.MOLDABLE_GATEWAY_URL ?? 'http://127.0.0.1:19790'
+const MOLDABLE_GATEWAY_TOKEN = process.env.MOLDABLE_GATEWAY_TOKEN
+
+const CODEX_CLI_SYNC_TTL_MS = 5 * 60 * 1000
+const CODEX_CLI_NEAR_EXPIRY_MS = 10 * 60 * 1000
+
+function normalizeModel(value?: string | null): LLMProvider | undefined {
+  if (!value) return undefined
+  const trimmed = value.trim()
+  if (!trimmed || trimmed === 'default') return undefined
+  return trimmed as LLMProvider
+}
+
+function normalizeReasoningEffort(
+  value?: string | null,
+): ReasoningEffort | undefined {
+  if (!value) return undefined
+  const trimmed = value.trim()
+  if (!trimmed || trimmed === 'default') return undefined
+  return trimmed as ReasoningEffort
 }
 
 // Port and host are read at runtime via functions to prevent Bun from inlining
@@ -113,6 +134,61 @@ const DEBUG_CHAT_REQUESTS =
   process.env.MOLDABLE_DEBUG_PROMPTS === '1' ||
   process.env.MOLDABLE_DEBUG === '1' ||
   process.env.DEBUG === '1'
+const DEBUG_GATEWAY_TOOLS =
+  process.env.MOLDABLE_GATEWAY_DEBUG === '1' ||
+  process.env.MOLDABLE_DEBUG_GATEWAY === '1' ||
+  process.env.MOLDABLE_DEBUG === '1' ||
+  process.env.DEBUG === '1'
+
+function summarizeDebugValue(value: unknown): string {
+  if (value === null) return 'null'
+  if (value === undefined) return 'undefined'
+  if (typeof value === 'string') return `string(${value.length})`
+  if (typeof value === 'number' || typeof value === 'boolean')
+    return String(value)
+  if (Array.isArray(value)) return `array(${value.length})`
+  if (typeof value === 'object') {
+    const keys = Object.keys(value as Record<string, unknown>)
+    const keyPreview =
+      keys.length === 0
+        ? 'no-keys'
+        : `${keys.slice(0, 8).join(',')}${keys.length > 8 ? ',...' : ''}`
+    return `object(${keys.length})[${keyPreview}]`
+  }
+  return typeof value
+}
+
+function summarizeToolCall(toolCall: {
+  toolName?: string
+  toolCallId?: string
+  input?: unknown
+  dynamic?: boolean
+  invalid?: boolean
+  providerExecuted?: boolean
+}): string {
+  const flags = []
+  if (toolCall.dynamic) flags.push('dynamic')
+  if (toolCall.invalid) flags.push('invalid')
+  if (toolCall.providerExecuted) flags.push('provider')
+  const flagText = flags.length > 0 ? `, ${flags.join(',')}` : ''
+  return `${toolCall.toolName ?? 'unknown'}#${toolCall.toolCallId ?? 'n/a'} (${summarizeDebugValue(toolCall.input)}${flagText})`
+}
+
+function summarizeToolResult(toolResult: {
+  toolName?: string
+  toolCallId?: string
+  output?: unknown
+  dynamic?: boolean
+  preliminary?: boolean
+  providerExecuted?: boolean
+}): string {
+  const flags = []
+  if (toolResult.dynamic) flags.push('dynamic')
+  if (toolResult.preliminary) flags.push('prelim')
+  if (toolResult.providerExecuted) flags.push('provider')
+  const flagText = flags.length > 0 ? `, ${flags.join(',')}` : ''
+  return `${toolResult.toolName ?? 'unknown'}#${toolResult.toolCallId ?? 'n/a'} (${summarizeDebugValue(toolResult.output)}${flagText})`
+}
 
 const SUBAGENT_BLOCKED_TOOLS = new Set([
   'writeFile',
@@ -204,6 +280,14 @@ const corsHeaders = {
 
 type OpenAIAuthSource = 'env' | 'codex-cli' | 'none'
 
+type OpenAIAuthInfo = {
+  apiKey?: string
+  source: OpenAIAuthSource
+  codexAccountId?: string
+}
+
+const DEFAULT_CODEX_BASE_URL = 'https://chatgpt.com/backend-api/codex'
+
 function isCodexModel(model: string): boolean {
   return model.toLowerCase().includes('codex')
 }
@@ -226,35 +310,35 @@ function shouldUseCodexCliAuth(): boolean {
   return true
 }
 
-function resolveOpenAIAuth(model?: string): {
-  apiKey?: string
-  source: OpenAIAuthSource
-} {
+function resolveOpenAIAuth(model?: string): OpenAIAuthInfo {
   const envKey = process.env.OPENAI_API_KEY?.trim()
+  const codexEligible = model ? isCodexModel(model) : true
+  const codexAllowed = shouldUseCodexCliAuth()
+
+  if (codexEligible && codexAllowed) {
+    const creds = readCodexCliCredentialsCached({
+      ttlMs: CODEX_CLI_SYNC_TTL_MS,
+    })
+    if (creds) {
+      const now = Date.now()
+      if (
+        typeof creds.expires === 'number' &&
+        creds.expires > now + CODEX_CLI_NEAR_EXPIRY_MS
+      ) {
+        return {
+          apiKey: creds.access,
+          source: 'codex-cli',
+          codexAccountId: creds.accountId,
+        }
+      }
+    }
+  }
+
   if (envKey) {
     return { apiKey: envKey, source: 'env' }
   }
 
-  if (model && !isCodexModel(model)) {
-    return { source: 'none' }
-  }
-
-  if (!shouldUseCodexCliAuth()) {
-    return { source: 'none' }
-  }
-
-  const creds = readCodexCliCredentialsCached({ ttlMs: CODEX_CLI_SYNC_TTL_MS })
-  if (!creds) return { source: 'none' }
-
-  const now = Date.now()
-  if (
-    typeof creds.expires === 'number' &&
-    creds.expires <= now + CODEX_CLI_NEAR_EXPIRY_MS
-  ) {
-    return { source: 'none' }
-  }
-
-  return { apiKey: creds.access, source: 'codex-cli' }
+  return { source: 'none' }
 }
 
 // Parse JSON body
@@ -275,6 +359,47 @@ async function parseBody(req: IncomingMessage): Promise<unknown> {
   })
 }
 
+type LegacyChatMessage = {
+  id?: string
+  role?: string
+  content?: unknown
+  text?: unknown
+}
+
+function isUIMessage(value: unknown): value is UIMessage {
+  return Boolean(
+    value &&
+      typeof value === 'object' &&
+      Array.isArray((value as UIMessage).parts),
+  )
+}
+
+function normalizeChatMessages(
+  messages: Array<UIMessage | LegacyChatMessage>,
+): UIMessage[] {
+  return messages.map((msg, index) => {
+    if (isUIMessage(msg)) {
+      return msg
+    }
+    const role =
+      msg.role === 'assistant' || msg.role === 'system' || msg.role === 'user'
+        ? msg.role
+        : 'user'
+    const rawText = msg.content ?? msg.text ?? ''
+    const text =
+      typeof rawText === 'string'
+        ? rawText
+        : rawText == null
+          ? ''
+          : JSON.stringify(rawText)
+    return {
+      id: msg.id ?? `${Date.now()}-${index}`,
+      role,
+      parts: [{ type: 'text', text }],
+    }
+  })
+}
+
 // Send JSON response
 function sendJson(res: ServerResponse, data: unknown, status = 200): void {
   res.writeHead(status, {
@@ -287,6 +412,29 @@ function sendJson(res: ServerResponse, data: unknown, status = 200): void {
 // Send error response
 function sendError(res: ServerResponse, message: string, status = 500): void {
   sendJson(res, { error: message }, status)
+}
+
+function isOpenAIModel(model: string): boolean {
+  return model.startsWith('openai/')
+}
+
+function shouldFallbackToOpenAIChat(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error || '')
+  const cause = (error as { cause?: unknown })?.cause
+  const responseBody = (error as { responseBody?: unknown })?.responseBody
+  const haystack = [
+    message,
+    typeof cause === 'string' ? cause : JSON.stringify(cause ?? ''),
+    typeof responseBody === 'string'
+      ? responseBody
+      : JSON.stringify(responseBody ?? ''),
+  ].join(' ')
+
+  return (
+    /api\.responses\.write/i.test(haystack) ||
+    /Missing scopes: api\.responses\.write/i.test(haystack) ||
+    (/insufficient permissions/i.test(haystack) && /responses/i.test(haystack))
+  )
 }
 
 function normalizeSkillRepoInput(value: string): string | null {
@@ -523,14 +671,49 @@ type ApiKeys = {
   anthropicApiKey?: string
   openaiApiKey?: string
   openrouterApiKey?: string
+  openaiBaseUrl?: string
+  openaiOrganization?: string
+  openaiProject?: string
+  openaiHeaders?: Record<string, string>
 }
 
-function apiKeysFromEnv(model?: string): ApiKeys {
+function apiKeysFromEnv(model?: string): {
+  apiKeys: ApiKeys
+  openaiAuth: OpenAIAuthInfo
+} {
   const openaiAuth = resolveOpenAIAuth(model)
+  const envBaseUrl =
+    process.env.MOLDABLE_OPENAI_BASE_URL?.trim() ||
+    process.env.OPENAI_BASE_URL?.trim() ||
+    process.env.OPENAI_API_BASE_URL?.trim()
+  const codexBaseUrl =
+    process.env.MOLDABLE_CODEX_BASE_URL?.trim() ||
+    process.env.CODEX_BASE_URL?.trim() ||
+    envBaseUrl ||
+    DEFAULT_CODEX_BASE_URL
+  const openaiBaseUrl =
+    openaiAuth.source === 'codex-cli' ? codexBaseUrl : envBaseUrl
+  const openaiHeaders =
+    openaiAuth.source === 'codex-cli' && openaiAuth.codexAccountId
+      ? { 'ChatGPT-Account-Id': openaiAuth.codexAccountId }
+      : undefined
   return {
-    anthropicApiKey: process.env.ANTHROPIC_API_KEY,
-    openaiApiKey: openaiAuth.apiKey,
-    openrouterApiKey: process.env.OPENROUTER_API_KEY,
+    apiKeys: {
+      anthropicApiKey: process.env.ANTHROPIC_API_KEY,
+      openaiApiKey: openaiAuth.apiKey,
+      openrouterApiKey: process.env.OPENROUTER_API_KEY,
+      openaiBaseUrl,
+      openaiOrganization:
+        process.env.OPENAI_ORGANIZATION?.trim() ||
+        process.env.OPENAI_ORG_ID?.trim() ||
+        undefined,
+      openaiProject:
+        process.env.OPENAI_PROJECT?.trim() ||
+        process.env.OPENAI_PROJECT_ID?.trim() ||
+        undefined,
+      openaiHeaders,
+    },
+    openaiAuth,
   }
 }
 
@@ -612,8 +795,10 @@ async function handleChat(
       return
     }
 
-    const model = (body.model as LLMProvider) || DEFAULT_MODEL
-    const reasoningEffort = body.reasoningEffort || 'medium'
+    const uiMessages = normalizeChatMessages(body.messages)
+    const model = normalizeModel(body.model) ?? DEFAULT_MODEL
+    const reasoningEffort =
+      normalizeReasoningEffort(body.reasoningEffort) ?? 'medium'
     console.log('   Model:', model)
     console.log('   Reasoning effort:', reasoningEffort)
     console.log('   Input messages:', body.messages.length)
@@ -624,7 +809,8 @@ async function handleChat(
     }
 
     // Get API keys from environment
-    const apiKeys = apiKeysFromEnv(model)
+    const { apiKeys, openaiAuth } = apiKeysFromEnv(model)
+    const useCodexInstructions = openaiAuth.source === 'codex-cli'
     const apiKeyError = validateApiKeys(model, apiKeys)
     if (apiKeyError) {
       sendError(res, apiKeyError, 500)
@@ -699,15 +885,15 @@ async function handleChat(
     })
 
     // Get provider config
-    const {
-      model: languageModel,
-      temperature,
-      providerOptions,
-    } = getProviderConfig(model, apiKeys, reasoningEffort)
+    const providerConfig = getProviderConfig(model, apiKeys, reasoningEffort, {
+      openaiMode: useCodexInstructions ? 'responses' : undefined,
+      openaiInstructions: useCodexInstructions ? systemMessage : undefined,
+    })
+    const { temperature } = providerConfig
 
     // DEBUG: Log incoming UIMessages structure
     console.log('   === UIMessages Debug ===')
-    for (const msg of body.messages) {
+    for (const msg of uiMessages) {
       console.log(`   [${msg.role}] id=${msg.id}`)
       console.log(`      parts: ${JSON.stringify(msg.parts)}`)
     }
@@ -715,7 +901,7 @@ async function handleChat(
 
     // Pre-filter UIMessages to remove messages with empty content
     // This can happen when user sends a new message while streaming (assistant message is empty/partial)
-    const validUIMessages = body.messages.filter((msg) => {
+    const validUIMessages = uiMessages.filter((msg) => {
       // If no parts or empty parts array, filter out
       if (!msg.parts || msg.parts.length === 0) {
         console.log(
@@ -824,11 +1010,11 @@ async function handleChat(
     // This happens when user sends a new message while assistant is executing tools.
     const fixedMessages = removeDanglingToolCalls(filteredMessages)
 
-    const uiFiltered = body.messages.length - validUIMessages.length
+    const uiFiltered = uiMessages.length - validUIMessages.length
     const modelFiltered = modelMessages.length - fixedMessages.length
     console.log(
       '   Messages:',
-      `${body.messages.length} UI → ${validUIMessages.length} valid → ${modelMessages.length} model → ${fixedMessages.length} final`,
+      `${uiMessages.length} UI → ${validUIMessages.length} valid → ${modelMessages.length} model → ${fixedMessages.length} final`,
       uiFiltered + modelFiltered > 0
         ? `(filtered ${uiFiltered + modelFiltered} empty/dangling)`
         : '',
@@ -858,7 +1044,7 @@ async function handleChat(
     // Create UI message stream response (compatible with useChat/DefaultChatTransport)
     const streamResponse = createUIMessageStreamResponse({
       stream: createUIMessageStream({
-        originalMessages: body.messages,
+        originalMessages: uiMessages,
         // Format errors for better user-facing messages
         // See: https://ai-sdk.dev/docs/reference/ai-sdk-errors
         onError: (error: unknown) => formatErrorMessage(error),
@@ -910,32 +1096,60 @@ async function handleChat(
             if (DEBUG_CHAT_REQUESTS) {
               console.log('   Starting streamText...')
             }
-            const result = streamText({
-              model: languageModel,
-              messages: [
-                { role: 'system', content: systemMessage },
-                ...fixedMessages,
-              ],
-              temperature,
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              providerOptions: providerOptions as any,
-              tools,
-              stopWhen: stepCountIs(1000),
-              abortSignal: abortController.signal,
-              // Handle abort cleanup - called when stream is aborted via AbortSignal
-              onAbort: ({ steps }) => {
-                console.log(`⚠️ Stream aborted after ${steps.length} step(s)`)
-              },
-            })
+            const runStream = async (config: ProviderConfig) => {
+              const result = streamText({
+                model: config.model,
+                messages: useCodexInstructions
+                  ? fixedMessages
+                  : [
+                      { role: 'system', content: systemMessage },
+                      ...fixedMessages,
+                    ],
+                temperature: config.temperature,
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                providerOptions: config.providerOptions as any,
+                tools,
+                stopWhen: stepCountIs(1000),
+                abortSignal: abortController.signal,
+                // Handle abort cleanup - called when stream is aborted via AbortSignal
+                onAbort: ({ steps }) => {
+                  console.log(`⚠️ Stream aborted after ${steps.length} step(s)`)
+                },
+              })
 
-            if (DEBUG_CHAT_REQUESTS) {
-              console.log('   Merging stream...')
+              if (DEBUG_CHAT_REQUESTS) {
+                console.log('   Merging stream...')
+              }
+              writer.merge(
+                result.toUIMessageStream({
+                  sendReasoning: true,
+                }),
+              )
             }
-            writer.merge(
-              result.toUIMessageStream({
-                sendReasoning: true,
-              }),
-            )
+
+            try {
+              await runStream(providerConfig)
+            } catch (error) {
+              if (
+                isOpenAIModel(model) &&
+                shouldFallbackToOpenAIChat(error) &&
+                apiKeys.openaiApiKey &&
+                openaiAuth.source !== 'codex-cli'
+              ) {
+                console.warn(
+                  '⚠️ OpenAI Responses scope missing; retrying with Chat Completions API.',
+                )
+                const fallbackConfig = getProviderConfig(
+                  model,
+                  apiKeys,
+                  reasoningEffort,
+                  { openaiMode: 'chat' },
+                )
+                await runStream(fallbackConfig)
+              } else {
+                throw error
+              }
+            }
           } catch (streamError) {
             // Don't log abort errors as they're expected when user stops
             if (
@@ -1016,15 +1230,55 @@ async function handleGatewayChat(
 ): Promise<void> {
   try {
     const body = (await parseBody(req)) as GatewayChatRequest
+    console.log('📨 Received gateway chat request')
+    if (DEBUG_CHAT_REQUESTS) {
+      console.log('   Raw body:', JSON.stringify(body, null, 2))
+    }
     if (!body.messages || !Array.isArray(body.messages)) {
       sendError(res, 'messages array is required', 400)
       return
     }
 
-    const model = (body.model as LLMProvider) || DEFAULT_MODEL
-    const reasoningEffort = body.reasoningEffort || 'medium'
+    const model = normalizeModel(body.model) ?? DEFAULT_MODEL
+    const reasoningEffort =
+      normalizeReasoningEffort(body.reasoningEffort) ?? 'medium'
+    console.log('   Model:', model)
+    console.log('   Reasoning effort:', reasoningEffort)
+    console.log('   Input messages:', body.messages.length)
+    if (body.activeWorkspaceId) {
+      console.log('   Workspace:', body.activeWorkspaceId)
+    }
+    if (body.apiServerPort) {
+      console.log('   API server port:', body.apiServerPort)
+    }
+    if (body.gateway) {
+      if (body.gateway.channel) {
+        console.log('   Gateway channel:', body.gateway.channel)
+      }
+      if (body.gateway.displayName) {
+        console.log('   Gateway sender:', body.gateway.displayName)
+      }
+      if (body.gateway.chatId) {
+        console.log('   Gateway chat ID:', body.gateway.chatId)
+      }
+      if (body.gateway.peerId) {
+        console.log('   Gateway peer ID:', body.gateway.peerId)
+      }
+      if (typeof body.gateway.isGroup === 'boolean') {
+        console.log('   Gateway group:', body.gateway.isGroup)
+      }
+      if (body.gateway.agentId) {
+        console.log('   Gateway agent:', body.gateway.agentId)
+      }
+      if (body.gateway.sessionKey) {
+        console.log('   Gateway session key:', body.gateway.sessionKey)
+      }
+      if (body.gateway.lane) {
+        console.log('   Gateway lane:', body.gateway.lane)
+      }
+    }
 
-    const apiKeys = apiKeysFromEnv(model)
+    const { apiKeys, openaiAuth } = apiKeysFromEnv(model)
     const apiKeyError = validateApiKeys(model, apiKeys)
     if (apiKeyError) {
       sendError(res, apiKeyError, 500)
@@ -1035,8 +1289,16 @@ async function handleGatewayChat(
     const modelMessages = await convertToModelMessages(uiMessages)
     const fixedMessages = removeDanglingToolCalls(modelMessages)
     const sessionId = resolveGatewaySessionId(body)
+    console.log('   Session ID:', sessionId)
+    const modelFiltered = modelMessages.length - fixedMessages.length
+    console.log(
+      '   Messages:',
+      `${body.messages.length} gateway → ${uiMessages.length} ui → ${modelMessages.length} model → ${fixedMessages.length} final`,
+      modelFiltered > 0 ? `(filtered ${modelFiltered} dangling)` : '',
+    )
 
     const toolsBasePath = WORKSPACE_ROOT || MOLDABLE_HOME
+    console.log('   Tools base path:', toolsBasePath)
     const toolsOutputDir = body.activeWorkspaceId
       ? join(
           MOLDABLE_HOME,
@@ -1045,6 +1307,7 @@ async function handleGatewayChat(
           'gateway-tool-output',
         )
       : join(MOLDABLE_HOME, 'shared', 'gateway-tool-output')
+    console.log('   Tool output dir:', toolsOutputDir)
 
     const moldableTools = createMoldableTools({
       basePath: toolsBasePath,
@@ -1080,6 +1343,21 @@ async function handleGatewayChat(
       tools = filterToolsForSubagent(tools)
     }
     const toolNamesForPrompt = Object.keys(tools)
+    if (DEBUG_GATEWAY_TOOLS) {
+      const gatewayToolNames = Object.keys(gatewayTools)
+      console.log(
+        `[AI Server] Gateway tools registered: ${
+          gatewayToolNames.length > 0 ? gatewayToolNames.join(', ') : '(none)'
+        }`,
+      )
+      console.log(
+        `[AI Server] Tools total: ${toolNamesForPrompt.length} (moldable=${
+          Object.keys(moldableTools).length
+        }, mcp=${Object.keys(mcpTools).length}, gateway=${
+          gatewayToolNames.length
+        })`,
+      )
+    }
 
     const systemMessage = await buildSystemPrompt({
       developmentWorkspace: WORKSPACE_ROOT || undefined,
@@ -1097,26 +1375,125 @@ async function handleGatewayChat(
       ? `${systemMessage}\n\n${gatewayContext}`
       : systemMessage
 
-    const {
-      model: languageModel,
-      temperature,
-      providerOptions,
-    } = getProviderConfig(model, apiKeys, reasoningEffort)
-
-    const result = streamText({
-      model: languageModel,
-      messages: [
-        { role: 'system', content: systemWithContext },
-        ...fixedMessages,
-      ],
-      temperature,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      providerOptions: providerOptions as any,
-      tools,
-      stopWhen: stepCountIs(1000),
+    const useCodexInstructions = openaiAuth.source === 'codex-cli'
+    const providerConfig = getProviderConfig(model, apiKeys, reasoningEffort, {
+      openaiMode: useCodexInstructions ? 'responses' : undefined,
+      openaiInstructions: useCodexInstructions ? systemWithContext : undefined,
     })
+    const { temperature } = providerConfig
 
-    const text = await result.text
+    if (DEBUG_CHAT_REQUESTS) {
+      console.log('\n=== Gateway Chat Request ===')
+      console.log(
+        toMarkdown(
+          {
+            provider: model,
+            temperature,
+            tools_enabled: `${toolNamesForPrompt.length} tools`,
+            available_tools: toolNamesForPrompt,
+            session_id: sessionId,
+            gateway: body.gateway ?? null,
+          },
+          { namespace: 'config' },
+        ),
+      )
+      console.log('--- System Prompt ---')
+      console.log(systemWithContext)
+      console.log('--- Messages ---')
+      console.log(toMarkdown(fixedMessages, { namespace: 'messages' }))
+      console.log('=== End Gateway Request ===\n')
+    }
+
+    let gatewayStepNumber = 0
+    let gatewayToolCallCount = 0
+
+    const runGatewayRequest = async (config: ProviderConfig) => {
+      const result = streamText({
+        model: config.model,
+        messages: useCodexInstructions
+          ? fixedMessages
+          : [{ role: 'system', content: systemWithContext }, ...fixedMessages],
+        temperature: config.temperature,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        providerOptions: config.providerOptions as any,
+        tools,
+        stopWhen: stepCountIs(1000),
+        onStepFinish: (stepResult) => {
+          if (!DEBUG_GATEWAY_TOOLS) return
+          gatewayStepNumber += 1
+          gatewayToolCallCount += stepResult.toolCalls.length
+          console.log(
+            `[AI Server] Gateway step ${gatewayStepNumber} finished: finish=${stepResult.finishReason}, textChars=${stepResult.text.length}, toolCalls=${stepResult.toolCalls.length}, toolResults=${stepResult.toolResults.length}`,
+          )
+          if (stepResult.toolCalls.length > 0) {
+            console.log(
+              `[AI Server] Gateway step ${gatewayStepNumber} tool calls: ${stepResult.toolCalls
+                .map((toolCall) => summarizeToolCall(toolCall))
+                .join(' | ')}`,
+            )
+          }
+          if (stepResult.toolResults.length > 0) {
+            console.log(
+              `[AI Server] Gateway step ${gatewayStepNumber} tool results: ${stepResult.toolResults
+                .map((toolResult) => summarizeToolResult(toolResult))
+                .join(' | ')}`,
+            )
+          }
+        },
+        onFinish: (event) => {
+          if (!DEBUG_GATEWAY_TOOLS) return
+          const totalSteps = event.steps.length
+          const totalToolCalls = event.steps.reduce(
+            (sum, step) => sum + step.toolCalls.length,
+            0,
+          )
+          const totalToolResults = event.steps.reduce(
+            (sum, step) => sum + step.toolResults.length,
+            0,
+          )
+          console.log(
+            `[AI Server] Gateway stream finished: steps=${totalSteps}, toolCalls=${totalToolCalls}, toolResults=${totalToolResults}, finish=${event.finishReason}, textChars=${event.text.length}`,
+          )
+          if (gatewayToolCallCount === 0 && totalToolCalls === 0) {
+            console.log(
+              '[AI Server] Gateway stream finished without any tool calls',
+            )
+          }
+        },
+        onError: DEBUG_GATEWAY_TOOLS
+          ? ({ error }) => {
+              console.error('[AI Server] Gateway stream error:', error)
+            }
+          : undefined,
+      })
+
+      return await result.text
+    }
+
+    let text: string
+    try {
+      text = await runGatewayRequest(providerConfig)
+    } catch (error) {
+      if (
+        isOpenAIModel(model) &&
+        shouldFallbackToOpenAIChat(error) &&
+        apiKeys.openaiApiKey &&
+        openaiAuth.source !== 'codex-cli'
+      ) {
+        console.warn(
+          '⚠️ OpenAI Responses scope missing; retrying with Chat Completions API.',
+        )
+        const fallbackConfig = getProviderConfig(
+          model,
+          apiKeys,
+          reasoningEffort,
+          { openaiMode: 'chat' },
+        )
+        text = await runGatewayRequest(fallbackConfig)
+      } else {
+        throw error
+      }
+    }
     const storedMessages: GatewayMessage[] = [
       ...toGatewayMessages(body.messages),
       { role: 'assistant', text, timestamp: Math.floor(Date.now() / 1000) },
@@ -1162,10 +1539,14 @@ function handleGatewaySessions(
   res: ServerResponse,
   workspaceId?: string | null,
 ): void {
-  const sessions = listGatewaySessions({
+  const workspaceSessions = listGatewaySessions({
     moldableHome: MOLDABLE_HOME,
     workspaceId,
   })
+  const sharedSessions = workspaceId
+    ? listGatewaySessions({ moldableHome: MOLDABLE_HOME })
+    : []
+  const sessions = mergeGatewaySessions(sharedSessions, workspaceSessions)
   sendJson(res, sessions)
 }
 
@@ -1174,10 +1555,14 @@ function handleGatewaySession(
   id: string,
   workspaceId?: string | null,
 ): void {
-  const session = loadGatewaySession(id, {
-    moldableHome: MOLDABLE_HOME,
-    workspaceId,
-  })
+  const session =
+    loadGatewaySession(id, {
+      moldableHome: MOLDABLE_HOME,
+      workspaceId,
+    }) ??
+    (workspaceId
+      ? loadGatewaySession(id, { moldableHome: MOLDABLE_HOME })
+      : null)
   if (!session) {
     sendError(res, 'Session not found', 404)
     return
@@ -1194,7 +1579,29 @@ function handleDeleteGatewaySession(
     moldableHome: MOLDABLE_HOME,
     workspaceId,
   })
+  if (workspaceId) {
+    deleteGatewaySession(id, {
+      moldableHome: MOLDABLE_HOME,
+    })
+  }
   sendJson(res, { ok: true })
+}
+
+function mergeGatewaySessions(
+  shared: GatewaySessionMeta[],
+  workspace: GatewaySessionMeta[],
+): GatewaySessionMeta[] {
+  if (shared.length === 0) return workspace
+  const merged = new Map<string, GatewaySessionMeta>()
+  for (const session of shared) {
+    merged.set(session.id, session)
+  }
+  for (const session of workspace) {
+    merged.set(session.id, session)
+  }
+  return Array.from(merged.values()).sort((a, b) =>
+    b.updatedAt.localeCompare(a.updatedAt),
+  )
 }
 
 /**

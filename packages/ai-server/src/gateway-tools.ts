@@ -23,6 +23,17 @@ type GatewayFetchOptions = {
   body?: unknown
 }
 
+const DEBUG_GATEWAY_TOOLS =
+  process.env.MOLDABLE_GATEWAY_DEBUG === '1' ||
+  process.env.MOLDABLE_DEBUG_GATEWAY === '1' ||
+  process.env.MOLDABLE_DEBUG === '1' ||
+  process.env.DEBUG === '1'
+
+function logGatewayTools(message: string) {
+  if (!DEBUG_GATEWAY_TOOLS) return
+  console.log(`[AI Server] [GatewayTools] ${message}`)
+}
+
 function normalizeBaseUrl(value: string): string {
   if (!value.trim()) return value
   return value.endsWith('/') ? value.slice(0, -1) : value
@@ -34,6 +45,7 @@ async function gatewayFetch(
   { method, path, body }: GatewayFetchOptions,
 ): Promise<unknown> {
   const url = `${normalizeBaseUrl(baseUrl)}${path}`
+  logGatewayTools(`→ ${method} ${url} (auth=${token ? '✓' : '✗'})`)
   const headers: Record<string, string> = {
     'content-type': 'application/json',
   }
@@ -47,14 +59,29 @@ async function gatewayFetch(
   })
   const text = await res.text()
   if (!res.ok) {
+    logGatewayTools(`✗ ${method} ${url} -> ${res.status} ${text}`)
     throw new Error(`Gateway error (${res.status}): ${text}`)
   }
+  logGatewayTools(`✓ ${method} ${url} -> ${res.status}`)
   if (!text) return {}
   return JSON.parse(text)
 }
 
 export function createGatewayTools(options: GatewayToolsOptions) {
   const { baseUrl, token, context } = options
+  logGatewayTools(
+    `init baseUrl=${normalizeBaseUrl(baseUrl)} auth=${token ? '✓' : '✗'} context=${JSON.stringify(
+      {
+        channel: context?.channel,
+        chatId: context?.chatId,
+        peerId: context?.peerId,
+        isGroup: context?.isGroup,
+        agentId: context?.agentId,
+        sessionKey: context?.sessionKey,
+        workspaceId: context?.workspaceId,
+      },
+    )}`,
+  )
 
   const spawnSubagentSchema = z.object({
     task: z.string().describe('Task for the subagent to execute'),
@@ -87,6 +114,12 @@ export function createGatewayTools(options: GatewayToolsOptions) {
       .string()
       .describe('Cron schedule in 5-field format, e.g. */5 * * * *'),
     timezone: z.string().optional().describe('Optional IANA timezone'),
+    maxRuns: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe('Delete the job after it runs this many times'),
     enabled: z.boolean().optional().describe('Enable or disable the job'),
     agentId: z.string().optional().describe('Agent id to run the job under'),
     sessionKey: z
@@ -198,6 +231,7 @@ export function createGatewayTools(options: GatewayToolsOptions) {
         const body = {
           schedule: input.schedule,
           timezone: input.timezone,
+          max_runs: input.maxRuns,
           enabled: input.enabled,
           agent_id: input.agentId ?? context?.agentId,
           session_key: input.sessionKey ?? context?.sessionKey,

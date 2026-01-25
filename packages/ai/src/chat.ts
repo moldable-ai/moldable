@@ -44,6 +44,10 @@ type CreateChatStreamParams = {
   apiKeys: {
     anthropicApiKey?: string
     openaiApiKey?: string
+    openaiBaseUrl?: string
+    openaiOrganization?: string
+    openaiProject?: string
+    openaiHeaders?: Record<string, string>
   }
   /** Enable verbose logging of prompts and messages */
   debug?: boolean

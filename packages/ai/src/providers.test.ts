@@ -110,7 +110,7 @@ describe('getProviderConfig', () => {
       })
 
       expect(config.model).toBeDefined()
-      expect(config.isReasoning).toBe(true)
+      expect(config.isReasoning).toBe(false)
       expect(config.temperature).toBe(1.0)
       expect(config.providerOptions?.openai).toBeDefined()
     })
@@ -120,6 +120,7 @@ describe('getProviderConfig', () => {
         LLMProvider.OpenAI_GPT_5_2_Codex,
         { openaiApiKey: 'test-key' },
         'high',
+        { openaiMode: 'responses' },
       )
 
       expect(

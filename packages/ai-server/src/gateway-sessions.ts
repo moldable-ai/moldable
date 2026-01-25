@@ -1,10 +1,18 @@
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 
+export type GatewayImagePart = {
+  type: 'image'
+  image: string
+  mediaType?: string
+  path?: string
+}
+
 export type GatewayMessage = {
   role: 'user' | 'assistant' | 'system'
   text: string
   timestamp: number
+  images?: GatewayImagePart[]
 }
 
 export type GatewaySessionMeta = {
@@ -109,7 +117,10 @@ export function deleteGatewaySession(
 export function buildGatewaySessionTitle(messages: GatewayMessage[]): string {
   const firstUser = messages.find((m) => m.role === 'user')
   const text = firstUser?.text?.trim() ?? ''
-  if (!text) return 'Gateway session'
+  if (!text) {
+    const hasImages = Boolean(firstUser?.images?.length)
+    return hasImages ? 'Image message' : 'Gateway session'
+  }
   if (text.length <= 50) return text
   return `${text.slice(0, 47)}...`
 }

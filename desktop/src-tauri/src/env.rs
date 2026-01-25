@@ -420,22 +420,19 @@ pub fn get_api_key_status() -> Result<Vec<ApiKeyInfo>, String> {
     let openrouter_value = env.get("OPENROUTER_API_KEY");
     let anthropic_value = env.get("ANTHROPIC_API_KEY");
     let openai_value = env.get("OPENAI_API_KEY");
-    let codex_cli = if openai_value.is_none() {
-        read_codex_cli_access_token()
-    } else {
-        None
-    };
+    let codex_cli = read_codex_cli_access_token();
 
-    let openai_source = if openai_value.is_some() {
-        Some("env".to_string())
-    } else if codex_cli.is_some() {
+    let openai_source = if codex_cli.is_some() {
         Some("codex-cli".to_string())
+    } else if openai_value.is_some() {
+        Some("env".to_string())
     } else {
         None
     };
-    let openai_masked = openai_value
-        .map(|value| mask_api_key(value))
-        .or_else(|| codex_cli.as_ref().map(|cred| mask_api_key(&cred.access)));
+    let openai_masked = codex_cli
+        .as_ref()
+        .map(|cred| mask_api_key(&cred.access))
+        .or_else(|| openai_value.map(|value| mask_api_key(value)));
 
     let result = vec![
         ApiKeyInfo {

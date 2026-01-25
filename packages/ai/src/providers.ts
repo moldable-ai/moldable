@@ -64,7 +64,7 @@ const ANTHROPIC_BUDGET_TOKENS: Record<AnthropicReasoningEffort, number> = {
 
 // Lazy client creation
 let anthropicClient: AnthropicProvider | null = null
-let openaiClient: OpenAIProvider | null = null
+const openaiClients = new Map<string, OpenAIProvider>()
 let openrouterClient: ReturnType<typeof createOpenRouter> | null = null
 
 function getAnthropicClient(apiKey: string): AnthropicProvider {
@@ -74,11 +74,44 @@ function getAnthropicClient(apiKey: string): AnthropicProvider {
   return anthropicClient
 }
 
-function getOpenAIClient(apiKey: string): OpenAIProvider {
-  if (!openaiClient) {
-    openaiClient = createOpenAI({ apiKey })
+type OpenAIClientOptions = {
+  baseURL?: string
+  organization?: string
+  project?: string
+  headers?: Record<string, string>
+}
+
+function getOpenAIClient(
+  apiKey: string,
+  options?: OpenAIClientOptions,
+): OpenAIProvider {
+  const baseURL = options?.baseURL?.trim() || undefined
+  const organization = options?.organization?.trim() || undefined
+  const project = options?.project?.trim() || undefined
+  const headersEntries = options?.headers
+    ? Object.entries(options.headers)
+        .filter(([key, value]) => key && value)
+        .sort(([a], [b]) => a.localeCompare(b))
+    : undefined
+  const cacheKey = JSON.stringify({
+    apiKey,
+    baseURL,
+    organization,
+    project,
+    headers: headersEntries,
+  })
+  let client = openaiClients.get(cacheKey)
+  if (!client) {
+    client = createOpenAI({
+      apiKey,
+      baseURL,
+      organization,
+      project,
+      headers: options?.headers,
+    })
+    openaiClients.set(cacheKey, client)
   }
-  return openaiClient
+  return client
 }
 
 function getOpenRouterClient(
@@ -100,10 +133,21 @@ export type ProviderConfig = {
   providerOptions?: Record<string, unknown>
 }
 
+export type OpenAIApiMode = 'responses' | 'chat' | 'auto'
+
+export type ProviderConfigOptions = {
+  openaiMode?: OpenAIApiMode
+  openaiInstructions?: string
+}
+
 type ApiKeys = {
   anthropicApiKey?: string
   openaiApiKey?: string
   openrouterApiKey?: string
+  openaiBaseUrl?: string
+  openaiOrganization?: string
+  openaiProject?: string
+  openaiHeaders?: Record<string, string>
 }
 
 /**
@@ -136,6 +180,7 @@ export function getProviderConfig(
   provider: LLMProvider,
   apiKeys: ApiKeys,
   reasoningEffort: ReasoningEffort = 'medium',
+  options?: ProviderConfigOptions,
 ): ProviderConfig {
   const config = MODEL_CONFIG[provider]
 
@@ -213,12 +258,43 @@ export function getProviderConfig(
 
   // OpenAI models: prefer direct API, fall back to OpenRouter
   if (apiKeys.openaiApiKey) {
-    const client = getOpenAIClient(apiKeys.openaiApiKey)
+    const client = getOpenAIClient(apiKeys.openaiApiKey, {
+      baseURL: apiKeys.openaiBaseUrl,
+      organization: apiKeys.openaiOrganization,
+      project: apiKeys.openaiProject,
+      headers: apiKeys.openaiHeaders,
+    })
     const modelId = provider.replace('openai/', '')
 
     // Check if reasoning is disabled (user hasn't verified org, etc.)
     const reasoningDisabled = reasoningEffort === 'none'
     const useReasoning = config.isReasoning && !reasoningDisabled
+    const envModeRaw =
+      process.env.MOLDABLE_OPENAI_API_MODE?.toLowerCase() ??
+      process.env.OPENAI_API_MODE?.toLowerCase()
+    const envMode =
+      envModeRaw === 'responses' || envModeRaw === 'chat'
+        ? (envModeRaw as OpenAIApiMode)
+        : undefined
+    const useChatFromEnv =
+      process.env.MOLDABLE_OPENAI_USE_CHAT_COMPLETIONS === '1' ||
+      process.env.OPENAI_USE_CHAT_COMPLETIONS === '1'
+    const resolvedMode: OpenAIApiMode =
+      options?.openaiMode ?? envMode ?? (useChatFromEnv ? 'chat' : 'chat')
+    const shouldUseChat = resolvedMode !== 'responses'
+
+    if (shouldUseChat) {
+      return {
+        model: client.chat(modelId),
+        temperature: config.temperature,
+        isReasoning: false,
+        providerOptions: {
+          openai: {
+            store: false,
+          },
+        },
+      }
+    }
 
     return {
       model: client.responses(modelId),
@@ -227,6 +303,7 @@ export function getProviderConfig(
       providerOptions: {
         openai: {
           store: false,
+          instructions: options?.openaiInstructions,
           ...(useReasoning
             ? {
                 reasoningSummary: 'auto',

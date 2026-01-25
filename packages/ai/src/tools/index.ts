@@ -126,7 +126,8 @@ export const TOOL_DESCRIPTIONS = {
   globFileSearch: 'Find files by glob pattern',
 
   // Web
-  webSearch: 'Search the internet via Google',
+  webSearch:
+    'Search the web (default: Perplexity via OpenRouter when configured)',
 
   // App scaffolding
   scaffoldApp: 'Create a new Moldable app from the standard template',

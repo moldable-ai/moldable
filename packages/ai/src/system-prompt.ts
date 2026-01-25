@@ -382,8 +382,9 @@ const TOOL_INSTRUCTIONS: Record<string, string> = {
   webSearch: `
 ### webSearch
 - Search the internet for current information
-- Useful for documentation, API references, troubleshooting
-- Returns relevant snippets and URLs`,
+- Defaults to Perplexity Sonar when OpenRouter is configured
+- Supports provider override (perplexity, brave, google)
+- Returns relevant snippets/URLs or AI-synthesized answers with citations`,
 
   scaffoldApp: `
 ### scaffoldApp
@@ -392,6 +393,29 @@ const TOOL_INSTRUCTIONS: Record<string, string> = {
 - Everything happens in ONE call - no need to run pnpm install or register manually
 - Returns: appId, name, icon, port, path, files created, installation status
 - Optional: pass extraDependencies to add additional npm packages`,
+
+  gatewayCreateCronJob: `
+### gatewayCreateCronJob
+- Use when the user asks to schedule a reminder or recurring task
+- Translate natural language time into a 5-field cron expression
+- Prefer the current chat/channel context for delivery (channel/chatId)
+- If the schedule is ambiguous, ask a clarifying question`,
+
+  gatewayListCronJobs: `
+### gatewayListCronJobs
+- Use when the user asks to list, review, or inspect scheduled jobs`,
+
+  gatewayGetCronJob: `
+### gatewayGetCronJob
+- Use to fetch details for a specific cron job by id`,
+
+  gatewayRunCronJob: `
+### gatewayRunCronJob
+- Use to run a cron job immediately for testing`,
+
+  gatewayDeleteCronJob: `
+### gatewayDeleteCronJob
+- Use to remove a scheduled cron job when the user asks to delete it`,
 }
 
 /**

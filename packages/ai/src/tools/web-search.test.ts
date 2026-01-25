@@ -1,4 +1,4 @@
-import { createWebSearchTools } from './web-search'
+import { __testing, createWebSearchTools } from './web-search'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Mock global fetch
@@ -17,15 +17,20 @@ type WebSearchTools = ReturnType<typeof createWebSearchTools>
 type WebSearchResult = {
   success: boolean
   query?: string
+  provider?: string
   results: Array<{ title: string; link: string; snippet: string }>
+  content?: string
+  citations?: string[]
   error?: string
 }
 
 type WebSearchInput = {
   query: string
   numberOfResults?: number
+  count?: number
   languageCode?: string
   exactTerms?: string
+  provider?: 'perplexity' | 'brave' | 'google'
 }
 async function execWebSearch(
   tools: WebSearchTools,
@@ -43,6 +48,7 @@ describe('createWebSearchTools', () => {
   beforeEach(() => {
     originalEnv = { ...process.env }
     vi.clearAllMocks()
+    __testing.clearWebSearchCache()
   })
 
   afterEach(() => {
@@ -50,7 +56,10 @@ describe('createWebSearchTools', () => {
   })
 
   describe('webSearch', () => {
-    it('returns error when credentials not configured', async () => {
+    it('returns error when no credentials are configured', async () => {
+      delete process.env.OPENROUTER_API_KEY
+      delete process.env.PERPLEXITY_API_KEY
+      delete process.env.BRAVE_API_KEY
       delete process.env.GOOGLE_SEARCH_ENGINE_API_KEY
       delete process.env.GOOGLE_SEARCH_ENGINE_ID
 
@@ -62,7 +71,72 @@ describe('createWebSearchTools', () => {
       expect(mockFetch).not.toHaveBeenCalled()
     })
 
-    it('makes correct API request', async () => {
+    it('defaults to Perplexity when OPENROUTER_API_KEY is set', async () => {
+      process.env.OPENROUTER_API_KEY = 'sk-or-test'
+
+      const tools = createWebSearchTools()
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: 'Answer' } }],
+          citations: ['https://example.com'],
+        }),
+      })
+
+      const result = await execWebSearch(tools, { query: 'test query' })
+
+      expect(result.success).toBe(true)
+      expect(result.provider).toBe('perplexity')
+      expect(result.content).toBe('Answer')
+      expect(result.citations).toEqual(['https://example.com'])
+
+      const calledUrl = mockFetch.mock.calls[0][0]
+      expect(calledUrl).toContain('openrouter.ai/api/v1/chat/completions')
+    })
+
+    it('uses direct Perplexity API when PERPLEXITY_API_KEY is set', async () => {
+      process.env.PERPLEXITY_API_KEY = 'pplx-test'
+
+      const tools = createWebSearchTools()
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: 'Answer' } }],
+          citations: [],
+        }),
+      })
+
+      const result = await execWebSearch(tools, { query: 'test query' })
+
+      expect(result.success).toBe(true)
+      expect(result.provider).toBe('perplexity')
+
+      const calledUrl = mockFetch.mock.calls[0][0]
+      expect(calledUrl).toContain('api.perplexity.ai/chat/completions')
+    })
+
+    it('respects explicit provider override', async () => {
+      process.env.OPENROUTER_API_KEY = 'sk-or-test'
+
+      const tools = createWebSearchTools({
+        apiKey: 'test-api-key',
+        searchEngineId: 'test-engine-id',
+      })
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ items: [] }),
+      })
+
+      await execWebSearch(tools, { query: 'test', provider: 'google' })
+
+      const calledUrl = mockFetch.mock.calls[0][0]
+      expect(calledUrl).toContain('customsearch/v1')
+    })
+
+    it('makes correct Google API request', async () => {
       const tools = createWebSearchTools({
         apiKey: 'test-api-key',
         searchEngineId: 'test-engine-id',
@@ -87,7 +161,10 @@ describe('createWebSearchTools', () => {
         }),
       })
 
-      const result = await execWebSearch(tools, { query: 'test query' })
+      const result = await execWebSearch(tools, {
+        query: 'test query',
+        provider: 'google',
+      })
 
       expect(result.success).toBe(true)
       expect(result.results).toHaveLength(2)
@@ -103,7 +180,7 @@ describe('createWebSearchTools', () => {
       expect(calledUrl).toContain('test+query')
     })
 
-    it('adds site exclusions to query', async () => {
+    it('adds site exclusions to Google query', async () => {
       const tools = createWebSearchTools({
         apiKey: 'test-api-key',
         searchEngineId: 'test-engine-id',
@@ -115,14 +192,14 @@ describe('createWebSearchTools', () => {
         json: async () => ({ items: [] }),
       })
 
-      await execWebSearch(tools, { query: 'test' })
+      await execWebSearch(tools, { query: 'test', provider: 'google' })
 
       const calledUrl = mockFetch.mock.calls[0][0]
       expect(calledUrl).toContain('-site%3Areddit.com')
       expect(calledUrl).toContain('-site%3Atwitter.com')
     })
 
-    it('respects numberOfResults parameter', async () => {
+    it('respects numberOfResults parameter for Google', async () => {
       const tools = createWebSearchTools({
         apiKey: 'test-api-key',
         searchEngineId: 'test-engine-id',
@@ -144,13 +221,14 @@ describe('createWebSearchTools', () => {
       const result = await execWebSearch(tools, {
         query: 'test',
         numberOfResults: 3,
+        provider: 'google',
       })
 
       expect(result.success).toBe(true)
       expect(result.results).toHaveLength(3)
     })
 
-    it('adds language parameters when specified', async () => {
+    it('adds language parameters when specified for Google', async () => {
       const tools = createWebSearchTools({
         apiKey: 'test-api-key',
         searchEngineId: 'test-engine-id',
@@ -161,14 +239,18 @@ describe('createWebSearchTools', () => {
         json: async () => ({ items: [] }),
       })
 
-      await execWebSearch(tools, { query: 'test', languageCode: 'en-US' })
+      await execWebSearch(tools, {
+        query: 'test',
+        languageCode: 'en-US',
+        provider: 'google',
+      })
 
       const calledUrl = mockFetch.mock.calls[0][0]
       expect(calledUrl).toContain('lr=lang_en')
       expect(calledUrl).toContain('hl=en-us')
     })
 
-    it('adds exactTerms when specified', async () => {
+    it('adds exactTerms when specified for Google', async () => {
       const tools = createWebSearchTools({
         apiKey: 'test-api-key',
         searchEngineId: 'test-engine-id',
@@ -179,13 +261,17 @@ describe('createWebSearchTools', () => {
         json: async () => ({ items: [] }),
       })
 
-      await execWebSearch(tools, { query: 'test', exactTerms: 'exact phrase' })
+      await execWebSearch(tools, {
+        query: 'test',
+        exactTerms: 'exact phrase',
+        provider: 'google',
+      })
 
       const calledUrl = mockFetch.mock.calls[0][0]
       expect(calledUrl).toContain('exactTerms=exact+phrase')
     })
 
-    it('handles API errors gracefully', async () => {
+    it('handles Google API errors gracefully', async () => {
       const tools = createWebSearchTools({
         apiKey: 'test-api-key',
         searchEngineId: 'test-engine-id',
@@ -197,7 +283,10 @@ describe('createWebSearchTools', () => {
         text: async () => 'Forbidden - quota exceeded',
       })
 
-      const result = await execWebSearch(tools, { query: 'test' })
+      const result = await execWebSearch(tools, {
+        query: 'test',
+        provider: 'google',
+      })
 
       expect(result.success).toBe(false)
       expect(result.error).toContain('403')
@@ -212,14 +301,17 @@ describe('createWebSearchTools', () => {
 
       mockFetch.mockRejectedValueOnce(new Error('Network error'))
 
-      const result = await execWebSearch(tools, { query: 'test' })
+      const result = await execWebSearch(tools, {
+        query: 'test',
+        provider: 'google',
+      })
 
       expect(result.success).toBe(false)
       expect(result.error).toContain('Network error')
       expect(result.results).toHaveLength(0)
     })
 
-    it('handles empty results', async () => {
+    it('handles empty Google results', async () => {
       const tools = createWebSearchTools({
         apiKey: 'test-api-key',
         searchEngineId: 'test-engine-id',
@@ -232,13 +324,14 @@ describe('createWebSearchTools', () => {
 
       const result = await execWebSearch(tools, {
         query: 'very obscure search term xyz123',
+        provider: 'google',
       })
 
       expect(result.success).toBe(true)
       expect(result.results).toHaveLength(0)
     })
 
-    it('reads credentials from environment variables', async () => {
+    it('reads Google credentials from environment variables', async () => {
       process.env.GOOGLE_SEARCH_ENGINE_API_KEY = 'env-api-key'
       process.env.GOOGLE_SEARCH_ENGINE_ID = 'env-engine-id'
 
@@ -249,7 +342,10 @@ describe('createWebSearchTools', () => {
         json: async () => ({ items: [] }),
       })
 
-      const result = await execWebSearch(tools, { query: 'test' })
+      const result = await execWebSearch(tools, {
+        query: 'test',
+        provider: 'google',
+      })
 
       expect(result.success).toBe(true)
       const calledUrl = mockFetch.mock.calls[0][0]
