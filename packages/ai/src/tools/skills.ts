@@ -27,31 +27,8 @@ interface SkillsConfig {
   repositories: SkillRepo[]
 }
 
-/**
- * Default skills configuration with Anthropic skills repo.
- * Additional repos can be added via the addSkillRepo tool or by editing ~/.moldable/shared/config/skills.json
- */
-const DEFAULT_CONFIG: SkillsConfig = {
-  repositories: [
-    {
-      name: 'anthropic-skills',
-      url: 'anthropics/skills',
-      branch: 'main',
-      skillsPath: 'skills',
-      enabled: true,
-      mode: 'include',
-      skills: [
-        'pdf',
-        'docx',
-        'xlsx',
-        'pptx',
-        'webapp-testing',
-        'frontend-design',
-        'mcp-builder',
-        'skill-creator',
-      ],
-    },
-  ],
+const EMPTY_CONFIG: SkillsConfig = {
+  repositories: [],
 }
 
 async function ensureDir(dir: string): Promise<void> {
@@ -148,6 +125,11 @@ async function downloadContents(
       }
     }
   }
+}
+
+function matchesRepo(repo: SkillRepo, identifier?: string): boolean {
+  if (!identifier) return false
+  return repo.name === identifier || repo.url === identifier
 }
 
 function getSkillsToSync(repo: SkillRepo, availableSkills: string[]): string[] {
@@ -292,7 +274,7 @@ export function createSkillsTools() {
         }
 
         const repo = input.repoName
-          ? config.repositories.find((r) => r.name === input.repoName)
+          ? config.repositories.find((r) => matchesRepo(r, input.repoName))
           : config.repositories[0]
 
         if (!repo) {
@@ -333,7 +315,7 @@ export function createSkillsTools() {
 
         const repos = input.repoName
           ? config.repositories.filter(
-              (r) => r.name === input.repoName && r.enabled,
+              (r) => matchesRepo(r, input.repoName) && r.enabled,
             )
           : config.repositories.filter((r) => r.enabled)
 
@@ -453,7 +435,9 @@ export function createSkillsTools() {
           }
         }
 
-        const repo = config.repositories.find((r) => r.name === input.repoName)
+        const repo = config.repositories.find((r) =>
+          matchesRepo(r, input.repoName),
+        )
         if (!repo) {
           return {
             success: false,
@@ -479,7 +463,7 @@ export function createSkillsTools() {
 
     initSkillsConfig: tool({
       description:
-        'Initialize the skills configuration with default repositories (Anthropic skills). Use this if no skills config exists.',
+        'Initialize an empty skills configuration. Use this if no skills config exists.',
       inputSchema: zodSchema(z.object({})),
       execute: async () => {
         const existing = await loadConfig()
@@ -492,17 +476,12 @@ export function createSkillsTools() {
           }
         }
 
-        await saveConfig(DEFAULT_CONFIG)
+        await saveConfig(EMPTY_CONFIG)
 
         return {
           success: true,
-          message: 'Initialized with Anthropic skills repository',
-          repositories: DEFAULT_CONFIG.repositories.map((r) => ({
-            name: r.name,
-            url: r.url,
-            mode: r.mode,
-            skills: r.skills,
-          })),
+          message: 'Initialized empty skills configuration',
+          repositories: [],
         }
       },
     }),
@@ -518,5 +497,5 @@ export const SKILLS_TOOL_DESCRIPTIONS = {
   syncSkills: 'Download skills to local filesystem',
   addSkillRepo: 'Add a new skill repository',
   updateSkillSelection: 'Update which skills are synced',
-  initSkillsConfig: 'Initialize default skills configuration',
+  initSkillsConfig: 'Initialize an empty skills configuration',
 } as const

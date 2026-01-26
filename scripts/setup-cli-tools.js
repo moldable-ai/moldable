@@ -1,46 +1,15 @@
 #!/usr/bin/env node
 /**
- * Setup script for optional CLI tools (ripgrep, fd) and default agent skills
+ * Setup script for optional CLI tools (ripgrep, fd)
  * - CLI tools make search operations much faster but are not required
- * - Agent skills provide capabilities like PDF processing, frontend design, etc.
  *
  * Run manually: pnpm setup:tools
  * Runs automatically: during postinstall
  */
 import { exec, execSync } from 'child_process'
-import fs from 'fs'
-import os from 'os'
-import path from 'path'
 import { promisify } from 'util'
 
 const execAsync = promisify(exec)
-
-// Skills configuration
-const MOLDABLE_DIR = path.join(os.homedir(), '.moldable')
-const SKILLS_CONFIG_PATH = path.join(MOLDABLE_DIR, 'config', 'skills.json')
-
-const DEFAULT_SKILLS_CONFIG = {
-  repositories: [
-    {
-      name: 'anthropic-skills',
-      url: 'anthropics/skills',
-      branch: 'main',
-      skillsPath: 'skills',
-      enabled: true,
-      mode: 'include',
-      skills: [
-        'pdf',
-        'docx',
-        'xlsx',
-        'pptx',
-        'webapp-testing',
-        'frontend-design',
-        'mcp-builder',
-        'skill-creator',
-      ],
-    },
-  ],
-}
 
 const TOOLS = [
   {
@@ -137,43 +106,15 @@ async function installTool(tool, packageManager) {
   }
 }
 
-/**
- * Initialize default skills configuration if it doesn't exist
- */
-async function setupSkillsConfig() {
-  console.log('📚 Agent Skills Setup\n')
-
-  // Check if config already exists
-  if (fs.existsSync(SKILLS_CONFIG_PATH)) {
-    console.log('✓ Skills config already exists')
-    return { created: false }
-  }
-
-  // Create config directory if needed
-  const configDir = path.dirname(SKILLS_CONFIG_PATH)
-  if (!fs.existsSync(configDir)) {
-    fs.mkdirSync(configDir, { recursive: true })
-  }
-
-  // Write default config
-  fs.writeFileSync(
-    SKILLS_CONFIG_PATH,
-    JSON.stringify(DEFAULT_SKILLS_CONFIG, null, 2),
-  )
-
-  console.log('✓ Created default skills config')
-  console.log('  Registered repositories:')
-  for (const repo of DEFAULT_SKILLS_CONFIG.repositories) {
-    console.log(`    • ${repo.name} (${repo.url})`)
-    console.log(`      Skills: ${repo.skills.join(', ')}`)
-  }
-  console.log('')
-  console.log('  Run "pnpm sync:skills" to download skills')
-
-  return { created: true }
-}
-
 async function main() {
+  if (
+    process.env.MOLDABLE_SKIP_CLI_SETUP === '1' ||
+    process.env.MOLDABLE_SKIP_CLI_SETUP === 'true'
+  ) {
+    console.log('ℹ️  Skipping CLI tools setup (MOLDABLE_SKIP_CLI_SETUP)')
+    process.exit(0)
+  }
+
   console.log('\n🔧 Moldable Setup\n')
   console.log('─'.repeat(40) + '\n')
 
@@ -222,13 +163,6 @@ async function main() {
   }
 
   console.log('\n' + '─'.repeat(40) + '\n')
-
-  // 2. Setup skills config
-  try {
-    await setupSkillsConfig()
-  } catch (error) {
-    console.log(`⚠️  Could not setup skills config: ${error.message}`)
-  }
 
   console.log('\n' + '─'.repeat(40))
   console.log('✓ Moldable setup complete\n')

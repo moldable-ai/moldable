@@ -94,6 +94,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Checkout moldable-gateway
+        uses: actions/checkout@v4
+        with:
+          repository: moldable-ai/moldable-gateway
+          path: moldable-gateway
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
 
@@ -118,6 +124,8 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Install pnpm dependencies
+        env:
+          MOLDABLE_SKIP_CLI_SETUP: '1'
         run: pnpm install --frozen-lockfile
 
       - name: Build packages (excluding ai-server binary)
@@ -134,6 +142,11 @@ jobs:
           mkdir -p ../../desktop/src-tauri/binaries
           bun build src/index.ts --compile --target=$BUN_TARGET --outfile "../../desktop/src-tauri/binaries/moldable-ai-server-${{ matrix.target }}"
           chmod +x "../../desktop/src-tauri/binaries/moldable-ai-server-${{ matrix.target }}"
+
+      - name: Build gateway sidecar for target architecture
+        env:
+          MOLDABLE_GATEWAY_DIR: ${{ github.workspace }}/moldable-gateway
+        run: pnpm build:gateway -- --release --target ${{ matrix.target }}
 
       - name: Download Node.js runtime for bundling
         run: node scripts/download-node-runtime.js --target ${{ matrix.target }}

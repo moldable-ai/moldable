@@ -161,6 +161,10 @@ export const SHARED_PREFERENCE_KEYS = {
   REQUIRE_DANGEROUS_COMMAND_APPROVAL: 'requireDangerousCommandApproval',
   /** Dangerous command patterns (user-editable, populated with defaults on first run) */
   DANGEROUS_PATTERNS: 'dangerousPatterns',
+  /** Whether the gateway should auto-start */
+  GATEWAY_ENABLED: 'gatewayEnabled',
+  /** The last selected gateway setup */
+  GATEWAY_SETUP_ID: 'gatewaySetupId',
 } as const
 
 /**

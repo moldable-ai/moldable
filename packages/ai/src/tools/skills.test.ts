@@ -36,7 +36,7 @@ const ctx: ToolContext = {
 
 describe('createSkillsTools', () => {
   describe('initSkillsConfig', () => {
-    it('creates default config when none exists', async () => {
+    it('creates empty config when none exists', async () => {
       const { createSkillsTools } = await importSkillsModule()
       const tools = createSkillsTools()
 
@@ -47,9 +47,8 @@ describe('createSkillsTools', () => {
       }
 
       expect(result.success).toBe(true)
-      expect(result.message).toContain('Anthropic')
-      expect(result.repositories).toHaveLength(1)
-      expect(result.repositories![0].name).toBe('anthropic-skills')
+      expect(result.message).toContain('empty')
+      expect(result.repositories).toHaveLength(0)
 
       // Verify file was created
       const configPath = path.join(
@@ -61,7 +60,7 @@ describe('createSkillsTools', () => {
       )
       const content = await fs.readFile(configPath, 'utf-8')
       const config = JSON.parse(content)
-      expect(config.repositories).toHaveLength(1)
+      expect(config.repositories).toHaveLength(0)
     })
 
     it('fails if config already exists', async () => {

@@ -7,14 +7,19 @@ use crate::ports::{
     is_port_listening,
     kill_port_aggressive,
     kill_process_tree,
+    set_ai_server_actual_port,
     PortAcquisitionResult,
     DEFAULT_AI_SERVER_PORT,
 };
+use crate::sidecar::{spawn_sidecar_monitor, RestartFlags, RestartPolicy};
 use log::{error, info, warn};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use std::time::{Duration, Instant};
 use tauri::AppHandle;
 use tauri_plugin_shell::process::CommandChild;
@@ -26,6 +31,11 @@ const AI_SERVER_PORT_MAX_RETRIES: u32 = 6;
 const AI_SERVER_PORT_INITIAL_DELAY_MS: u64 = 200;
 const AI_SERVER_PORT_MAX_DELAY_MS: u64 = 2000;
 const AI_SERVER_STARTUP_TIMEOUT_MS: u64 = 2500;
+const AI_SERVER_RESTART_MIN_DELAY_MS: u64 = 5000;
+const AI_SERVER_RESTART_MAX_DELAY_MS: u64 = 10000;
+
+static AI_SERVER_RESTART_DISABLED: AtomicBool = AtomicBool::new(false);
+static AI_SERVER_RESTART_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 // ============================================================================
 // AI SERVER LIFECYCLE
@@ -227,28 +237,32 @@ pub fn start_ai_server(
         .env("MOLDABLE_AI_SERVER", "1");
 
     // Spawn the sidecar
-    let (mut rx, child) = sidecar.spawn()?;
+    let (rx, child) = sidecar.spawn()?;
 
     let port_for_log = actual_port;
     
-    // Log output in background thread
-    std::thread::spawn(move || {
-        while let Some(event) = rx.blocking_recv() {
-            match event {
-                tauri_plugin_shell::process::CommandEvent::Stdout(line) => {
-                    info!("[AI Server] {}", String::from_utf8_lossy(&line));
-                }
-                tauri_plugin_shell::process::CommandEvent::Stderr(line) => {
-                    error!("[AI Server] {}", String::from_utf8_lossy(&line));
-                }
-                tauri_plugin_shell::process::CommandEvent::Terminated(status) => {
-                    info!("[AI Server] Terminated with status: {:?}", status);
-                    break;
-                }
-                _ => {}
-            }
-        }
-    });
+    let app_handle_for_restart = app.clone();
+    let ai_server_state_for_restart = ai_server_state.clone();
+    let restart_state_for_monitor = ai_server_state.clone();
+
+    spawn_sidecar_monitor(
+        rx,
+        "[AI Server]",
+        restart_state_for_monitor,
+        RestartFlags {
+            disabled: &AI_SERVER_RESTART_DISABLED,
+            in_progress: &AI_SERVER_RESTART_IN_PROGRESS,
+        },
+        RestartPolicy {
+            min_delay_ms: AI_SERVER_RESTART_MIN_DELAY_MS,
+            max_delay_ms: AI_SERVER_RESTART_MAX_DELAY_MS,
+        },
+        move || {
+            start_ai_server(&app_handle_for_restart, ai_server_state_for_restart.clone())
+                .map(|port| format!("Restarted on port {}", port))
+                .map_err(|e| e.to_string())
+        },
+    );
 
     if !wait_for_ai_server_health(
         port_for_log,
@@ -264,6 +278,8 @@ pub fn start_ai_server(
         .into());
     }
 
+    set_ai_server_actual_port(actual_port);
+
     // Store the child handle for cleanup on exit
     if let Ok(mut state) = ai_server_state.lock() {
         *state = Some(child);
@@ -275,6 +291,8 @@ pub fn start_ai_server(
 
 /// Kill the AI server sidecar
 pub fn cleanup_ai_server(state: &Arc<Mutex<Option<CommandChild>>>) {
+    AI_SERVER_RESTART_DISABLED.store(true, Ordering::SeqCst);
+
     if let Ok(mut ai_server) = state.lock() {
         if let Some(child) = ai_server.take() {
             info!("Stopping AI server...");

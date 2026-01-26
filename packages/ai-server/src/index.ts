@@ -2690,7 +2690,7 @@ async function handleUpdateSkillSelection(
     }
 
     if (nextMode === 'include' && hasSkills && body.skills) {
-      pruneUnselectedSkills(name, body.skills)
+      pruneUnselectedSkills(updateResult.repoName || name, body.skills)
     }
 
     let syncResult:
@@ -2756,7 +2756,9 @@ async function handleRemoveSkillRepo(
     }
 
     const repositories = config.repositories ?? []
-    const index = repositories.findIndex((repo) => repo.name === name)
+    const index = repositories.findIndex(
+      (repo) => repo.name === name || repo.url === name,
+    )
 
     if (index === -1) {
       sendError(res, `Repository "${name}" not found`, 404)

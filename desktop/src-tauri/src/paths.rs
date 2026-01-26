@@ -162,6 +162,22 @@ pub fn get_cache_dir() -> Result<PathBuf, String> {
 }
 
 // ============================================================================
+// GATEWAY PATHS
+// ============================================================================
+
+/// Get the gateway root directory (~/.moldable/gateway)
+pub fn get_gateway_root() -> Result<PathBuf, String> {
+    let root = get_moldable_root()?;
+    Ok(root.join("gateway"))
+}
+
+/// Get the gateway config path (~/.moldable/gateway/config.json5)
+pub fn get_gateway_config_path() -> Result<PathBuf, String> {
+    let gateway_root = get_gateway_root()?;
+    Ok(gateway_root.join("config.json5"))
+}
+
+// ============================================================================
 // TAURI COMMANDS
 // ============================================================================
 

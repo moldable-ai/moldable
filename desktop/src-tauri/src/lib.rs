@@ -61,9 +61,16 @@ use process::{AppState, AppStateInner, cleanup_all_apps, cleanup_all_orphaned_ap
 pub mod audio;
 use audio::AudioCaptureState;
 
+// Shared sidecar helpers
+mod sidecar;
+
 // AI server sidecar
 pub mod ai_server;
 use ai_server::{start_ai_server, cleanup_ai_server};
+
+// Gateway sidecar
+pub mod gateway;
+use gateway::{GatewayState, cleanup_gateway};
 
 // HTTP API server for AI tools
 pub mod api_server;
@@ -198,6 +205,7 @@ fn run_shutdown_cleanup(
     cleanup_guard: &Arc<AtomicBool>,
     app_state: &Arc<Mutex<AppStateInner>>,
     ai_server_state: &Arc<Mutex<Option<CommandChild>>>,
+    gateway_state: &Arc<Mutex<Option<CommandChild>>>,
     audio_capture_state: &Arc<Mutex<Option<CommandChild>>>,
     reason: &str,
 ) {
@@ -216,6 +224,9 @@ fn run_shutdown_cleanup(
     info!("Stopping AI server...");
     cleanup_ai_server(ai_server_state);
     
+    info!("Stopping gateway...");
+    cleanup_gateway(gateway_state);
+
     info!("Stopping audio capture...");
     audio::cleanup_audio_capture(audio_capture_state);
 
@@ -238,15 +249,20 @@ pub fn run() {
     // Create AI server state to track the sidecar process
     let ai_server_state: Arc<Mutex<Option<CommandChild>>> = Arc::new(Mutex::new(None));
 
+    // Create gateway state to track the sidecar process
+    let gateway_state = GatewayState(Arc::new(Mutex::new(None)));
+
     // Create audio capture state
     let audio_capture_state = AudioCaptureState(Arc::new(Mutex::new(None)));
 
     // Clone for the exit handler
     let app_state_for_exit = app_state.0.clone();
     let ai_server_for_exit = ai_server_state.clone();
+    let gateway_for_exit = gateway_state.0.clone();
     let audio_capture_for_exit = audio_capture_state.0.clone();
     let app_state_for_run_event = app_state_for_exit.clone();
     let ai_server_for_run_event = ai_server_for_exit.clone();
+    let gateway_for_run_event = gateway_for_exit.clone();
     let audio_capture_for_run_event = audio_capture_for_exit.clone();
     let cleanup_guard = Arc::new(AtomicBool::new(false));
     let cleanup_guard_for_window = cleanup_guard.clone();
@@ -272,6 +288,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(app_state)
+        .manage(gateway_state)
         .manage(audio_capture_state)
         .invoke_handler(tauri::generate_handler![
             // App process management (from process module)
@@ -346,6 +363,14 @@ pub fn run() {
             logs::get_system_logs,
             logs::get_system_log_path,
             logs::clear_system_logs,
+            // Gateway config + lifecycle
+            gateway::get_gateway_config,
+            gateway::save_gateway_config,
+            gateway::get_gateway_config_path,
+            gateway::get_gateway_root_path,
+            gateway::start_gateway,
+            gateway::stop_gateway,
+            gateway::restart_gateway,
             // Runtime status (for diagnostics)
             check_dependencies,
             // Server ports (for frontend to connect)
@@ -539,6 +564,7 @@ pub fn run() {
                     &cleanup_guard_for_window,
                     &app_state_for_exit,
                     &ai_server_for_exit,
+                    &gateway_for_exit,
                     &audio_capture_for_exit,
                     "window destroyed",
                 );
@@ -554,6 +580,7 @@ pub fn run() {
                     &cleanup_guard_for_run_event,
                     &app_state_for_run_event,
                     &ai_server_for_run_event,
+                    &gateway_for_run_event,
                     &audio_capture_for_run_event,
                     "exit requested",
                 );
@@ -563,6 +590,7 @@ pub fn run() {
                     &cleanup_guard_for_run_event,
                     &app_state_for_run_event,
                     &ai_server_for_run_event,
+                    &gateway_for_run_event,
                     &audio_capture_for_run_event,
                     "exit",
                 );
@@ -600,6 +628,13 @@ mod tests {
     fn test_ai_server_state_initialization() {
         let ai_server_state: Arc<Mutex<Option<CommandChild>>> = Arc::new(Mutex::new(None));
         let state = ai_server_state.lock().unwrap();
+        assert!(state.is_none());
+    }
+
+    #[test]
+    fn test_gateway_state_initialization() {
+        let gateway_state = GatewayState(Arc::new(Mutex::new(None)));
+        let state = gateway_state.0.lock().unwrap();
         assert!(state.is_none());
     }
 

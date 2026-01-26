@@ -3,6 +3,7 @@ import {
   Download,
   Key,
   Plug,
+  Radio,
   ScrollText,
   Settings as SettingsIcon,
   Shield,
@@ -16,9 +17,12 @@ import {
   cn,
   useTheme,
 } from '@moldable-ai/ui'
+import type { GatewaySetupId } from '../lib/gateway-config'
+import type { Workspace } from '../lib/workspaces'
 import { type DangerousPattern } from '../hooks/use-workspace-config'
 import { SettingsApiKeys } from './settings-api-keys'
 import { SettingsDeveloper } from './settings-developer'
+import { SettingsGateway } from './settings-gateway'
 import { SettingsGeneral } from './settings-general'
 import { SettingsLogs } from './settings-logs'
 import { SettingsMcp } from './settings-mcp'
@@ -29,6 +33,7 @@ type SettingsSection =
   | 'general'
   | 'security'
   | 'api-keys'
+  | 'gateway'
   | 'mcp'
   | 'skills'
   | 'developer'
@@ -49,6 +54,7 @@ const navItems: NavItem[] = [
   },
   { id: 'security', label: 'Security', icon: <Shield className="size-4" /> },
   { id: 'api-keys', label: 'API Keys', icon: <Key className="size-4" /> },
+  { id: 'gateway', label: 'Gateway', icon: <Radio className="size-4" /> },
   { id: 'mcp', label: 'MCP Servers', icon: <Plug className="size-4" /> },
   { id: 'skills', label: 'Skills', icon: <BookOpen className="size-4" /> },
   {
@@ -67,6 +73,12 @@ interface SettingsDialogProps {
   onHealthRefresh?: () => void
   /** AI server port (may be fallback port if default was unavailable) */
   aiServerPort?: number
+  workspaces: Workspace[]
+  activeWorkspaceId?: string
+  gatewayEnabled: boolean
+  onGatewayEnabledChange: (value: boolean) => void
+  gatewaySetupId: GatewaySetupId
+  onGatewaySetupIdChange: (value: GatewaySetupId) => void
   /** Current unsandboxed approval preference */
   requireUnsandboxedApproval: boolean
   /** Callback to update unsandboxed approval preference */
@@ -86,6 +98,12 @@ export function SettingsDialog({
   onOpenChange,
   onHealthRefresh,
   aiServerPort,
+  workspaces,
+  activeWorkspaceId,
+  gatewayEnabled,
+  onGatewayEnabledChange,
+  gatewaySetupId,
+  onGatewaySetupIdChange,
   requireUnsandboxedApproval,
   onRequireUnsandboxedApprovalChange,
   requireDangerousCommandApproval,
@@ -158,6 +176,18 @@ export function SettingsDialog({
 
               {activeSection === 'api-keys' && (
                 <SettingsApiKeys onKeysChanged={onHealthRefresh} />
+              )}
+
+              {activeSection === 'gateway' && (
+                <SettingsGateway
+                  aiServerPort={aiServerPort ?? 39200}
+                  workspaces={workspaces}
+                  activeWorkspaceId={activeWorkspaceId}
+                  gatewayEnabled={gatewayEnabled}
+                  onGatewayEnabledChange={onGatewayEnabledChange}
+                  gatewaySetupId={gatewaySetupId}
+                  onGatewaySetupIdChange={onGatewaySetupIdChange}
+                />
               )}
 
               {activeSection === 'mcp' && (

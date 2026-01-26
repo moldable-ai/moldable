@@ -45,6 +45,8 @@ interface SettingsSkillsProps {
   aiServerPort?: number
 }
 
+const getRepoId = (repo: SkillRepoInfo) => repo.url || repo.name
+
 function normalizeRepoInput(value: string): string | null {
   const trimmed = value.trim()
   if (!trimmed) return null
@@ -147,11 +149,11 @@ export function SettingsSkills({
   }, [fetchRepos])
 
   const loadRepoSkills = useCallback(
-    async (repoName: string) => {
-      setIsLoadingSkills((prev) => ({ ...prev, [repoName]: true }))
+    async (repoId: string) => {
+      setIsLoadingSkills((prev) => ({ ...prev, [repoId]: true }))
       try {
         const response = await fetch(
-          `${AI_SERVER_URL}/api/skills/repos/${encodeURIComponent(repoName)}/available`,
+          `${AI_SERVER_URL}/api/skills/repos/${encodeURIComponent(repoId)}/available`,
         )
         const data = await response.json()
 
@@ -161,52 +163,52 @@ export function SettingsSkills({
 
         setAvailableSkills((prev) => ({
           ...prev,
-          [repoName]: data.available || [],
+          [repoId]: data.available || [],
         }))
         setSelectedSkills((prev) => ({
           ...prev,
-          [repoName]: data.selected || [],
+          [repoId]: data.selected || [],
         }))
       } catch (err) {
         toast.error(
           err instanceof Error ? err.message : 'Failed to load skills',
         )
       } finally {
-        setIsLoadingSkills((prev) => ({ ...prev, [repoName]: false }))
+        setIsLoadingSkills((prev) => ({ ...prev, [repoId]: false }))
       }
     },
     [AI_SERVER_URL],
   )
 
   const handleToggleManage = useCallback(
-    async (repoName: string) => {
-      if (expandedRepo === repoName) {
+    async (repoId: string) => {
+      if (expandedRepo === repoId) {
         setExpandedRepo(null)
         return
       }
 
-      setExpandedRepo(repoName)
-      if (!availableSkills[repoName]) {
-        await loadRepoSkills(repoName)
+      setExpandedRepo(repoId)
+      if (!availableSkills[repoId]) {
+        await loadRepoSkills(repoId)
       }
     },
     [availableSkills, expandedRepo, loadRepoSkills],
   )
 
   const handleSyncRepo = useCallback(
-    async (repoName: string) => {
-      setSyncingRepo(repoName)
+    async (repoId: string) => {
+      setSyncingRepo(repoId)
       try {
         const response = await fetch(`${AI_SERVER_URL}/api/skills/sync`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ repoName }),
+          body: JSON.stringify({ repoName: repoId }),
         })
         const data = await response.json()
         if (!response.ok || data.success === false) {
           throw new Error(data.error || 'Failed to sync skills')
         }
-        toast.success(`Synced ${data.synced || 0} skills from ${repoName}`)
+        toast.success(`Synced ${data.synced || 0} skills from ${repoId}`)
         await fetchRepos()
       } catch (err) {
         toast.error(
@@ -220,20 +222,20 @@ export function SettingsSkills({
   )
 
   const handleToggleSkill = useCallback(
-    async (repoName: string, skill: string) => {
-      const current = selectedSkills[repoName] || []
+    async (repoId: string, skill: string) => {
+      const current = selectedSkills[repoId] || []
       const next = current.includes(skill)
         ? current.filter((item) => item !== skill)
         : [...current, skill]
       const sortedNext = [...next].sort((a, b) => a.localeCompare(b))
 
-      setSelectedSkills((prev) => ({ ...prev, [repoName]: sortedNext }))
-      setIsSavingSelection((prev) => ({ ...prev, [repoName]: true }))
-      setSelectionErrors((prev) => ({ ...prev, [repoName]: null }))
+      setSelectedSkills((prev) => ({ ...prev, [repoId]: sortedNext }))
+      setIsSavingSelection((prev) => ({ ...prev, [repoId]: true }))
+      setSelectionErrors((prev) => ({ ...prev, [repoId]: null }))
 
       try {
         const response = await fetch(
-          `${AI_SERVER_URL}/api/skills/repos/${encodeURIComponent(repoName)}/selection`,
+          `${AI_SERVER_URL}/api/skills/repos/${encodeURIComponent(repoId)}/selection`,
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -251,7 +253,7 @@ export function SettingsSkills({
 
         setRepos((prev) =>
           prev.map((repo) =>
-            repo.name === repoName
+            getRepoId(repo) === repoId
               ? {
                   ...repo,
                   mode: data.mode || 'include',
@@ -261,17 +263,17 @@ export function SettingsSkills({
           ),
         )
         if (!current.includes(skill)) {
-          void handleSyncRepo(repoName)
+          void handleSyncRepo(repoId)
         }
       } catch (err) {
-        setSelectedSkills((prev) => ({ ...prev, [repoName]: current }))
+        setSelectedSkills((prev) => ({ ...prev, [repoId]: current }))
         setSelectionErrors((prev) => ({
           ...prev,
-          [repoName]:
+          [repoId]:
             err instanceof Error ? err.message : 'Failed to update selection',
         }))
       } finally {
-        setIsSavingSelection((prev) => ({ ...prev, [repoName]: false }))
+        setIsSavingSelection((prev) => ({ ...prev, [repoId]: false }))
       }
     },
     [AI_SERVER_URL, handleSyncRepo, selectedSkills],
@@ -340,17 +342,17 @@ export function SettingsSkills({
   }, [AI_SERVER_URL, fetchRepos])
 
   const handleRemoveRepo = useCallback(
-    async (repoName: string) => {
+    async (repoId: string) => {
       try {
         const response = await fetch(
-          `${AI_SERVER_URL}/api/skills/repos/${encodeURIComponent(repoName)}`,
+          `${AI_SERVER_URL}/api/skills/repos/${encodeURIComponent(repoId)}`,
           { method: 'DELETE' },
         )
         const data = await response.json()
         if (!response.ok || data.success === false) {
           throw new Error(data.error || 'Failed to remove skill repo')
         }
-        toast.success(`Removed ${repoName}`)
+        toast.success(`Removed ${data.name || repoId}`)
         setDeleteTarget(null)
         await fetchRepos()
       } catch (err) {
@@ -488,12 +490,13 @@ export function SettingsSkills({
           ) : (
             <div className="space-y-2">
               {repos.map((repo) => {
+                const repoId = getRepoId(repo)
                 const lastSyncText = formatLastSync(repo.lastSync)
-                const isExpanded = expandedRepo === repo.name
-                const availableList = [
-                  ...(availableSkills[repo.name] || []),
-                ].sort((a, b) => a.localeCompare(b))
-                const isRepoSyncing = syncingRepo === repo.name
+                const isExpanded = expandedRepo === repoId
+                const availableList = [...(availableSkills[repoId] || [])].sort(
+                  (a, b) => a.localeCompare(b),
+                )
+                const isRepoSyncing = syncingRepo === repoId
                 const displaySkills =
                   repo.mode === 'include'
                     ? repo.skills
@@ -501,14 +504,14 @@ export function SettingsSkills({
                       ? repo.skills
                       : []
                 const rawSelectionList =
-                  selectedSkills[repo.name] ??
+                  selectedSkills[repoId] ??
                   (repo.mode === 'include' ? repo.skills : [])
                 const selectionList = [...rawSelectionList].sort((a, b) =>
                   a.localeCompare(b),
                 )
-                const isLoadingSelection = isLoadingSkills[repo.name]
-                const isSavingRepoSelection = isSavingSelection[repo.name]
-                const selectionError = selectionErrors[repo.name]
+                const isLoadingSelection = isLoadingSkills[repoId]
+                const isSavingRepoSelection = isSavingSelection[repoId]
+                const selectionError = selectionErrors[repoId]
                 const selectionLabel =
                   repo.mode === 'exclude'
                     ? 'Excluded skills'
@@ -516,7 +519,7 @@ export function SettingsSkills({
 
                 return (
                   <div
-                    key={repo.name}
+                    key={repoId}
                     className="bg-muted/30 rounded-lg px-3 py-2"
                   >
                     <div className="flex items-center gap-2.5">
@@ -545,7 +548,7 @@ export function SettingsSkills({
                             'size-7 cursor-pointer p-0',
                             isExpanded && 'bg-muted',
                           )}
-                          onClick={() => handleToggleManage(repo.name)}
+                          onClick={() => handleToggleManage(repoId)}
                           disabled={!repo.enabled}
                         >
                           <Pencil className="size-3.5" />
@@ -554,10 +557,10 @@ export function SettingsSkills({
                           variant="ghost"
                           size="sm"
                           className="size-7 cursor-pointer p-0"
-                          onClick={() => handleSyncRepo(repo.name)}
-                          disabled={!repo.enabled || syncingRepo === repo.name}
+                          onClick={() => handleSyncRepo(repoId)}
+                          disabled={!repo.enabled || syncingRepo === repoId}
                         >
-                          {syncingRepo === repo.name ? (
+                          {syncingRepo === repoId ? (
                             <Loader2 className="size-3.5 animate-spin" />
                           ) : (
                             <Download className="size-3.5" />
@@ -656,7 +659,7 @@ export function SettingsSkills({
                                   key={skill}
                                   type="button"
                                   onClick={() =>
-                                    handleToggleSkill(repo.name, skill)
+                                    handleToggleSkill(repoId, skill)
                                   }
                                   disabled={isDisabled}
                                   className={cn(
@@ -704,7 +707,7 @@ export function SettingsSkills({
             </AlertDialogCancel>
             <AlertDialogAction
               onClick={() =>
-                deleteTarget && handleRemoveRepo(deleteTarget.name)
+                deleteTarget && handleRemoveRepo(getRepoId(deleteTarget))
               }
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90 cursor-pointer"
             >

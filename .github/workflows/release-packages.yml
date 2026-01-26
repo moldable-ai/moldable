@@ -33,6 +33,8 @@ jobs:
         uses: oven-sh/setup-bun@v2
 
       - name: Install dependencies
+        env:
+          MOLDABLE_SKIP_CLI_SETUP: '1'
         run: pnpm install --frozen-lockfile
 
       - name: Build packages

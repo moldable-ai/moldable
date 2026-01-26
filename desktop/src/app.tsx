@@ -9,6 +9,7 @@ import {
   removeApp,
   warmupApp,
 } from './lib/app-manager'
+import type { GatewaySetupId } from './lib/gateway-config'
 import { cn } from './lib/utils'
 import { useAIServerHealth } from './hooks/use-ai-server-health'
 import { useAppStatus } from './hooks/use-app-status'
@@ -33,6 +34,7 @@ import { SettingsDialog } from './components/settings-dialog'
 import { Sidebar } from './components/sidebar'
 import { UpdateNotification } from './components/update-notification'
 import { WorkspaceSelector } from './components/workspace-selector'
+import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { homeDir } from '@tauri-apps/api/path'
 import { Toaster } from 'sonner'
@@ -242,11 +244,24 @@ export function App() {
   const [dangerousPatterns, setDangerousPatterns] = useSharedConfig<
     Array<{ pattern: string; description: string }>
   >(SHARED_PREFERENCE_KEYS.DANGEROUS_PATTERNS, [])
+  const [gatewayEnabled, setGatewayEnabled, isGatewayEnabledLoading] =
+    useSharedConfig(SHARED_PREFERENCE_KEYS.GATEWAY_ENABLED, false)
+  const [gatewaySetupId, setGatewaySetupId] = useSharedConfig<GatewaySetupId>(
+    SHARED_PREFERENCE_KEYS.GATEWAY_SETUP_ID,
+    'just-me',
+  )
 
   // Load user's home directory for constructing data paths
   useEffect(() => {
     homeDir().then(setUserHomeDir).catch(console.error)
   }, [])
+
+  useEffect(() => {
+    if (isGatewayEnabledLoading || !gatewayEnabled) return
+    invoke('start_gateway').catch((error) => {
+      console.error('Failed to auto-start gateway:', error)
+    })
+  }, [gatewayEnabled, isGatewayEnabledLoading])
 
   const activeAppDataDir = useMemo(() => {
     if (!userHomeDir || !activeApp || !activeWorkspace) return null
@@ -483,6 +498,8 @@ export function App() {
         onComplete={handleOnboardingComplete}
         onCreateWorkspace={createWorkspace}
         onHealthRetry={checkHealth}
+        onGatewayEnabledChange={setGatewayEnabled}
+        onGatewaySetupIdChange={setGatewaySetupId}
         workspaceOnboardingCompleted={workspaceOnboardingCompleted}
       />
     )
@@ -745,6 +762,12 @@ export function App() {
         onOpenChange={setIsSettingsOpen}
         onHealthRefresh={checkHealth}
         aiServerPort={health.port}
+        workspaces={workspaces}
+        activeWorkspaceId={activeWorkspace?.id}
+        gatewayEnabled={gatewayEnabled}
+        onGatewayEnabledChange={setGatewayEnabled}
+        gatewaySetupId={gatewaySetupId}
+        onGatewaySetupIdChange={setGatewaySetupId}
         requireUnsandboxedApproval={requireUnsandboxedApproval}
         onRequireUnsandboxedApprovalChange={setRequireUnsandboxedApproval}
         requireDangerousCommandApproval={requireDangerousCommandApproval}
