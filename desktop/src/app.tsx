@@ -9,7 +9,10 @@ import {
   removeApp,
   warmupApp,
 } from './lib/app-manager'
-import type { GatewaySetupId } from './lib/gateway-config'
+import {
+  DEFAULT_GATEWAY_SETUP_ID,
+  type GatewaySetupId,
+} from './lib/gateway-config'
 import { cn } from './lib/utils'
 import { useAIServerHealth } from './hooks/use-ai-server-health'
 import { useAppStatus } from './hooks/use-app-status'
@@ -248,7 +251,7 @@ export function App() {
     useSharedConfig(SHARED_PREFERENCE_KEYS.GATEWAY_ENABLED, false)
   const [gatewaySetupId, setGatewaySetupId] = useSharedConfig<GatewaySetupId>(
     SHARED_PREFERENCE_KEYS.GATEWAY_SETUP_ID,
-    'just-me',
+    DEFAULT_GATEWAY_SETUP_ID,
   )
 
   // Load user's home directory for constructing data paths

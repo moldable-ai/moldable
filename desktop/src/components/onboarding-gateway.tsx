@@ -8,6 +8,7 @@ import {
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Button, Input, Label, Switch, cn } from '@moldable-ai/ui'
 import {
+  DEFAULT_GATEWAY_SETUP_ID,
   GATEWAY_FEATURE_FLAGS,
   type GatewayConfig,
   type GatewayFormState,
@@ -61,7 +62,9 @@ export function OnboardingGateway({
 }: OnboardingGatewayProps) {
   const isSettingsVariant = variant === 'settings'
   const [enabled, setEnabled] = useState(isSettingsVariant)
-  const [setupId, setSetupId] = useState<GatewaySetupId>('just-me')
+  const [setupId, setSetupId] = useState<GatewaySetupId>(
+    DEFAULT_GATEWAY_SETUP_ID,
+  )
   const [isSaving, setIsSaving] = useState(false)
   const [showTelegramToken, setShowTelegramToken] = useState(false)
   const [showWhatsappVerifyToken, setShowWhatsappVerifyToken] = useState(false)
@@ -71,7 +74,7 @@ export function OnboardingGateway({
   const visibleSetups = getVisibleGatewaySetups()
   const [formState, setFormState] = useState<GatewayFormState>(() =>
     createDefaultGatewayFormState({
-      setupId: 'just-me',
+      setupId: DEFAULT_GATEWAY_SETUP_ID,
       workspaceId,
     }),
   )

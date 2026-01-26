@@ -11,15 +11,12 @@ use crate::ports::{
     PortAcquisitionResult,
     DEFAULT_AI_SERVER_PORT,
 };
-use crate::sidecar::{spawn_sidecar_monitor, RestartFlags, RestartPolicy};
-use log::{error, info, warn};
+use crate::sidecar::{cleanup_sidecar, start_sidecar, RestartFlags, RestartPolicy, SidecarRuntime};
+use log::{error, info};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::process::Command;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
-};
+use std::sync::{atomic::AtomicBool, Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::AppHandle;
 use tauri_plugin_shell::process::CommandChild;
@@ -36,6 +33,20 @@ const AI_SERVER_RESTART_MAX_DELAY_MS: u64 = 10000;
 
 static AI_SERVER_RESTART_DISABLED: AtomicBool = AtomicBool::new(false);
 static AI_SERVER_RESTART_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+fn ai_server_runtime() -> SidecarRuntime {
+    SidecarRuntime {
+        log_prefix: "[AI Server]",
+        restart_policy: RestartPolicy {
+            min_delay_ms: AI_SERVER_RESTART_MIN_DELAY_MS,
+            max_delay_ms: AI_SERVER_RESTART_MAX_DELAY_MS,
+        },
+        restart_flags: RestartFlags {
+            disabled: &AI_SERVER_RESTART_DISABLED,
+            in_progress: &AI_SERVER_RESTART_IN_PROGRESS,
+        },
+    }
+}
 
 // ============================================================================
 // AI SERVER LIFECYCLE
@@ -214,6 +225,8 @@ pub fn start_ai_server(
     app: &AppHandle,
     ai_server_state: Arc<Mutex<Option<CommandChild>>>,
 ) -> Result<u16, Box<dyn std::error::Error>> {
+    let runtime = ai_server_runtime();
+
     // Kill any stale AI server processes from previous runs BEFORE acquiring the port
     cleanup_stale_ai_servers();
 
@@ -225,97 +238,56 @@ pub fn start_ai_server(
     
     let actual_port = port_result.port;
     
-    let shell = app.shell();
-
-    // Get the sidecar command with the actual port
-    let sidecar = shell.sidecar("moldable-ai-server")?;
-    
-    // Tag the process with environment variables so we can find it later
-    // MOLDABLE_AI_SERVER=1 is used by cleanup_stale_ai_servers() to identify our processes
-    let sidecar = sidecar
-        .env("MOLDABLE_AI_PORT", actual_port.to_string())
-        .env("MOLDABLE_AI_SERVER", "1");
-
-    // Spawn the sidecar
-    let (rx, child) = sidecar.spawn()?;
-
     let port_for_log = actual_port;
-    
+
+    let app_handle_for_spawn = app.clone();
     let app_handle_for_restart = app.clone();
     let ai_server_state_for_restart = ai_server_state.clone();
-    let restart_state_for_monitor = ai_server_state.clone();
 
-    spawn_sidecar_monitor(
-        rx,
-        "[AI Server]",
-        restart_state_for_monitor,
-        RestartFlags {
-            disabled: &AI_SERVER_RESTART_DISABLED,
-            in_progress: &AI_SERVER_RESTART_IN_PROGRESS,
+    start_sidecar(
+        &runtime,
+        ai_server_state.clone(),
+        || Ok(()),
+        move || {
+            let shell = app_handle_for_spawn.shell();
+            let sidecar = shell
+                .sidecar("moldable-ai-server")
+                .map_err(|e| e.to_string())?;
+            let sidecar = sidecar
+                .env("MOLDABLE_AI_PORT", actual_port.to_string())
+                .env("MOLDABLE_AI_SERVER", "1");
+            sidecar
+                .spawn()
+                .map_err(|e| format!("Failed to spawn AI server: {}", e))
         },
-        RestartPolicy {
-            min_delay_ms: AI_SERVER_RESTART_MIN_DELAY_MS,
-            max_delay_ms: AI_SERVER_RESTART_MAX_DELAY_MS,
+        move || {
+            wait_for_ai_server_health(
+                port_for_log,
+                Duration::from_millis(AI_SERVER_STARTUP_TIMEOUT_MS),
+            )
         },
+        None,
+        format!("AI server failed to start on port {}", port_for_log),
+        || {
+            set_ai_server_actual_port(actual_port);
+            Ok(())
+        },
+        Some(format!("sidecar started on port {}", port_for_log)),
         move || {
             start_ai_server(&app_handle_for_restart, ai_server_state_for_restart.clone())
                 .map(|port| format!("Restarted on port {}", port))
                 .map_err(|e| e.to_string())
         },
-    );
+    )
+    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
-    if !wait_for_ai_server_health(
-        port_for_log,
-        Duration::from_millis(AI_SERVER_STARTUP_TIMEOUT_MS),
-    ) {
-        let pid = child.pid();
-        let _ = child.kill();
-        kill_process_tree(pid);
-        return Err(format!(
-            "AI server failed to start on port {}",
-            port_for_log
-        )
-        .into());
-    }
-
-    set_ai_server_actual_port(actual_port);
-
-    // Store the child handle for cleanup on exit
-    if let Ok(mut state) = ai_server_state.lock() {
-        *state = Some(child);
-    }
-
-    info!("AI Server sidecar started on port {}", port_for_log);
     Ok(actual_port)
 }
 
 /// Kill the AI server sidecar
 pub fn cleanup_ai_server(state: &Arc<Mutex<Option<CommandChild>>>) {
-    AI_SERVER_RESTART_DISABLED.store(true, Ordering::SeqCst);
-
-    if let Ok(mut ai_server) = state.lock() {
-        if let Some(child) = ai_server.take() {
-            info!("Stopping AI server...");
-
-            // Get PID before attempting kill
-            let pid = child.pid();
-
-            // Try graceful kill first via Tauri's CommandChild
-            let kill_result = child.kill();
-            if let Err(e) = kill_result {
-                warn!("Tauri kill failed: {}, using kill_process_tree", e);
-            }
-
-            // Always use kill_process_tree to ensure all children are killed
-            // (the AI server may spawn node processes that outlive the parent)
-            kill_process_tree(pid);
-
-            // Give processes a moment to clean up
-            std::thread::sleep(std::time::Duration::from_millis(100));
-
-            info!("AI server stopped (pid {})", pid);
-        }
-    }
+    let runtime = ai_server_runtime();
+    cleanup_sidecar(&runtime, state);
 }
 
 // ============================================================================

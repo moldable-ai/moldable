@@ -1,5 +1,6 @@
-//! Shared sidecar lifecycle helpers (logging + restart loop).
+//! Shared sidecar lifecycle helpers (start/stop/restart/cleanup + logging).
 
+use crate::ports::kill_process_tree;
 use log::{error, info, warn};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -21,6 +22,13 @@ pub struct RestartFlags {
     pub in_progress: &'static AtomicBool,
 }
 
+#[derive(Clone, Copy)]
+pub struct SidecarRuntime {
+    pub log_prefix: &'static str,
+    pub restart_policy: RestartPolicy,
+    pub restart_flags: RestartFlags,
+}
+
 fn restart_delay_ms(policy: RestartPolicy) -> u64 {
     let range = policy.max_delay_ms.saturating_sub(policy.min_delay_ms);
     let nanos = SystemTime::now()
@@ -31,7 +39,7 @@ fn restart_delay_ms(policy: RestartPolicy) -> u64 {
     policy.min_delay_ms + offset
 }
 
-pub fn spawn_sidecar_monitor<FRestart>(
+fn spawn_sidecar_monitor<FRestart>(
     mut rx: Receiver<CommandEvent>,
     log_prefix: &'static str,
     state: Arc<Mutex<Option<CommandChild>>>,
@@ -107,4 +115,120 @@ pub fn spawn_sidecar_monitor<FRestart>(
             }
         }
     });
+}
+
+pub fn is_sidecar_running(state: &Arc<Mutex<Option<CommandChild>>>) -> bool {
+    match state.lock() {
+        Ok(guard) => guard.is_some(),
+        Err(_) => false,
+    }
+}
+
+fn kill_sidecar_child(child: CommandChild, log_prefix: &'static str) -> u32 {
+    let pid = child.pid();
+    if let Err(err) = child.kill() {
+        warn!(
+            "{} Tauri kill failed: {}, using kill_process_tree",
+            log_prefix, err
+        );
+    }
+    kill_process_tree(pid);
+    pid
+}
+
+pub fn start_sidecar<FPre, FSpawn, FHealth, FOnStarted, FRestart>(
+    runtime: &SidecarRuntime,
+    state: Arc<Mutex<Option<CommandChild>>>,
+    pre_start: FPre,
+    spawn: FSpawn,
+    health_check: FHealth,
+    health_check_failed_log: Option<String>,
+    health_check_failed_message: String,
+    on_started: FOnStarted,
+    started_log: Option<String>,
+    restart_fn: FRestart,
+) -> Result<bool, String>
+where
+    FPre: Fn() -> Result<(), String>,
+    FSpawn: Fn() -> Result<(Receiver<CommandEvent>, CommandChild), String> + Send + 'static,
+    FHealth: Fn() -> bool,
+    FOnStarted: Fn() -> Result<(), String>,
+    FRestart: Fn() -> Result<String, String> + Send + 'static,
+{
+    runtime
+        .restart_flags
+        .disabled
+        .store(false, Ordering::SeqCst);
+
+    if is_sidecar_running(&state) {
+        info!("{} already running", runtime.log_prefix);
+        return Ok(true);
+    }
+
+    pre_start()?;
+
+    let (rx, child) = spawn()?;
+    let pid = child.pid();
+    info!("{} process started (pid {})", runtime.log_prefix, pid);
+
+    spawn_sidecar_monitor(
+        rx,
+        runtime.log_prefix,
+        state.clone(),
+        runtime.restart_flags,
+        runtime.restart_policy,
+        restart_fn,
+    );
+
+    if !health_check() {
+        if let Some(message) = health_check_failed_log {
+            warn!("{} {}", runtime.log_prefix, message);
+        } else {
+            warn!("{} health check failed", runtime.log_prefix);
+        }
+        let _ = kill_sidecar_child(child, runtime.log_prefix);
+        return Err(health_check_failed_message);
+    }
+
+    on_started()?;
+
+    if let Ok(mut guard) = state.lock() {
+        *guard = Some(child);
+    }
+
+    if let Some(message) = started_log {
+        info!("{} {}", runtime.log_prefix, message);
+    }
+
+    Ok(true)
+}
+
+pub fn stop_sidecar(
+    runtime: &SidecarRuntime,
+    state: &Arc<Mutex<Option<CommandChild>>>,
+) -> Result<bool, String> {
+    runtime
+        .restart_flags
+        .disabled
+        .store(true, Ordering::SeqCst);
+
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    if let Some(child) = guard.take() {
+        info!("{} stopping...", runtime.log_prefix);
+        let pid = kill_sidecar_child(child, runtime.log_prefix);
+        std::thread::sleep(Duration::from_millis(100));
+        info!("{} stopped (pid {})", runtime.log_prefix, pid);
+    } else {
+        info!("{} already stopped", runtime.log_prefix);
+    }
+
+    Ok(true)
+}
+
+pub fn cleanup_sidecar(runtime: &SidecarRuntime, state: &Arc<Mutex<Option<CommandChild>>>) {
+    runtime
+        .restart_flags
+        .disabled
+        .store(true, Ordering::SeqCst);
+    let _ = stop_sidecar(runtime, state);
 }

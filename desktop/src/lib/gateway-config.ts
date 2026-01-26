@@ -9,6 +9,8 @@ export type GatewaySetupId =
   | 'webhooks'
   | 'telegram'
 
+export const DEFAULT_GATEWAY_SETUP_ID: GatewaySetupId = 'telegram'
+
 export type GatewayBind = 'loopback' | 'lan' | 'custom'
 export type PairingPolicy = 'pairing' | 'allowlist' | 'open' | 'disabled'
 export type GroupPolicy = 'allowlist' | 'open'
@@ -245,7 +247,7 @@ export function createDefaultGatewayFormState(options: {
   workspaceId?: string | null
   authToken?: string
 }): GatewayFormState {
-  const setup = getGatewaySetup(options.setupId ?? 'just-me')
+  const setup = getGatewaySetup(options.setupId ?? DEFAULT_GATEWAY_SETUP_ID)
   const authToken = options.authToken ?? generateToken()
 
   return {
@@ -277,7 +279,7 @@ export function gatewayConfigToFormState(
   },
 ): GatewayFormState {
   const authToken = config?.gateway?.auth?.token || generateToken()
-  const setup = getGatewaySetup(options.setupId ?? 'just-me')
+  const setup = getGatewaySetup(options.setupId ?? DEFAULT_GATEWAY_SETUP_ID)
 
   return {
     bind: config?.gateway?.bind ?? setup.bind,

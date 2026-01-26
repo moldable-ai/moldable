@@ -4,7 +4,15 @@
 
 use crate::paths::{get_gateway_config_path as get_gateway_config_path_internal, get_gateway_root};
 use crate::ports::{acquire_port, is_process_running, kill_process_tree, PortAcquisitionConfig};
-use crate::sidecar::{spawn_sidecar_monitor, RestartFlags, RestartPolicy};
+use crate::sidecar::{
+    cleanup_sidecar,
+    is_sidecar_running,
+    start_sidecar,
+    stop_sidecar,
+    RestartFlags,
+    RestartPolicy,
+    SidecarRuntime,
+};
 use log::{info, warn};
 use serde_json::Value;
 use std::fs;
@@ -12,7 +20,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::AtomicBool,
     Arc, Mutex,
 };
 use std::time::{Duration, Instant};
@@ -31,6 +39,20 @@ const GATEWAY_RESTART_MAX_DELAY_MS: u64 = 10000;
 
 static GATEWAY_RESTART_DISABLED: AtomicBool = AtomicBool::new(false);
 static GATEWAY_RESTART_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+fn gateway_runtime() -> SidecarRuntime {
+    SidecarRuntime {
+        log_prefix: "[Gateway]",
+        restart_policy: RestartPolicy {
+            min_delay_ms: GATEWAY_RESTART_MIN_DELAY_MS,
+            max_delay_ms: GATEWAY_RESTART_MAX_DELAY_MS,
+        },
+        restart_flags: RestartFlags {
+            disabled: &GATEWAY_RESTART_DISABLED,
+            in_progress: &GATEWAY_RESTART_IN_PROGRESS,
+        },
+    }
+}
 
 // ============================================================================
 // STATE
@@ -160,15 +182,10 @@ fn start_gateway_with_state(
     app: &AppHandle,
     state: Arc<Mutex<Option<CommandChild>>>,
 ) -> Result<bool, String> {
-    GATEWAY_RESTART_DISABLED.store(false, Ordering::SeqCst);
-
-    // Check if already running
-    {
-        let guard = state.lock().map_err(|e| e.to_string())?;
-        if guard.is_some() {
-            info!("[Gateway] already running");
-            return Ok(true);
-        }
+    let runtime = gateway_runtime();
+    if is_sidecar_running(&state) {
+        info!("[Gateway] already running");
+        return Ok(true);
     }
 
     info!("[Gateway] =================");
@@ -197,100 +214,64 @@ fn start_gateway_with_state(
         let _ = acquire_gateway_port("http", http_port)?;
     }
 
-    let shell = app.shell();
-
-    let mut command = match shell.sidecar("moldable-gateway") {
-        Ok(sidecar) => {
-            info!("[Gateway] Using bundled moldable-gateway sidecar");
-            sidecar
-        }
-        Err(err) => {
-            warn!(
-                "[Gateway] Bundled moldable-gateway sidecar not found ({}); falling back to `moldable` CLI",
-                err
-            );
-            shell.command("moldable")
-        }
-    };
-
     let config_path_str = config_path.to_string_lossy().to_string();
-    info!("[Gateway] command: gateway run --config {}", config_path_str);
-    command = command
-        .args(["gateway", "run", "--config", &config_path_str])
-        .env("MOLDABLE_GATEWAY", "1");
-
-    let (rx, child) = command
-        .spawn()
-        .map_err(|e| format!("Failed to spawn gateway: {}", e))?;
-    let pid = child.pid();
-    info!("[Gateway] process started (pid {})", pid);
-
     let app_handle_for_restart = app.clone();
     let gateway_state_for_restart = state.clone();
-    let monitor_state = state.clone();
+    let app_handle_for_spawn = app.clone();
 
-    spawn_sidecar_monitor(
-        rx,
-        "[Gateway]",
-        monitor_state,
-        RestartFlags {
-            disabled: &GATEWAY_RESTART_DISABLED,
-            in_progress: &GATEWAY_RESTART_IN_PROGRESS,
+    start_sidecar(
+        &runtime,
+        state.clone(),
+        || Ok(()),
+        move || {
+            let shell = app_handle_for_spawn.shell();
+            let mut command = match shell.sidecar("moldable-gateway") {
+                Ok(sidecar) => {
+                    info!("[Gateway] Using bundled moldable-gateway sidecar");
+                    sidecar
+                }
+                Err(err) => {
+                    warn!(
+                        "[Gateway] Bundled moldable-gateway sidecar not found ({}); falling back to `moldable` CLI",
+                        err
+                    );
+                    shell.command("moldable")
+                }
+            };
+
+            info!("[Gateway] command: gateway run --config {}", config_path_str);
+            command = command
+                .args(["gateway", "run", "--config", &config_path_str])
+                .env("MOLDABLE_GATEWAY", "1");
+
+            command
+                .spawn()
+                .map_err(|e| format!("Failed to spawn gateway: {}", e))
         },
-        RestartPolicy {
-            min_delay_ms: GATEWAY_RESTART_MIN_DELAY_MS,
-            max_delay_ms: GATEWAY_RESTART_MAX_DELAY_MS,
+        move || {
+            let ok = wait_for_gateway_health(
+                http_port,
+                Duration::from_millis(GATEWAY_STARTUP_TIMEOUT_MS),
+            );
+            if ok {
+                info!("[Gateway] health check ok on port {}", http_port);
+            }
+            ok
         },
+        Some(format!("health check timed out on port {}", http_port)),
+        format!("Gateway failed to start on http port {}", http_port),
+        || Ok(()),
+        Some(format!("sidecar started (http port {})", http_port)),
         move || {
             start_gateway_with_state(&app_handle_for_restart, gateway_state_for_restart.clone())
                 .map(|_| "Restarted".to_string())
         },
-    );
-
-    if !wait_for_gateway_health(
-        http_port,
-        Duration::from_millis(GATEWAY_STARTUP_TIMEOUT_MS),
-    ) {
-        warn!("[Gateway] health check timed out on port {}", http_port);
-        let pid = child.pid();
-        let _ = child.kill();
-        kill_process_tree(pid);
-        return Err(format!(
-            "Gateway failed to start on http port {}",
-            http_port
-        ));
-    } else {
-        info!("[Gateway] health check ok on port {}", http_port);
-    }
-
-    {
-        let mut guard = state.lock().map_err(|e| e.to_string())?;
-        *guard = Some(child);
-    }
-
-    info!("[Gateway] sidecar started (http port {})", http_port);
-    Ok(true)
+    )
 }
 
 fn stop_gateway_with_state(state: &Arc<Mutex<Option<CommandChild>>>) -> Result<bool, String> {
-    GATEWAY_RESTART_DISABLED.store(true, Ordering::SeqCst);
-
-    let mut guard = state.lock().map_err(|e| e.to_string())?;
-
-    if let Some(child) = guard.take() {
-        info!("[Gateway] stopping...");
-        let pid = child.pid();
-        if let Err(err) = child.kill() {
-            warn!("[Gateway] Tauri kill failed: {}, using kill_process_tree", err);
-        }
-        kill_process_tree(pid);
-        std::thread::sleep(Duration::from_millis(100));
-        info!("[Gateway] stopped (pid {})", pid);
-    } else {
-        info!("[Gateway] already stopped");
-    }
-
-    Ok(true)
+    let runtime = gateway_runtime();
+    stop_sidecar(&runtime, state)
 }
 
 // ============================================================================
@@ -353,8 +334,8 @@ pub fn restart_gateway(app: AppHandle, state: State<'_, GatewayState>) -> Result
 }
 
 pub fn cleanup_gateway(state: &Arc<Mutex<Option<CommandChild>>>) {
-    GATEWAY_RESTART_DISABLED.store(true, Ordering::SeqCst);
-    let _ = stop_gateway_with_state(state);
+    let runtime = gateway_runtime();
+    cleanup_sidecar(&runtime, state);
 }
 
 // ============================================================================
