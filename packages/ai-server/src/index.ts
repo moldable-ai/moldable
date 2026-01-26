@@ -24,6 +24,11 @@ import {
 } from '@moldable-ai/mcp'
 import { readCodexCliCredentialsCached } from './codex-cli-credentials.js'
 import {
+  readCodexOAuthCache,
+  refreshCodexAccessToken,
+  writeCodexOAuthCache,
+} from './codex-oauth.js'
+import {
   type GatewayMessage,
   type GatewaySession,
   type GatewaySessionMeta,
@@ -310,25 +315,104 @@ function shouldUseCodexCliAuth(): boolean {
   return true
 }
 
-function resolveOpenAIAuth(model?: string): OpenAIAuthInfo {
+function isTokenFresh(expires: number): boolean {
+  return (
+    Number.isFinite(expires) && expires > Date.now() + CODEX_CLI_NEAR_EXPIRY_MS
+  )
+}
+
+function isTokenValid(expires: number): boolean {
+  return Number.isFinite(expires) && expires > Date.now()
+}
+
+async function resolveOpenAIAuth(
+  model?: string,
+  options?: {
+    preferCodex?: boolean
+    allowRefresh?: boolean
+    forceRefresh?: boolean
+  },
+): Promise<OpenAIAuthInfo> {
   const envKey = process.env.OPENAI_API_KEY?.trim()
   const codexEligible = model ? isCodexModel(model) : true
-  const codexAllowed = shouldUseCodexCliAuth()
+  const codexAllowed = (options?.preferCodex ?? true) && shouldUseCodexCliAuth()
+  const allowRefresh = options?.allowRefresh ?? true
+  const forceRefresh = options?.forceRefresh ?? false
 
   if (codexEligible && codexAllowed) {
-    const creds = readCodexCliCredentialsCached({
+    const cached = readCodexOAuthCache(MOLDABLE_HOME)
+    const cachedFresh = cached && isTokenFresh(cached.expires)
+    const cachedValid = cached && isTokenValid(cached.expires)
+
+    const cliCreds = readCodexCliCredentialsCached({
       ttlMs: CODEX_CLI_SYNC_TTL_MS,
     })
-    if (creds) {
-      const now = Date.now()
-      if (
-        typeof creds.expires === 'number' &&
-        creds.expires > now + CODEX_CLI_NEAR_EXPIRY_MS
-      ) {
+    const cliFresh = cliCreds && isTokenFresh(cliCreds.expires)
+    const cliValid = cliCreds && isTokenValid(cliCreds.expires)
+
+    if (!forceRefresh) {
+      if (cachedFresh) {
         return {
-          apiKey: creds.access,
+          apiKey: cached.access,
           source: 'codex-cli',
-          codexAccountId: creds.accountId,
+          codexAccountId: cached.accountId,
+        }
+      }
+      if (cliFresh) {
+        try {
+          writeCodexOAuthCache(MOLDABLE_HOME, {
+            access: cliCreds.access,
+            refresh: cliCreds.refresh,
+            expires: cliCreds.expires,
+            accountId: cliCreds.accountId,
+          })
+        } catch {
+          // Ignore cache write errors; continue with CLI token.
+        }
+        return {
+          apiKey: cliCreds.access,
+          source: 'codex-cli',
+          codexAccountId: cliCreds.accountId,
+        }
+      }
+    }
+
+    if (allowRefresh) {
+      const refreshToken = cached?.refresh ?? cliCreds?.refresh
+      if (refreshToken) {
+        try {
+          const refreshed = await refreshCodexAccessToken(refreshToken)
+          const accountId =
+            refreshed.accountId ?? cached?.accountId ?? cliCreds?.accountId
+          const merged = { ...refreshed, accountId }
+          writeCodexOAuthCache(MOLDABLE_HOME, merged)
+          return {
+            apiKey: merged.access,
+            source: 'codex-cli',
+            codexAccountId: merged.accountId,
+          }
+        } catch (error) {
+          console.warn(
+            '⚠️ Codex OAuth refresh failed; falling back to other auth if configured.',
+            error,
+          )
+        }
+      }
+    }
+
+    if (!forceRefresh) {
+      if (cachedValid) {
+        return {
+          apiKey: cached.access,
+          source: 'codex-cli',
+          codexAccountId: cached.accountId,
+        }
+      }
+      if (cliValid) {
+        return {
+          apiKey: cliCreds.access,
+          source: 'codex-cli',
+          codexAccountId: cliCreds.accountId,
         }
       }
     }
@@ -418,22 +502,83 @@ function isOpenAIModel(model: string): boolean {
   return model.startsWith('openai/')
 }
 
-function shouldFallbackToOpenAIChat(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error || '')
+function extractErrorStatus(error: unknown): number | undefined {
+  const anyError = error as {
+    status?: number
+    statusCode?: number
+    response?: { status?: number }
+  }
+  if (typeof anyError?.status === 'number') return anyError.status
+  if (typeof anyError?.statusCode === 'number') return anyError.statusCode
+  if (typeof anyError?.response?.status === 'number')
+    return anyError.response.status
+  return undefined
+}
+
+function buildErrorHaystack(error: unknown): string {
+  const parts: string[] = []
+  if (error instanceof Error) {
+    parts.push(error.message)
+  } else if (error) {
+    parts.push(String(error))
+  }
   const cause = (error as { cause?: unknown })?.cause
+  if (cause) {
+    parts.push(typeof cause === 'string' ? cause : JSON.stringify(cause))
+  }
   const responseBody = (error as { responseBody?: unknown })?.responseBody
-  const haystack = [
-    message,
-    typeof cause === 'string' ? cause : JSON.stringify(cause ?? ''),
-    typeof responseBody === 'string'
-      ? responseBody
-      : JSON.stringify(responseBody ?? ''),
-  ].join(' ')
+  if (responseBody) {
+    parts.push(
+      typeof responseBody === 'string'
+        ? responseBody
+        : JSON.stringify(responseBody),
+    )
+  }
+  return parts.join(' ')
+}
+
+function shouldFallbackToOpenAIChat(error: unknown): boolean {
+  const haystack = buildErrorHaystack(error)
 
   return (
     /api\.responses\.write/i.test(haystack) ||
     /Missing scopes: api\.responses\.write/i.test(haystack) ||
     (/insufficient permissions/i.test(haystack) && /responses/i.test(haystack))
+  )
+}
+
+function shouldRefreshCodexToken(error: unknown): boolean {
+  const status = extractErrorStatus(error)
+  if (status === 401 || status === 403) return true
+  const haystack = buildErrorHaystack(error).toLowerCase()
+  return (
+    haystack.includes('invalid_api_key') ||
+    haystack.includes('invalid api key') ||
+    haystack.includes('invalid token') ||
+    haystack.includes('token expired') ||
+    haystack.includes('expired') ||
+    haystack.includes('unauthorized') ||
+    haystack.includes('authentication')
+  )
+}
+
+function shouldFallbackFromCodex(error: unknown): boolean {
+  const status = extractErrorStatus(error)
+  if (status === 401 || status === 403 || status === 402) return true
+  const haystack = buildErrorHaystack(error).toLowerCase()
+  return (
+    haystack.includes('invalid_api_key') ||
+    haystack.includes('invalid api key') ||
+    haystack.includes('invalid token') ||
+    haystack.includes('token expired') ||
+    haystack.includes('unauthorized') ||
+    haystack.includes('authentication') ||
+    haystack.includes('insufficient_quota') ||
+    haystack.includes('usage limit') ||
+    haystack.includes('quota') ||
+    haystack.includes('billing') ||
+    haystack.includes('payment') ||
+    haystack.includes('credits')
   )
 }
 
@@ -677,11 +822,22 @@ type ApiKeys = {
   openaiHeaders?: Record<string, string>
 }
 
-function apiKeysFromEnv(model?: string): {
+async function apiKeysFromEnv(
+  model?: string,
+  options?: {
+    preferCodex?: boolean
+    allowCodexRefresh?: boolean
+    forceCodexRefresh?: boolean
+  },
+): Promise<{
   apiKeys: ApiKeys
   openaiAuth: OpenAIAuthInfo
-} {
-  const openaiAuth = resolveOpenAIAuth(model)
+}> {
+  const openaiAuth = await resolveOpenAIAuth(model, {
+    preferCodex: options?.preferCodex,
+    allowRefresh: options?.allowCodexRefresh,
+    forceRefresh: options?.forceCodexRefresh,
+  })
   const envBaseUrl =
     process.env.MOLDABLE_OPENAI_BASE_URL?.trim() ||
     process.env.OPENAI_BASE_URL?.trim() ||
@@ -809,8 +965,7 @@ async function handleChat(
     }
 
     // Get API keys from environment
-    const { apiKeys, openaiAuth } = apiKeysFromEnv(model)
-    const useCodexInstructions = openaiAuth.source === 'codex-cli'
+    const { apiKeys, openaiAuth } = await apiKeysFromEnv(model)
     const apiKeyError = validateApiKeys(model, apiKeys)
     if (apiKeyError) {
       sendError(res, apiKeyError, 500)
@@ -884,11 +1039,27 @@ async function handleChat(
       appChatInstructions: body.appChatInstructions,
     })
 
-    // Get provider config
-    const providerConfig = getProviderConfig(model, apiKeys, reasoningEffort, {
-      openaiMode: useCodexInstructions ? 'responses' : undefined,
-      openaiInstructions: useCodexInstructions ? systemMessage : undefined,
-    })
+    const buildProviderConfig = (
+      authInfo: OpenAIAuthInfo,
+      resolvedKeys: ApiKeys,
+    ): { providerConfig: ProviderConfig; useCodexInstructions: boolean } => {
+      const useCodexInstructions = authInfo.source === 'codex-cli'
+      const providerConfig = getProviderConfig(
+        model,
+        resolvedKeys,
+        reasoningEffort,
+        {
+          openaiMode: useCodexInstructions ? 'responses' : undefined,
+          openaiInstructions: useCodexInstructions ? systemMessage : undefined,
+        },
+      )
+      return { providerConfig, useCodexInstructions }
+    }
+
+    const { providerConfig, useCodexInstructions } = buildProviderConfig(
+      openaiAuth,
+      apiKeys,
+    )
     const { temperature } = providerConfig
 
     // DEBUG: Log incoming UIMessages structure
@@ -1096,10 +1267,13 @@ async function handleChat(
             if (DEBUG_CHAT_REQUESTS) {
               console.log('   Starting streamText...')
             }
-            const runStream = async (config: ProviderConfig) => {
+            const runStream = async (
+              config: ProviderConfig,
+              options: { useCodexInstructions: boolean },
+            ) => {
               const result = streamText({
                 model: config.model,
-                messages: useCodexInstructions
+                messages: options.useCodexInstructions
                   ? fixedMessages
                   : [
                       { role: 'system', content: systemMessage },
@@ -1128,11 +1302,63 @@ async function handleChat(
             }
 
             try {
-              await runStream(providerConfig)
+              await runStream(providerConfig, { useCodexInstructions })
             } catch (error) {
+              let lastError = error
+              if (openaiAuth.source === 'codex-cli' && isOpenAIModel(model)) {
+                if (shouldRefreshCodexToken(lastError)) {
+                  const refreshed = await apiKeysFromEnv(model, {
+                    forceCodexRefresh: true,
+                  })
+                  if (
+                    refreshed.openaiAuth.source === 'codex-cli' &&
+                    refreshed.openaiAuth.apiKey
+                  ) {
+                    const refreshedConfig = buildProviderConfig(
+                      refreshed.openaiAuth,
+                      refreshed.apiKeys,
+                    )
+                    try {
+                      await runStream(refreshedConfig.providerConfig, {
+                        useCodexInstructions:
+                          refreshedConfig.useCodexInstructions,
+                      })
+                      return
+                    } catch (refreshError) {
+                      lastError = refreshError
+                    }
+                  }
+                }
+
+                if (shouldFallbackFromCodex(lastError)) {
+                  const fallback = await apiKeysFromEnv(model, {
+                    preferCodex: false,
+                    allowCodexRefresh: false,
+                  })
+                  if (
+                    fallback.apiKeys.openaiApiKey ||
+                    fallback.apiKeys.openrouterApiKey
+                  ) {
+                    const fallbackConfig = buildProviderConfig(
+                      fallback.openaiAuth,
+                      fallback.apiKeys,
+                    )
+                    try {
+                      await runStream(fallbackConfig.providerConfig, {
+                        useCodexInstructions:
+                          fallbackConfig.useCodexInstructions,
+                      })
+                      return
+                    } catch (fallbackError) {
+                      lastError = fallbackError
+                    }
+                  }
+                }
+              }
+
               if (
                 isOpenAIModel(model) &&
-                shouldFallbackToOpenAIChat(error) &&
+                shouldFallbackToOpenAIChat(lastError) &&
                 apiKeys.openaiApiKey &&
                 openaiAuth.source !== 'codex-cli'
               ) {
@@ -1145,9 +1371,11 @@ async function handleChat(
                   reasoningEffort,
                   { openaiMode: 'chat' },
                 )
-                await runStream(fallbackConfig)
+                await runStream(fallbackConfig, {
+                  useCodexInstructions,
+                })
               } else {
-                throw error
+                throw lastError
               }
             }
           } catch (streamError) {
@@ -1278,7 +1506,7 @@ async function handleGatewayChat(
       }
     }
 
-    const { apiKeys, openaiAuth } = apiKeysFromEnv(model)
+    const { apiKeys, openaiAuth } = await apiKeysFromEnv(model)
     const apiKeyError = validateApiKeys(model, apiKeys)
     if (apiKeyError) {
       sendError(res, apiKeyError, 500)
@@ -1375,11 +1603,29 @@ async function handleGatewayChat(
       ? `${systemMessage}\n\n${gatewayContext}`
       : systemMessage
 
-    const useCodexInstructions = openaiAuth.source === 'codex-cli'
-    const providerConfig = getProviderConfig(model, apiKeys, reasoningEffort, {
-      openaiMode: useCodexInstructions ? 'responses' : undefined,
-      openaiInstructions: useCodexInstructions ? systemWithContext : undefined,
-    })
+    const buildProviderConfig = (
+      authInfo: OpenAIAuthInfo,
+      resolvedKeys: ApiKeys,
+    ): { providerConfig: ProviderConfig; useCodexInstructions: boolean } => {
+      const useCodexInstructions = authInfo.source === 'codex-cli'
+      const providerConfig = getProviderConfig(
+        model,
+        resolvedKeys,
+        reasoningEffort,
+        {
+          openaiMode: useCodexInstructions ? 'responses' : undefined,
+          openaiInstructions: useCodexInstructions
+            ? systemWithContext
+            : undefined,
+        },
+      )
+      return { providerConfig, useCodexInstructions }
+    }
+
+    const { providerConfig, useCodexInstructions } = buildProviderConfig(
+      openaiAuth,
+      apiKeys,
+    )
     const { temperature } = providerConfig
 
     if (DEBUG_CHAT_REQUESTS) {
@@ -1407,10 +1653,13 @@ async function handleGatewayChat(
     let gatewayStepNumber = 0
     let gatewayToolCallCount = 0
 
-    const runGatewayRequest = async (config: ProviderConfig) => {
+    const runGatewayRequest = async (
+      config: ProviderConfig,
+      options: { useCodexInstructions: boolean },
+    ) => {
       const result = streamText({
         model: config.model,
-        messages: useCodexInstructions
+        messages: options.useCodexInstructions
           ? fixedMessages
           : [{ role: 'system', content: systemWithContext }, ...fixedMessages],
         temperature: config.temperature,
@@ -1472,11 +1721,61 @@ async function handleGatewayChat(
 
     let text: string
     try {
-      text = await runGatewayRequest(providerConfig)
+      text = await runGatewayRequest(providerConfig, { useCodexInstructions })
     } catch (error) {
+      let lastError = error
+      if (openaiAuth.source === 'codex-cli' && isOpenAIModel(model)) {
+        if (shouldRefreshCodexToken(lastError)) {
+          const refreshed = await apiKeysFromEnv(model, {
+            forceCodexRefresh: true,
+          })
+          if (
+            refreshed.openaiAuth.source === 'codex-cli' &&
+            refreshed.openaiAuth.apiKey
+          ) {
+            const refreshedConfig = buildProviderConfig(
+              refreshed.openaiAuth,
+              refreshed.apiKeys,
+            )
+            try {
+              text = await runGatewayRequest(refreshedConfig.providerConfig, {
+                useCodexInstructions: refreshedConfig.useCodexInstructions,
+              })
+              return
+            } catch (refreshError) {
+              lastError = refreshError
+            }
+          }
+        }
+
+        if (shouldFallbackFromCodex(lastError)) {
+          const fallback = await apiKeysFromEnv(model, {
+            preferCodex: false,
+            allowCodexRefresh: false,
+          })
+          if (
+            fallback.apiKeys.openaiApiKey ||
+            fallback.apiKeys.openrouterApiKey
+          ) {
+            const fallbackConfig = buildProviderConfig(
+              fallback.openaiAuth,
+              fallback.apiKeys,
+            )
+            try {
+              text = await runGatewayRequest(fallbackConfig.providerConfig, {
+                useCodexInstructions: fallbackConfig.useCodexInstructions,
+              })
+              return
+            } catch (fallbackError) {
+              lastError = fallbackError
+            }
+          }
+        }
+      }
+
       if (
         isOpenAIModel(model) &&
-        shouldFallbackToOpenAIChat(error) &&
+        shouldFallbackToOpenAIChat(lastError) &&
         apiKeys.openaiApiKey &&
         openaiAuth.source !== 'codex-cli'
       ) {
@@ -1489,9 +1788,11 @@ async function handleGatewayChat(
           reasoningEffort,
           { openaiMode: 'chat' },
         )
-        text = await runGatewayRequest(fallbackConfig)
+        text = await runGatewayRequest(fallbackConfig, {
+          useCodexInstructions,
+        })
       } else {
-        throw error
+        throw lastError
       }
     }
     const storedMessages: GatewayMessage[] = [
@@ -1789,11 +2090,13 @@ function reloadEnvFile(): void {
 }
 
 // Handle health check
-function handleHealth(res: ServerResponse): void {
+async function handleHealth(res: ServerResponse): Promise<void> {
   // Re-read .env to pick up newly added API keys
   reloadEnvFile()
 
-  const openaiAuth = resolveOpenAIAuth()
+  const openaiAuth = await resolveOpenAIAuth(undefined, {
+    allowRefresh: false,
+  })
 
   sendJson(res, {
     status: 'ok',
@@ -2525,7 +2828,7 @@ const server = createServer(async (req, res) => {
     }
     handleDeleteGatewaySession(res, sessionId, workspaceId)
   } else if (url.pathname === '/health' && req.method === 'GET') {
-    handleHealth(res)
+    await handleHealth(res)
   } else if (url.pathname === '/api/mcp/servers' && req.method === 'GET') {
     handleMcpServers(res)
   } else if (url.pathname === '/api/mcp/servers' && req.method === 'POST') {
@@ -2604,7 +2907,9 @@ server.listen(port, host, async () => {
   console.log(
     `   Development workspace: ${WORKSPACE_ROOT || '(not configured)'}`,
   )
-  const openaiAuth = resolveOpenAIAuth()
+  const openaiAuth = await resolveOpenAIAuth(undefined, {
+    allowRefresh: false,
+  })
   console.log(
     `   Anthropic API key: ${process.env.ANTHROPIC_API_KEY ? '✓' : '✗'}`,
   )
@@ -2618,6 +2923,22 @@ server.listen(port, host, async () => {
   console.log(
     `   OpenRouter API key: ${process.env.OPENROUTER_API_KEY ? '✓' : '✗'}`,
   )
+
+  // Refresh Codex OAuth in the background so startup doesn't block on network.
+  if (shouldUseCodexCliAuth()) {
+    void (async () => {
+      try {
+        const refreshed = await resolveOpenAIAuth(undefined, {
+          allowRefresh: true,
+          preferCodex: true,
+        })
+        const refreshLabel = refreshed.source === 'codex-cli' ? '✓' : '✗'
+        console.log(`   Codex OAuth refresh: ${refreshLabel}`)
+      } catch (error) {
+        console.warn('⚠️ Codex OAuth refresh failed on startup:', error)
+      }
+    })()
+  }
 
   // Initialize MCP connections after server starts
   await initMcpConnections()

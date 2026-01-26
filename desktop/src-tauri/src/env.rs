@@ -6,17 +6,21 @@
 //! - Merging shared + workspace env vars
 //! - API key detection and storage
 
-use crate::paths::{get_env_file_path, get_home_dir, get_shared_env_file_path};
+use crate::paths::{
+    get_env_file_path, get_home_dir, get_moldable_root, get_shared_env_file_path,
+};
 use crate::preferences::load_shared_config;
 use crate::types::{AppEnvStatus, MoldableManifest};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::io::Read;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const CODEX_CLI_AUTH_FILENAME: &str = "auth.json";
+const CODEX_OAUTH_CACHE_FILENAME: &str = "codex-oauth.json";
 const CODEX_KEYCHAIN_SERVICE: &str = "Codex Auth";
 const CODEX_TOKEN_TTL_MS: i64 = 60 * 60 * 1000;
 const CODEX_NEAR_EXPIRY_MS: i64 = 10 * 60 * 1000;
@@ -74,7 +78,6 @@ pub fn get_merged_env_vars() -> HashMap<String, String> {
 struct CodexCliCredential {
     access: String,
     expires_ms: i64,
-    source: &'static str,
 }
 
 fn resolve_codex_home_dir() -> Option<PathBuf> {
@@ -98,6 +101,12 @@ fn resolve_codex_auth_path() -> Option<PathBuf> {
     resolve_codex_home_dir().map(|home| home.join(CODEX_CLI_AUTH_FILENAME))
 }
 
+fn resolve_codex_oauth_cache_path() -> Option<PathBuf> {
+    get_moldable_root()
+        .ok()
+        .map(|root| root.join("shared").join(CODEX_OAUTH_CACHE_FILENAME))
+}
+
 fn compute_codex_keychain_account(codex_home: &Path) -> String {
     let mut hasher = Sha256::new();
     hasher.update(codex_home.to_string_lossy().as_bytes());
@@ -116,6 +125,11 @@ fn parse_timestamp_ms(value: &serde_json::Value) -> Option<i64> {
     if let Some(num) = value.as_i64() {
         return Some(num);
     }
+    if let Some(num) = value.as_u64() {
+        if num <= i64::MAX as u64 {
+            return Some(num as i64);
+        }
+    }
     if let Some(text) = value.as_str() {
         if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(text) {
             return Some(parsed.timestamp_millis());
@@ -132,7 +146,7 @@ fn read_codex_keychain_credentials() -> Option<CodexCliCredential> {
     let codex_home = resolve_codex_home_dir()?;
     let account = compute_codex_keychain_account(&codex_home);
 
-    let output = Command::new("security")
+    let mut child = Command::new("security")
         .args([
             "find-generic-password",
             "-s",
@@ -141,15 +155,34 @@ fn read_codex_keychain_credentials() -> Option<CodexCliCredential> {
             &account,
             "-w",
         ])
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .ok()?;
 
-    if !output.status.success() {
+    let timeout = Duration::from_millis(1500);
+    let start = Instant::now();
+    let status = loop {
+        if let Ok(Some(status)) = child.try_wait() {
+            break status;
+        }
+        if start.elapsed() > timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    };
+
+    let mut stdout = String::new();
+    if let Some(mut handle) = child.stdout.take() {
+        let _ = handle.read_to_string(&mut stdout);
+    }
+    if !status.success() {
         return None;
     }
 
-    let secret = String::from_utf8(output.stdout).ok()?;
-    let parsed: serde_json::Value = serde_json::from_str(secret.trim()).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).ok()?;
     let tokens = parsed.get("tokens")?;
     let access = tokens.get("access_token")?.as_str()?.to_string();
     let refresh = tokens.get("refresh_token")?.as_str()?;
@@ -165,7 +198,6 @@ fn read_codex_keychain_credentials() -> Option<CodexCliCredential> {
     Some(CodexCliCredential {
         access,
         expires_ms: last_refresh + CODEX_TOKEN_TTL_MS,
-        source: "codex-cli",
     })
 }
 
@@ -190,7 +222,19 @@ fn read_codex_file_credentials() -> Option<CodexCliCredential> {
     Some(CodexCliCredential {
         access,
         expires_ms,
-        source: "codex-cli",
+    })
+}
+
+fn read_codex_oauth_cache() -> Option<CodexCliCredential> {
+    let cache_path = resolve_codex_oauth_cache_path()?;
+    let raw = std::fs::read_to_string(&cache_path).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let access = parsed.get("access_token")?.as_str()?.to_string();
+    let expires_ms = parsed.get("expires_at").and_then(parse_timestamp_ms)?;
+
+    Some(CodexCliCredential {
+        access,
+        expires_ms,
     })
 }
 
@@ -211,8 +255,13 @@ fn read_codex_cli_access_token() -> Option<CodexCliCredential> {
     if !is_codex_cli_enabled() {
         return None;
     }
-    let creds = read_codex_cli_credentials()?;
     let now = system_time_to_ms(SystemTime::now()).unwrap_or(0);
+    if let Some(cached) = read_codex_oauth_cache() {
+        if cached.expires_ms > now + CODEX_NEAR_EXPIRY_MS {
+            return Some(cached);
+        }
+    }
+    let creds = read_codex_cli_credentials()?;
     if creds.expires_ms <= now + CODEX_NEAR_EXPIRY_MS {
         return None;
     }

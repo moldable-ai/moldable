@@ -49,37 +49,32 @@ export function SettingsApiKeys({ onKeysChanged }: SettingsApiKeysProps) {
   const detectedProvider = detectKeyProvider(newApiKey)
   const isValidKey = newApiKey.trim().length > 20 && detectedProvider !== null
 
-  const loadCodexPreference = useCallback(
-    async (keys?: ApiKeyInfo[]) => {
-      const openaiKey = (keys ?? apiKeys).find(
-        (key) => key.provider === 'OpenAI',
-      )
-      const detected = openaiKey?.source === 'codex-cli'
-      setCodexAvailable(!!detected)
+  const loadCodexPreference = useCallback(async (keys: ApiKeyInfo[]) => {
+    const openaiKey = keys.find((key) => key.provider === 'OpenAI')
+    const detected = openaiKey?.source === 'codex-cli'
+    setCodexAvailable(!!detected)
 
-      try {
-        const value = await invoke<unknown>('get_shared_preference', {
-          key: 'useCodexCliAuth',
-        })
-        const prefValue = typeof value === 'boolean' ? value : true
+    try {
+      const value = await invoke<unknown>('get_shared_preference', {
+        key: 'useCodexCliAuth',
+      })
+      const prefValue = typeof value === 'boolean' ? value : true
 
-        if (prefValue && !detected) {
-          setUseCodexCli(false)
-          await invoke('set_shared_preference', {
-            key: 'useCodexCliAuth',
-            value: false,
-          })
-          return
-        }
-
-        setUseCodexCli(prefValue)
-      } catch (error) {
-        console.error('Failed to load Codex CLI preference:', error)
+      if (prefValue && !detected) {
         setUseCodexCli(false)
+        await invoke('set_shared_preference', {
+          key: 'useCodexCliAuth',
+          value: false,
+        })
+        return
       }
-    },
-    [apiKeys],
-  )
+
+      setUseCodexCli(prefValue)
+    } catch (error) {
+      console.error('Failed to load Codex CLI preference:', error)
+      setUseCodexCli(false)
+    }
+  }, [])
 
   const loadApiKeys = useCallback(async (): Promise<ApiKeyInfo[]> => {
     try {
