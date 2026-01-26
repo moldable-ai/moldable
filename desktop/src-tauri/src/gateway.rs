@@ -3,7 +3,13 @@
 //! Handles starting, stopping, and configuring the Moldable Gateway daemon.
 
 use crate::paths::{get_gateway_config_path as get_gateway_config_path_internal, get_gateway_root};
-use crate::ports::{acquire_port, is_process_running, kill_process_tree, PortAcquisitionConfig};
+use crate::ports::{
+    get_port_info,
+    is_port_listening,
+    is_process_running,
+    kill_port_aggressive,
+    kill_process_tree,
+};
 use crate::sidecar::{
     cleanup_sidecar,
     is_sidecar_running,
@@ -17,8 +23,9 @@ use log::{info, warn};
 use serde_json::Value;
 use std::fs;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{
     atomic::AtomicBool,
     Arc, Mutex,
@@ -93,22 +100,64 @@ fn resolve_gateway_port(config: &Value) -> u16 {
         .unwrap_or(DEFAULT_GATEWAY_PORT)
 }
 
-fn acquire_gateway_port(label: &str, port: u16) -> Result<u16, String> {
-    let result = acquire_port(PortAcquisitionConfig {
-        preferred_port: port,
-        max_retries: GATEWAY_PORT_MAX_RETRIES,
-        initial_delay_ms: GATEWAY_PORT_INITIAL_DELAY_MS,
-        max_delay_ms: GATEWAY_PORT_MAX_DELAY_MS,
-        allow_fallback: false,
-        fallback_range: None,
-    })?;
-    if result.port != port || !result.is_preferred {
-        return Err(format!(
-            "Gateway {} port {} is unavailable (acquired {})",
-            label, port, result.port
-        ));
+fn format_port_blocker(port: u16) -> String {
+    if let Some(info) = get_port_info(port) {
+        let mut details = Vec::new();
+        if let Some(pid) = info.pid {
+            details.push(format!("pid {}", pid));
+        }
+        if let Some(name) = info.process_name {
+            details.push(format!("name {}", name));
+        }
+        if let Some(command) = info.command {
+            details.push(format!("cmd {}", command));
+        }
+
+        if !details.is_empty() {
+            return format!(" ({})", details.join(", "));
+        }
     }
-    Ok(result.port)
+
+    String::new()
+}
+
+fn can_bind_loopback(port: u16) -> bool {
+    TcpListener::bind(("127.0.0.1", port)).is_ok()
+}
+
+fn acquire_gateway_port(label: &str, port: u16) -> Result<u16, String> {
+    let mut delay_ms = GATEWAY_PORT_INITIAL_DELAY_MS;
+
+    for attempt in 0..=GATEWAY_PORT_MAX_RETRIES {
+        let listening = is_port_listening(port);
+        let bindable = can_bind_loopback(port);
+        if !listening && bindable {
+            return Ok(port);
+        }
+
+        info!(
+            "[Gateway] {} port {} is unavailable (listening={}, bindable={}), attempting to free it (attempt {}){}",
+            label,
+            port,
+            listening,
+            bindable,
+            attempt + 1,
+            format_port_blocker(port)
+        );
+        let _ = kill_port_aggressive(port);
+
+        if attempt < GATEWAY_PORT_MAX_RETRIES {
+            std::thread::sleep(Duration::from_millis(delay_ms));
+            delay_ms = (delay_ms * 2).min(GATEWAY_PORT_MAX_DELAY_MS);
+        }
+    }
+
+    Err(format!(
+        "Gateway {} port {} is still unavailable{}",
+        label,
+        port,
+        format_port_blocker(port)
+    ))
 }
 
 fn gateway_lock_path() -> Result<PathBuf, String> {
@@ -145,6 +194,73 @@ fn cleanup_gateway_lock() -> Result<(), String> {
     fs::remove_file(&path).map_err(|e| format!("Failed to remove gateway lock: {}", e))?;
     info!("[Gateway] cleared gateway lock ({})", path.display());
     Ok(())
+}
+
+/// Kill any stale gateway processes from previous Moldable instances.
+///
+/// Uses process name matching (similar to AI server cleanup) because the gateway
+/// may have been launched via sidecar or the `moldable` CLI.
+fn cleanup_stale_gateway_processes() {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(output) = Command::new("tasklist")
+            .args(["/FO", "CSV", "/NH"])
+            .output()
+        {
+            if output.status.success() {
+                let our_pid = std::process::id();
+                let stdout = String::from_utf8_lossy(&output.stdout);
+
+                for line in stdout.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    let fields: Vec<&str> =
+                        trimmed.trim_matches('"').split("\",\"").collect();
+                    if fields.len() < 2 {
+                        continue;
+                    }
+
+                    let image = fields[0].to_lowercase();
+                    if !image.contains("moldable-gateway") {
+                        continue;
+                    }
+
+                    if let Ok(pid) = fields[1].parse::<u32>() {
+                        if pid != our_pid {
+                            info!("[Gateway] Killing stale gateway process (pid {})", pid);
+                            kill_process_tree(pid);
+                        }
+                    }
+                }
+            }
+        }
+        return;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let our_pid = std::process::id();
+        let patterns = ["moldable-gateway", "moldable gateway run"];
+
+        for pattern in patterns {
+            if let Ok(output) = Command::new("pgrep").args(["-f", pattern]).output() {
+                if output.status.success() {
+                    let pids = String::from_utf8_lossy(&output.stdout);
+
+                    for line in pids.lines() {
+                        if let Ok(pid) = line.trim().parse::<u32>() {
+                            if pid != our_pid {
+                                info!("[Gateway] Killing stale gateway process (pid {})", pid);
+                                kill_process_tree(pid);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn wait_for_gateway_health(port: u16, timeout: Duration) -> bool {
@@ -208,6 +324,7 @@ fn start_gateway_with_state(
         gateway_port, http_port
     );
 
+    cleanup_stale_gateway_processes();
     cleanup_gateway_lock()?;
     let _ = acquire_gateway_port("gateway", gateway_port)?;
     if http_port != gateway_port {
