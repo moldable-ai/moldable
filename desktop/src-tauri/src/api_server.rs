@@ -1140,10 +1140,9 @@ mod tests {
         // API server port should be different from AI server port
         assert_ne!(API_SERVER_PORT, AI_SERVER_PORT);
         
-        // API server port should not be in AI server's range
-        // (AI server uses 39100-39199, API uses 39102-39199, so they overlap)
-        // But the default ports are distinct
-        assert_eq!(AI_SERVER_PORT, 39100);
+        // API server port should not match the AI server port
+        // (AI server uses a fixed 39200; API uses 39102 by default)
+        assert_eq!(AI_SERVER_PORT, 39200);
         assert_eq!(API_SERVER_PORT, 39102);
     }
     

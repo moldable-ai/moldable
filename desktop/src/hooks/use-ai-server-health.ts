@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 
-const DEFAULT_AI_PORT = 39100
+const DEFAULT_AI_PORT = 39200
 const DEFAULT_API_PORT = 39102
 const POLL_INTERVAL = 5000 // 5 seconds
 

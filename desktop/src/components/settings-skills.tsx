@@ -27,7 +27,7 @@ import {
 import { open as openUrl } from '@tauri-apps/plugin-shell'
 import { toast } from 'sonner'
 
-const DEFAULT_AI_SERVER_PORT = 39100
+const DEFAULT_AI_SERVER_PORT = 39200
 const SKILLS_SITE_URL = 'https://skills.sh'
 
 interface SkillRepoInfo {

@@ -14,7 +14,7 @@ import {
   lastAssistantMessageIsCompleteWithApprovalResponses,
 } from 'ai'
 
-const DEFAULT_AI_SERVER_PORT = 39100
+const DEFAULT_AI_SERVER_PORT = 39200
 
 /**
  * Basic info about a registered app

@@ -33,7 +33,7 @@ import {
 } from '@moldable-ai/ui'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 
-const DEFAULT_AI_SERVER_PORT = 39100
+const DEFAULT_AI_SERVER_PORT = 39200
 
 interface McpServerConfig {
   type?: 'stdio' | 'http' | 'sse'

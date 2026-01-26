@@ -128,7 +128,7 @@ function getPort(): number {
     const parsed = parseInt(envPort, 10)
     if (!isNaN(parsed)) return parsed
   }
-  return 39100
+  return 39200
 }
 
 function getHost(): string {

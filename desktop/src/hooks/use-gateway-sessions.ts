@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-const DEFAULT_AI_SERVER_PORT = 39100
+const DEFAULT_AI_SERVER_PORT = 39200
 
 export type GatewayMessage = {
   role: 'user' | 'assistant' | 'system'

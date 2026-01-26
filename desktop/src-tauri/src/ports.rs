@@ -24,7 +24,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 // ============================================================================
 
 /// Default AI server port
-pub const DEFAULT_AI_SERVER_PORT: u16 = 39100;
+pub const DEFAULT_AI_SERVER_PORT: u16 = 39200;
 /// Default API server port
 pub const DEFAULT_API_SERVER_PORT: u16 = 39102;
 
@@ -279,6 +279,30 @@ pub fn is_port_available(port: u16) -> bool {
     let ipv6_available = TcpListener::bind(format!("[::1]:{}", port)).is_ok();
 
     ipv4_available && ipv6_available
+}
+
+/// Check if a port currently has a listening server.
+pub fn is_port_listening(port: u16) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        return !netstat_pids(port, true).is_empty();
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    if let Ok(output) = Command::new("lsof")
+        .args([
+            "-nP",
+            "-iTCP",
+            &format!(":{}", port),
+            "-sTCP:LISTEN",
+            "-t",
+        ])
+        .output()
+    {
+        return output.status.success() && !output.stdout.is_empty();
+    }
+
+    false
 }
 
 /// Check if any process is using a port (including TIME_WAIT, CLOSE_WAIT, etc.)
@@ -826,6 +850,12 @@ pub fn create_instance_lock(ai_server_port: u16, api_server_port: u16) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn lock_file_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
 
     #[test]
     fn test_is_port_available_high_port() {
@@ -866,19 +896,19 @@ mod tests {
     fn test_moldable_lock_serialization() {
         let lock = MoldableLock {
             pid: 12345,
-            ai_server_port: 39100,
+            ai_server_port: 39200,
             api_server_port: 39102,
             started_at: 1705555200,
         };
         
         let json = serde_json::to_string(&lock).unwrap();
         assert!(json.contains("12345"));
-        assert!(json.contains("39100"));
+        assert!(json.contains("39200"));
         assert!(json.contains("39102"));
         
         let deserialized: MoldableLock = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.pid, 12345);
-        assert_eq!(deserialized.ai_server_port, 39100);
+        assert_eq!(deserialized.ai_server_port, 39200);
         assert_eq!(deserialized.api_server_port, 39102);
     }
     
@@ -956,6 +986,7 @@ mod tests {
     
     #[test]
     fn test_lock_file_write_read_delete_cycle() {
+        let _guard = lock_file_test_guard();
         // Create a unique lock for testing (we'll use a temp approach)
         let test_lock = MoldableLock {
             pid: current_pid(),
@@ -987,6 +1018,7 @@ mod tests {
     
     #[test]
     fn test_read_lock_file_nonexistent() {
+        let _guard = lock_file_test_guard();
         // Make sure no lock file exists
         delete_lock_file();
         
@@ -997,6 +1029,7 @@ mod tests {
     
     #[test]
     fn test_delete_lock_file_idempotent() {
+        let _guard = lock_file_test_guard();
         // Deleting a non-existent lock file should not panic
         delete_lock_file();
         delete_lock_file(); // Should be fine to call twice
@@ -1004,6 +1037,7 @@ mod tests {
     
     #[test]
     fn test_create_instance_lock() {
+        let _guard = lock_file_test_guard();
         // NOTE: This test may run in parallel with others that modify the lock file.
         // We only test that creating a lock succeeds and can be read back.
         // The actual port values may be overwritten by concurrent tests.
@@ -1029,6 +1063,7 @@ mod tests {
     
     #[test]
     fn test_cleanup_stale_instances_no_lock_file() {
+        let _guard = lock_file_test_guard();
         // Ensure no lock file exists
         delete_lock_file();
         
@@ -1039,6 +1074,7 @@ mod tests {
     
     #[test]
     fn test_cleanup_stale_instances_with_our_pid() {
+        let _guard = lock_file_test_guard();
         // Clean up first
         delete_lock_file();
         
@@ -1066,6 +1102,7 @@ mod tests {
     
     #[test]
     fn test_cleanup_stale_instances_with_nonexistent_pid() {
+        let _guard = lock_file_test_guard();
         // NOTE: This test may run in parallel with others that modify the lock file.
         // We test that cleanup handles non-existent PIDs gracefully.
         
@@ -1220,7 +1257,7 @@ mod tests {
     #[test]
     fn test_default_port_constants() {
         // Verify default port constants are set correctly
-        assert_eq!(DEFAULT_AI_SERVER_PORT, 39100);
+        assert_eq!(DEFAULT_AI_SERVER_PORT, 39200);
         assert_eq!(DEFAULT_API_SERVER_PORT, 39102);
         
         // AI server and API server should have different ports
@@ -1442,13 +1479,13 @@ mod tests {
     fn test_moldable_lock_all_fields() {
         let lock = MoldableLock {
             pid: 99999,
-            ai_server_port: 39100,
+            ai_server_port: 39200,
             api_server_port: 39102,
             started_at: 1700000000,
         };
         
         assert_eq!(lock.pid, 99999);
-        assert_eq!(lock.ai_server_port, 39100);
+        assert_eq!(lock.ai_server_port, 39200);
         assert_eq!(lock.api_server_port, 39102);
         assert_eq!(lock.started_at, 1700000000);
     }
@@ -1457,7 +1494,7 @@ mod tests {
     fn test_moldable_lock_json_roundtrip() {
         let original = MoldableLock {
             pid: 12345,
-            ai_server_port: 39100,
+            ai_server_port: 39200,
             api_server_port: 39102,
             started_at: 1705555200,
         };
@@ -1479,7 +1516,7 @@ mod tests {
     fn test_moldable_lock_pretty_json() {
         let lock = MoldableLock {
             pid: 12345,
-            ai_server_port: 39100,
+            ai_server_port: 39200,
             api_server_port: 39102,
             started_at: 1705555200,
         };
@@ -1601,6 +1638,7 @@ mod tests {
     
     #[test]
     fn test_lock_file_workflow() {
+        let _guard = lock_file_test_guard();
         // Test the complete lock file workflow:
         // 1. Delete any existing lock
         // 2. Create new lock
@@ -1615,7 +1653,7 @@ mod tests {
         // Create a new lock with test values
         let test_lock = MoldableLock {
             pid: current_pid(),
-            ai_server_port: 39100,
+            ai_server_port: 39200,
             api_server_port: 39102,
             started_at: current_timestamp(),
         };

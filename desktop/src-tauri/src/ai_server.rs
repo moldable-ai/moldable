@@ -2,20 +2,30 @@
 //!
 //! Handles starting and stopping the AI server sidecar process.
 
-use crate::ports::{acquire_port, kill_process_tree, PortAcquisitionConfig, PortAcquisitionResult, DEFAULT_AI_SERVER_PORT};
+use crate::ports::{
+    get_port_info,
+    is_port_listening,
+    kill_port_aggressive,
+    kill_process_tree,
+    PortAcquisitionResult,
+    DEFAULT_AI_SERVER_PORT,
+};
 use log::{error, info, warn};
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tauri::AppHandle;
 use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::ShellExt;
 
 /// Default port for the AI server (re-export from ports for external use)
 pub const AI_SERVER_PORT: u16 = DEFAULT_AI_SERVER_PORT;
-
-/// Fallback port range for AI server (if default is unavailable)
-const AI_SERVER_FALLBACK_START: u16 = DEFAULT_AI_SERVER_PORT + 1;
-const AI_SERVER_FALLBACK_END: u16 = DEFAULT_AI_SERVER_PORT + 99;
+const AI_SERVER_PORT_MAX_RETRIES: u32 = 6;
+const AI_SERVER_PORT_INITIAL_DELAY_MS: u64 = 200;
+const AI_SERVER_PORT_MAX_DELAY_MS: u64 = 2000;
+const AI_SERVER_STARTUP_TIMEOUT_MS: u64 = 2500;
 
 // ============================================================================
 // AI SERVER LIFECYCLE
@@ -95,19 +105,97 @@ fn cleanup_stale_ai_servers() {
     }
 }
 
-/// Acquire the AI server port using robust retry and fallback logic.
+fn format_port_blocker(port: u16) -> String {
+    if let Some(info) = get_port_info(port) {
+        let mut details = Vec::new();
+        if let Some(pid) = info.pid {
+            details.push(format!("pid {}", pid));
+        }
+        if let Some(name) = info.process_name {
+            details.push(format!("name {}", name));
+        }
+        if let Some(command) = info.command {
+            details.push(format!("cmd {}", command));
+        }
+
+        if !details.is_empty() {
+            return format!(" ({})", details.join(", "));
+        }
+    }
+
+    String::new()
+}
+
+fn can_bind_loopback(port: u16) -> bool {
+    TcpListener::bind(("127.0.0.1", port)).is_ok()
+}
+
+fn wait_for_ai_server_health(port: u16, timeout: Duration) -> bool {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let deadline = Instant::now() + timeout;
+
+    while Instant::now() < deadline {
+        if let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(200)) {
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
+            let _ = stream.set_write_timeout(Some(Duration::from_millis(200)));
+            let _ = stream.write_all(
+                b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+            );
+
+            let mut buf = [0u8; 512];
+            if let Ok(read) = stream.read(&mut buf) {
+                let response = String::from_utf8_lossy(&buf[..read]);
+                if response.contains("\"status\":\"ok\"")
+                    || response.contains("\"status\": \"ok\"")
+                {
+                    return true;
+                }
+            }
+        }
+
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    false
+}
+
+/// Acquire the AI server port with retry logic (no fallback).
 /// Returns the actual port that was acquired.
 fn acquire_ai_server_port() -> Result<PortAcquisitionResult, String> {
-    let config = PortAcquisitionConfig {
-        preferred_port: AI_SERVER_PORT,
-        max_retries: 2,
-        initial_delay_ms: 200,
-        max_delay_ms: 2000,
-        allow_fallback: true,
-        fallback_range: Some((AI_SERVER_FALLBACK_START, AI_SERVER_FALLBACK_END)),
-    };
-    
-    acquire_port(config)
+    let mut delay_ms = AI_SERVER_PORT_INITIAL_DELAY_MS;
+
+    for attempt in 0..=AI_SERVER_PORT_MAX_RETRIES {
+        let listening = is_port_listening(AI_SERVER_PORT);
+        let bindable = can_bind_loopback(AI_SERVER_PORT);
+        if !listening && bindable {
+            return Ok(PortAcquisitionResult {
+                port: AI_SERVER_PORT,
+                is_preferred: true,
+                retries_used: attempt,
+            });
+        }
+
+        info!(
+            "AI server port {} is unavailable (listening={}, bindable={}), attempting to free it (attempt {}){}",
+            AI_SERVER_PORT,
+            listening,
+            bindable,
+            attempt + 1,
+            format_port_blocker(AI_SERVER_PORT),
+        );
+        let _ = kill_port_aggressive(AI_SERVER_PORT);
+
+        if attempt < AI_SERVER_PORT_MAX_RETRIES {
+            std::thread::sleep(Duration::from_millis(delay_ms));
+            delay_ms = (delay_ms * 2).min(AI_SERVER_PORT_MAX_DELAY_MS);
+        }
+    }
+
+    Err(format!(
+        "AI server port {} is still unavailable{}",
+        AI_SERVER_PORT,
+        format_port_blocker(AI_SERVER_PORT)
+    ))
 }
 
 /// Start the AI server sidecar.
@@ -116,7 +204,10 @@ pub fn start_ai_server(
     app: &AppHandle,
     ai_server_state: Arc<Mutex<Option<CommandChild>>>,
 ) -> Result<u16, Box<dyn std::error::Error>> {
-    // Acquire port with retry and fallback logic
+    // Kill any stale AI server processes from previous runs BEFORE acquiring the port
+    cleanup_stale_ai_servers();
+
+    // Acquire port with retry logic (no fallback)
     let port_result = acquire_ai_server_port().map_err(|e| {
         error!("Cannot start AI server: {}", e);
         e
@@ -124,16 +215,6 @@ pub fn start_ai_server(
     
     let actual_port = port_result.port;
     
-    if !port_result.is_preferred {
-        warn!(
-            "AI Server using fallback port {} (preferred {} was unavailable)",
-            actual_port, AI_SERVER_PORT
-        );
-    }
-
-    // Kill any stale AI server processes from previous runs BEFORE starting
-    cleanup_stale_ai_servers();
-
     let shell = app.shell();
 
     // Get the sidecar command with the actual port
@@ -147,11 +228,6 @@ pub fn start_ai_server(
 
     // Spawn the sidecar
     let (mut rx, child) = sidecar.spawn()?;
-
-    // Store the child handle for cleanup on exit
-    if let Ok(mut state) = ai_server_state.lock() {
-        *state = Some(child);
-    }
 
     let port_for_log = actual_port;
     
@@ -173,6 +249,25 @@ pub fn start_ai_server(
             }
         }
     });
+
+    if !wait_for_ai_server_health(
+        port_for_log,
+        Duration::from_millis(AI_SERVER_STARTUP_TIMEOUT_MS),
+    ) {
+        let pid = child.pid();
+        let _ = child.kill();
+        kill_process_tree(pid);
+        return Err(format!(
+            "AI server failed to start on port {}",
+            port_for_log
+        )
+        .into());
+    }
+
+    // Store the child handle for cleanup on exit
+    if let Ok(mut state) = ai_server_state.lock() {
+        *state = Some(child);
+    }
 
     info!("AI Server sidecar started on port {}", port_for_log);
     Ok(actual_port)
@@ -217,7 +312,7 @@ mod tests {
     
     #[test]
     fn test_ai_server_port_constant() {
-        assert_eq!(AI_SERVER_PORT, 39100);
+        assert_eq!(AI_SERVER_PORT, 39200);
     }
     
     #[test]
@@ -227,42 +322,20 @@ mod tests {
     }
     
     #[test]
-    fn test_ai_server_fallback_range() {
-        assert_eq!(AI_SERVER_FALLBACK_START, 39101);
-        assert_eq!(AI_SERVER_FALLBACK_END, 39199);
-        // Fallback range should be after the main port
-        assert!(AI_SERVER_FALLBACK_START > AI_SERVER_PORT);
-    }
-    
-    #[test]
-    fn test_ai_server_fallback_range_is_contiguous() {
-        // Fallback start should be exactly one more than the main port
-        assert_eq!(AI_SERVER_FALLBACK_START, AI_SERVER_PORT + 1);
-    }
-    
-    #[test]
-    fn test_ai_server_fallback_range_size() {
-        // Should have 99 fallback ports (39101-39199)
-        let range_size = AI_SERVER_FALLBACK_END - AI_SERVER_FALLBACK_START + 1;
-        assert_eq!(range_size, 99);
-    }
-    
-    #[test]
     fn test_ai_server_port_in_valid_range() {
         // Port should be > 1024 (unprivileged) and < 65536
         assert!(AI_SERVER_PORT > 1024);
         assert!(AI_SERVER_PORT < 65535);
-        assert!(AI_SERVER_FALLBACK_END < 65535);
     }
 
     // ==================== PORT ACQUISITION TESTS ====================
 
     #[test]
     fn test_acquire_ai_server_port_when_free() {
-        use crate::ports::is_port_available;
+        use crate::ports::is_port_listening;
         
-        // If the default port happens to be free, acquisition should succeed
-        if is_port_available(AI_SERVER_PORT) {
+        // If the default port isn't listening, acquisition should succeed
+        if !is_port_listening(AI_SERVER_PORT) && can_bind_loopback(AI_SERVER_PORT) {
             let result = acquire_ai_server_port();
             assert!(result.is_ok());
             let acquired = result.unwrap();
@@ -279,8 +352,7 @@ mod tests {
         match result {
             Ok(acquired) => {
                 assert!(acquired.port > 0);
-                assert!(acquired.port >= AI_SERVER_PORT);
-                assert!(acquired.port <= AI_SERVER_FALLBACK_END);
+                assert_eq!(acquired.port, AI_SERVER_PORT);
             }
             Err(msg) => {
                 // Error message should be descriptive
@@ -291,21 +363,19 @@ mod tests {
     
     #[test]
     fn test_acquire_ai_server_port_result_fields() {
-        use crate::ports::is_port_available;
+        use crate::ports::is_port_listening;
         
         // If acquisition succeeds, verify all fields are set correctly
-        if is_port_available(AI_SERVER_PORT) {
+        if !is_port_listening(AI_SERVER_PORT) && can_bind_loopback(AI_SERVER_PORT) {
             if let Ok(result) = acquire_ai_server_port() {
                 // Port should be valid
                 assert!(result.port > 0);
                 
                 // If it's the preferred port, is_preferred should be true
-                if result.port == AI_SERVER_PORT {
-                    assert!(result.is_preferred);
-                }
+                assert!(result.is_preferred);
                 
                 // retries_used should be reasonable
-                assert!(result.retries_used <= 2);
+                assert!(result.retries_used <= AI_SERVER_PORT_MAX_RETRIES);
             }
         }
     }
