@@ -187,11 +187,9 @@ pub fn is_package_manager_command(command: &str) -> bool {
 
 pub fn upsert_flag_value(args: &mut Vec<String>, flags: &[&str], value: String) {
     for (i, arg) in args.iter().enumerate() {
-        if flags.iter().any(|f| *f == arg) {
-            if i + 1 < args.len() {
-                args[i + 1] = value;
-                return;
-            }
+        if flags.iter().any(|f| *f == arg) && i + 1 < args.len() {
+            args[i + 1] = value;
+            return;
         }
     }
 
@@ -522,7 +520,7 @@ fn force_cleanup_next_lock(working_dir: &Path) -> Vec<String> {
 
         let port_responding = instance
             .port
-            .map(|p| is_port_responding(p))
+            .map(is_port_responding)
             .unwrap_or(false);
 
         // Kill if orphaned OR if it has the lock but isn't responding

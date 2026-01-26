@@ -136,6 +136,7 @@ fn kill_sidecar_child(child: CommandChild, log_prefix: &'static str) -> u32 {
     pid
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn start_sidecar<FPre, FSpawn, FHealth, FOnStarted, FRestart>(
     runtime: &SidecarRuntime,
     state: Arc<Mutex<Option<CommandChild>>>,

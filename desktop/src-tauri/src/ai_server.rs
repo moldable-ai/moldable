@@ -27,6 +27,11 @@ pub const AI_SERVER_PORT: u16 = DEFAULT_AI_SERVER_PORT;
 const AI_SERVER_PORT_MAX_RETRIES: u32 = 6;
 const AI_SERVER_PORT_INITIAL_DELAY_MS: u64 = 200;
 const AI_SERVER_PORT_MAX_DELAY_MS: u64 = 2000;
+
+const _: () = {
+    assert!(AI_SERVER_PORT > 1024);
+    assert!(AI_SERVER_PORT < 65535);
+};
 const AI_SERVER_STARTUP_TIMEOUT_MS: u64 = 2500;
 const AI_SERVER_RESTART_MIN_DELAY_MS: u64 = 5000;
 const AI_SERVER_RESTART_MAX_DELAY_MS: u64 = 10000;
@@ -311,13 +316,6 @@ mod tests {
         assert_eq!(AI_SERVER_PORT, DEFAULT_AI_SERVER_PORT);
     }
     
-    #[test]
-    fn test_ai_server_port_in_valid_range() {
-        // Port should be > 1024 (unprivileged) and < 65536
-        assert!(AI_SERVER_PORT > 1024);
-        assert!(AI_SERVER_PORT < 65535);
-    }
-
     // ==================== PORT ACQUISITION TESTS ====================
 
     #[test]

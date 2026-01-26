@@ -788,10 +788,8 @@ pub async fn restore_checkpoint(
             Err(_) => continue, // Skip invalid paths
         };
 
-        if full_path.exists() {
-            if fs::remove_file(&full_path).is_ok() {
-                files_deleted += 1;
-            }
+        if full_path.exists() && fs::remove_file(&full_path).is_ok() {
+            files_deleted += 1;
         }
     }
 

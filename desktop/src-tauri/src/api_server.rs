@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -35,6 +35,13 @@ pub const API_SERVER_PORT: u16 = DEFAULT_API_SERVER_PORT;
 /// Fallback port range for API server
 const API_SERVER_FALLBACK_START: u16 = DEFAULT_API_SERVER_PORT + 1;
 const API_SERVER_FALLBACK_END: u16 = DEFAULT_API_SERVER_PORT + 97;
+
+const _: () = {
+    assert!(API_SERVER_FALLBACK_START > API_SERVER_PORT);
+    assert!(API_SERVER_PORT > 1024);
+    assert!(API_SERVER_PORT < 65535);
+    assert!(API_SERVER_FALLBACK_END < 65535);
+};
 
 // ============================================================================
 // TYPES
@@ -82,7 +89,7 @@ pub struct UnregisterAppRequest {
     pub app_id: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct UnregisterAppResponse {
     pub success: bool,
@@ -102,7 +109,7 @@ pub struct DeleteAppDataRequest {
     pub app_id: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct DeleteAppDataResponse {
     pub success: bool,
@@ -122,7 +129,7 @@ pub struct DeleteAppRequest {
     pub app_id: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct DeleteAppResponse {
     pub success: bool,
@@ -147,7 +154,7 @@ pub struct AppInfoRequest {
     pub app_id: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AppInfoResponse {
     pub success: bool,
@@ -167,7 +174,7 @@ pub struct AppInfoResponse {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateAppResponse {
     pub success: bool,
@@ -905,7 +912,7 @@ async fn delete_app_handler(
 }
 
 /// Helper to get app name from moldable.json manifest
-fn get_app_name_from_manifest(app_dir: &PathBuf) -> Option<String> {
+fn get_app_name_from_manifest(app_dir: &Path) -> Option<String> {
     let manifest_path = app_dir.join("moldable.json");
     if manifest_path.exists() {
         if let Ok(content) = fs::read_to_string(&manifest_path) {
@@ -996,80 +1003,6 @@ pub async fn start_api_server(app_handle: tauri::AppHandle) -> Result<u16, Strin
 }
 
 // ============================================================================
-// DEFAULT IMPL
-// ============================================================================
-
-impl Default for CreateAppResponse {
-    fn default() -> Self {
-        Self {
-            success: false,
-            app_id: None,
-            name: None,
-            icon: None,
-            port: None,
-            path: None,
-            files: None,
-            pnpm_installed: None,
-            registered: None,
-            message: None,
-            error: None,
-        }
-    }
-}
-
-impl Default for UnregisterAppResponse {
-    fn default() -> Self {
-        Self {
-            success: false,
-            app_id: None,
-            app_name: None,
-            message: None,
-            error: None,
-        }
-    }
-}
-
-impl Default for DeleteAppDataResponse {
-    fn default() -> Self {
-        Self {
-            success: false,
-            app_id: None,
-            deleted_path: None,
-            message: None,
-            error: None,
-        }
-    }
-}
-
-impl Default for DeleteAppResponse {
-    fn default() -> Self {
-        Self {
-            success: false,
-            app_id: None,
-            app_name: None,
-            deleted_path: None,
-            workspaces_affected: None,
-            message: None,
-            error: None,
-        }
-    }
-}
-
-impl Default for AppInfoResponse {
-    fn default() -> Self {
-        Self {
-            success: false,
-            app_id: None,
-            app_name: None,
-            app_path: None,
-            installed_in_workspaces: None,
-            has_workspace_data: None,
-            error: None,
-        }
-    }
-}
-
-// ============================================================================
 // TESTS
 // ============================================================================
 
@@ -1108,8 +1041,6 @@ mod tests {
     fn test_api_server_fallback_range() {
         assert_eq!(API_SERVER_FALLBACK_START, 39103);
         assert_eq!(API_SERVER_FALLBACK_END, 39199);
-        // Fallback range should be after the main port
-        assert!(API_SERVER_FALLBACK_START > API_SERVER_PORT);
     }
     
     #[test]
@@ -1123,14 +1054,6 @@ mod tests {
         // Should have 97 fallback ports (39103-39199)
         let range_size = API_SERVER_FALLBACK_END - API_SERVER_FALLBACK_START + 1;
         assert_eq!(range_size, 97);
-    }
-    
-    #[test]
-    fn test_api_server_port_in_valid_range() {
-        // Port should be > 1024 (unprivileged) and < 65536
-        assert!(API_SERVER_PORT > 1024);
-        assert!(API_SERVER_PORT < 65535);
-        assert!(API_SERVER_FALLBACK_END < 65535);
     }
     
     #[test]
@@ -1229,7 +1152,7 @@ mod tests {
         let file_path = temp_dir.path().join("test.png");
         
         // Write some binary-ish content
-        fs::write(&file_path, &[0x89, 0x50, 0x4E, 0x47]).unwrap();
+        fs::write(&file_path, [0x89, 0x50, 0x4E, 0x47]).unwrap();
 
         let mut replacements: HashMap<&str, &str> = HashMap::new();
         replacements.insert("app_id", "my-app");
@@ -1623,14 +1546,14 @@ mod tests {
             serde_json::to_string(&manifest).unwrap(),
         ).unwrap();
 
-        let result = get_app_name_from_manifest(&temp_dir.path().to_path_buf());
+        let result = get_app_name_from_manifest(temp_dir.path());
         assert_eq!(result, Some("Test App".to_string()));
     }
 
     #[test]
     fn test_get_app_name_from_manifest_no_manifest() {
         let temp_dir = TempDir::new().unwrap();
-        let result = get_app_name_from_manifest(&temp_dir.path().to_path_buf());
+        let result = get_app_name_from_manifest(temp_dir.path());
         assert!(result.is_none());
     }
 
@@ -1646,7 +1569,7 @@ mod tests {
             serde_json::to_string(&manifest).unwrap(),
         ).unwrap();
 
-        let result = get_app_name_from_manifest(&temp_dir.path().to_path_buf());
+        let result = get_app_name_from_manifest(temp_dir.path());
         assert!(result.is_none());
     }
 
@@ -1655,7 +1578,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         fs::write(temp_dir.path().join("moldable.json"), "not valid json").unwrap();
 
-        let result = get_app_name_from_manifest(&temp_dir.path().to_path_buf());
+        let result = get_app_name_from_manifest(temp_dir.path());
         assert!(result.is_none());
     }
 }

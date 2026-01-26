@@ -545,7 +545,7 @@ pub async fn install_app_from_registry(
                 );
                 message
             })?;
-            let name = safe_zip_entry_name(&file).map_err(|message| {
+            let name = safe_zip_entry_name(&file).inspect_err(|message| {
                 update_install_state_safe(
                     &temp_dir,
                     &app_id,
@@ -553,7 +553,6 @@ pub async fn install_app_from_registry(
                     "error",
                     Some(message.clone()),
                 );
-                message
             })?;
             let name_str = name.to_string_lossy();
             for prefix in &possible_prefixes {
@@ -625,7 +624,7 @@ pub async fn install_app_from_registry(
             })?;
 
             let relative_path =
-                match safe_zip_entry_relative_path(&file, &prefix).map_err(|message| {
+                match safe_zip_entry_relative_path(&file, &prefix).inspect_err(|message| {
                     update_install_state_safe(
                         &temp_dir,
                         &app_id,
@@ -633,7 +632,6 @@ pub async fn install_app_from_registry(
                         "error",
                         Some(message.clone()),
                     );
-                    message
                 })? {
                     Some(path) => path,
                     None => continue,
@@ -654,7 +652,7 @@ pub async fn install_app_from_registry(
                         );
                         message
                     })?;
-                ensure_path_within_root(&temp_root, &dest_path).map_err(|message| {
+                ensure_path_within_root(&temp_root, &dest_path).inspect_err(|message| {
                     update_install_state_safe(
                         &temp_dir,
                         &app_id,
@@ -662,7 +660,6 @@ pub async fn install_app_from_registry(
                         "error",
                         Some(message.clone()),
                     );
-                    message
                 })?;
             } else {
                 if let Some(parent) = dest_path.parent() {
@@ -678,7 +675,7 @@ pub async fn install_app_from_registry(
                             );
                             message
                         })?;
-                    ensure_path_within_root(&temp_root, parent).map_err(|message| {
+                    ensure_path_within_root(&temp_root, parent).inspect_err(|message| {
                         update_install_state_safe(
                             &temp_dir,
                             &app_id,
@@ -686,7 +683,6 @@ pub async fn install_app_from_registry(
                             "error",
                             Some(message.clone()),
                         );
-                        message
                     })?;
                 }
 
@@ -729,7 +725,7 @@ pub async fn install_app_from_registry(
                         );
                         message
                     })?;
-                ensure_path_within_root(&temp_root, &dest_path).map_err(|message| {
+                ensure_path_within_root(&temp_root, &dest_path).inspect_err(|message| {
                     update_install_state_safe(
                         &temp_dir,
                         &app_id,
@@ -737,7 +733,6 @@ pub async fn install_app_from_registry(
                         "error",
                         Some(message.clone()),
                     );
-                    message
                 })?;
 
                 extracted_count += 1;

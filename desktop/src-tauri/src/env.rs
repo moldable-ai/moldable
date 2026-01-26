@@ -539,11 +539,7 @@ fn mask_api_key(key: &str) -> String {
 /// Remove an API key from the shared .env file
 #[tauri::command]
 pub fn remove_api_key(env_var: String) -> Result<(), String> {
-    let valid_vars = vec![
-        "OPENROUTER_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
-    ];
+    let valid_vars = ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"];
 
     if !valid_vars.contains(&env_var.as_str()) {
         return Err(format!("Invalid env var: {}", env_var));
@@ -691,8 +687,8 @@ JSON_CONFIG={"key": "value", "nested": {"a": 1}}"#;
             env.get("API_KEY"),
             Some(&"sk-ant-api03-abc123XYZ_-".to_string())
         );
-        assert!(env.get("DATABASE_URL").is_some());
-        assert!(env.get("JSON_CONFIG").is_some());
+        assert!(env.contains_key("DATABASE_URL"));
+        assert!(env.contains_key("JSON_CONFIG"));
     }
 
     #[test]

@@ -26,7 +26,7 @@ pub fn get_registered_apps() -> Result<Vec<RegisteredApp>, String> {
         return Ok(Vec::new());
     }
 
-    let content = std::fs::read_to_string(&config_path)
+    let content = std::fs::read_to_string(config_path)
         .map_err(|e| format!("Failed to read config: {}", e))?;
 
     let config: MoldableConfig =
@@ -161,7 +161,7 @@ pub fn get_registered_apps_for_workspace(
         return Ok(Vec::new());
     }
 
-    let content = std::fs::read_to_string(&config_path)
+    let content = std::fs::read_to_string(config_path)
         .map_err(|e| format!("Failed to read config: {}", e))?;
 
     let config: MoldableConfig =
@@ -180,7 +180,7 @@ pub fn register_app(
 
     // Load existing config
     let mut config = if config_path.exists() {
-        let content = std::fs::read_to_string(&config_path)
+        let content = std::fs::read_to_string(config_path.as_path())
             .map_err(|e| format!("Failed to read config: {}", e))?;
         serde_json::from_str(&content).unwrap_or_default()
     } else {
@@ -216,7 +216,7 @@ pub fn unregister_app(
         return Ok(Vec::new());
     }
 
-    let content = std::fs::read_to_string(&config_path)
+    let content = std::fs::read_to_string(config_path.as_path())
         .map_err(|e| format!("Failed to read config: {}", e))?;
 
     let mut config: MoldableConfig =
@@ -249,7 +249,7 @@ fn update_registered_app_port_at_path(
         return Ok(false);
     }
 
-    let content = std::fs::read_to_string(&config_path)
+    let content = std::fs::read_to_string(config_path)
         .map_err(|e| format!("Failed to read config: {}", e))?;
 
     let mut config: MoldableConfig =
@@ -404,7 +404,7 @@ pub fn list_available_apps() -> Result<Vec<AvailableApp>, String> {
     let config_path = get_config_file_path()?;
 
     let workspace_path = if config_path.exists() {
-        let content = std::fs::read_to_string(&config_path)
+        let content = std::fs::read_to_string(config_path.as_path())
             .map_err(|e| format!("Failed to read config: {}", e))?;
         let config: MoldableConfig =
             serde_json::from_str(&content).map_err(|e| format!("Failed to parse config: {}", e))?;
@@ -766,7 +766,7 @@ mod tests {
         let updated = update_registered_app_port_at_path("test-app", 4200, &config_path).unwrap();
         assert!(updated);
 
-        let content = fs::read_to_string(&config_path).unwrap();
+        let content = fs::read_to_string(config_path.as_path()).unwrap();
         let reloaded: MoldableConfig = serde_json::from_str(&content).unwrap();
         assert_eq!(reloaded.apps[0].port, 4200);
     }
@@ -796,7 +796,7 @@ mod tests {
         let updated = update_registered_app_port_at_path("test-app", 4200, &config_path).unwrap();
         assert!(!updated);
 
-        let content = fs::read_to_string(&config_path).unwrap();
+        let content = fs::read_to_string(config_path.as_path()).unwrap();
         let reloaded: MoldableConfig = serde_json::from_str(&content).unwrap();
         assert_eq!(reloaded.apps[0].port, 4100);
     }

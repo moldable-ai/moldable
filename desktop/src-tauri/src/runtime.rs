@@ -483,10 +483,9 @@ pub fn ensure_node_modules_installed(app_dir: &Path) -> Result<(), String> {
     let node_modules_path = app_dir.join("node_modules");
     let install_reason = if !node_modules_path.exists() {
         Some("node_modules missing".to_string())
-    } else if let Some(missing_bin) = missing_expected_bin(app_dir) {
-        Some(format!("missing '{}' binary", missing_bin))
     } else {
-        None
+        missing_expected_bin(app_dir)
+            .map(|missing_bin| format!("missing '{}' binary", missing_bin))
     };
 
     if let Some(reason) = install_reason {

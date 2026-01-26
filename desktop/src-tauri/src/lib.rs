@@ -114,7 +114,7 @@ fn ensure_hello_moldables_app(app_handle: &tauri::AppHandle) {
         if let Err(e) = registry::ensure_hello_moldables_app_async(
             handle,
             load_shared_config,
-            |c| save_shared_config(c),
+            save_shared_config,
         ).await {
             warn!("Failed to install Hello Moldables app: {}", e);
         }
@@ -554,7 +554,7 @@ pub fn run() {
 
             // Clean up any orphaned processes from previous runs
             let app_state_for_cleanup = app.state::<AppState>();
-            cleanup_all_orphaned_apps(|| get_registered_apps(), app_state_for_cleanup.inner());
+            cleanup_all_orphaned_apps(get_registered_apps, app_state_for_cleanup.inner());
 
             Ok(())
         })

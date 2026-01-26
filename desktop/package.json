@@ -10,7 +10,7 @@
     "tauri": "tauri",
     "icon": "tauri icon public/app-icon.png && rm -rf src-tauri/icons/ios src-tauri/icons/android",
     "clean": "node scripts/clean.js",
-    "lint": "pnpm lint:js",
+    "lint": "pnpm lint:js && pnpm lint:rust",
     "lint:js": "eslint . --ext .ts,.tsx --max-warnings 0",
     "lint:rust": "cargo clippy --all-targets --all-features --manifest-path src-tauri/Cargo.toml -- -D warnings",
     "check-types": "tsc --noEmit",

@@ -28,6 +28,11 @@ pub const DEFAULT_AI_SERVER_PORT: u16 = 39200;
 /// Default API server port
 pub const DEFAULT_API_SERVER_PORT: u16 = 39102;
 
+const _: () = {
+    assert!(DEFAULT_AI_SERVER_PORT > 1024);
+    assert!(DEFAULT_API_SERVER_PORT > 1024);
+};
+
 /// Atomic storage for the actual AI server port (can be read from any thread)
 static AI_SERVER_ACTUAL_PORT: AtomicU16 = AtomicU16::new(DEFAULT_AI_SERVER_PORT);
 /// Atomic storage for the actual API server port (can be read from any thread)
@@ -352,10 +357,10 @@ pub async fn check_port(port: u16) -> bool {
 
     let addr = format!("127.0.0.1:{}", port);
     // Use a short timeout (200ms) to avoid blocking
-    match timeout(Duration::from_millis(200), TcpStream::connect(&addr)).await {
-        Ok(Ok(_)) => true,
-        _ => false,
-    }
+    matches!(
+        timeout(Duration::from_millis(200), TcpStream::connect(&addr)).await,
+        Ok(Ok(_))
+    )
 }
 
 // ============================================================================
@@ -1263,9 +1268,6 @@ mod tests {
         // AI server and API server should have different ports
         assert_ne!(DEFAULT_AI_SERVER_PORT, DEFAULT_API_SERVER_PORT);
         
-        // Both should be in the high port range (> 1024)
-        assert!(DEFAULT_AI_SERVER_PORT > 1024);
-        assert!(DEFAULT_API_SERVER_PORT > 1024);
     }
     
     #[test]
@@ -1410,14 +1412,14 @@ mod tests {
         // Should return a boolean without panicking
         let result = is_port_available(59830);
         // Result is either true or false - both are valid
-        assert!(result == true || result == false);
+        assert!(matches!(result, true | false));
     }
     
     #[test]
     fn test_is_port_in_any_state_returns_bool() {
         // Should return a boolean without panicking
         let result = is_port_in_any_state(59831);
-        assert!(result == true || result == false);
+        assert!(matches!(result, true | false));
     }
     
     #[test]
@@ -1538,8 +1540,8 @@ mod tests {
         let result_invalid = is_process_running(999999999);
         
         // Both should be booleans
-        assert!(result_valid == true || result_valid == false);
-        assert!(result_invalid == true || result_invalid == false);
+        assert!(matches!(result_valid, true | false));
+        assert!(matches!(result_invalid, true | false));
         
         // Our own process should definitely be running
         assert!(is_process_running(current_pid()));

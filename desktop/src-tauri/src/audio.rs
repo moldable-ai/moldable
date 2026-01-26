@@ -208,7 +208,7 @@ mod tests {
         let available = is_system_audio_available();
         // On macOS 14.2+, should be true; elsewhere false
         // We can't assert the specific value since it depends on the OS
-        assert!(available == true || available == false);
+        assert!(matches!(available, true | false));
     }
 
     #[test]
