@@ -114,9 +114,9 @@ export function AgentSessionsPanel({
         )}
       </header>
 
-      <div className="flex flex-1 overflow-hidden">
-        <aside className="border-border w-52 shrink-0 border-r">
-          <ScrollArea className="h-full">
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <aside className="border-border min-h-0 w-52 shrink-0 border-r">
+          <ScrollArea className="h-full min-h-0">
             <div className="flex flex-col gap-2 p-2">
               {isLoadingList && (
                 <div className="text-muted-foreground flex items-center gap-2 px-2 py-2 text-xs">
@@ -155,7 +155,7 @@ export function AgentSessionsPanel({
           </ScrollArea>
         </aside>
 
-        <div className="flex flex-1 flex-col overflow-hidden">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           {error && (
             <div className="border-border bg-destructive/10 text-destructive border-b px-4 py-2 text-xs">
               {error}
@@ -232,7 +232,7 @@ export function AgentSessionsPanel({
                 )}
               </div>
 
-              <ScrollArea className="flex-1">
+              <ScrollArea className="min-h-0 flex-1">
                 <div className="flex flex-col gap-3 p-4">
                   {activeSession.messages.map((message, index) => (
                     <div

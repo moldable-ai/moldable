@@ -10,9 +10,11 @@ import {
 import {
   type ChangeEvent,
   type FormEvent,
+  type ReactElement,
   type ReactNode,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react'
@@ -26,8 +28,12 @@ import {
   TooltipTrigger,
 } from '../ui/tooltip'
 import { ChatInput } from './chat-input'
-import type { ChatMessage } from './chat-message'
-import { type MessageCheckpoint, Messages } from './chat-messages'
+import { type ChatMessage, ThinkingMessage } from './chat-message'
+import {
+  type MessageCheckpoint,
+  MessageRow,
+  computeIsThinking,
+} from './chat-messages'
 import {
   ConversationHistory,
   type ConversationMeta,
@@ -43,6 +49,7 @@ import {
 } from './tool-approval-context'
 import { ToolProgressProvider } from './tool-progress-context'
 import { AnimatePresence, motion } from 'framer-motion'
+import { Virtualizer, type VirtualizerHandle } from 'virtua'
 
 type ChatStatus = 'ready' | 'submitted' | 'streaming' | 'error'
 
@@ -171,21 +178,37 @@ export function ChatPanel({
   onRestoreCheckpoint,
 }: ChatPanelProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null)
-  const messagesEndRef = useRef<HTMLDivElement>(null)
   const scrollAreaRef = useRef<HTMLDivElement>(null)
+  const viewportRef = useRef<HTMLElement | null>(null)
+  const virtualizerRef = useRef<VirtualizerHandle | null>(null)
+  const prevMessageCountRef = useRef(messages.length)
+  const scrollRafRef = useRef<number | null>(null)
+  const [viewportVersion, setViewportVersion] = useState(0)
   const [isAtBottom, setIsAtBottom] = useState(true)
 
   const isResponding = status === 'streaming' || status === 'submitted'
 
-  // Track scroll position to detect if user is at bottom
+  // Capture the Radix viewport element so virtua can use it as the scroll container
   useEffect(() => {
     const scrollArea = scrollAreaRef.current
     if (!scrollArea) return
 
-    // Radix ScrollArea puts the viewport as first child element
-    const viewport = scrollArea.querySelector(
+    const viewport = scrollArea.querySelector<HTMLElement>(
       '[data-radix-scroll-area-viewport]',
     )
+    if (!viewport) return
+
+    viewport.style.overflowAnchor = 'none'
+
+    if (viewportRef.current !== viewport) {
+      viewportRef.current = viewport
+      setViewportVersion((version) => version + 1)
+    }
+  }, [isExpanded])
+
+  // Track scroll position to detect if user is at bottom
+  useEffect(() => {
+    const viewport = viewportRef.current
     if (!viewport) return
 
     const handleScroll = () => {
@@ -195,9 +218,10 @@ export function ChatPanel({
       setIsAtBottom(atBottom)
     }
 
+    handleScroll()
     viewport.addEventListener('scroll', handleScroll)
     return () => viewport.removeEventListener('scroll', handleScroll)
-  }, [isExpanded])
+  }, [viewportVersion])
 
   // Focus input when expanded
   useEffect(() => {
@@ -208,13 +232,6 @@ export function ChatPanel({
       return () => clearTimeout(timer)
     }
   }, [isExpanded])
-
-  // Scroll to bottom on new messages only if user is already at bottom
-  useEffect(() => {
-    if (isExpanded && messagesEndRef.current && isAtBottom) {
-      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' })
-    }
-  }, [messages, isExpanded, isAtBottom])
 
   const handleSubmit = useCallback(
     (e?: FormEvent<HTMLFormElement>) => {
@@ -269,6 +286,186 @@ export function ChatPanel({
     }
     onMinimizedChange?.(true)
   }, [isExpanded, onExpandedChange, onMinimizedChange])
+
+  const isStreaming = status === 'streaming' || status === 'submitted'
+  const isThinking = useMemo(
+    () => computeIsThinking(messages, status),
+    [messages, status],
+  )
+
+  const showMissingApiKeyPrompt =
+    missingApiKey ||
+    (error && error.message?.includes('API_KEY not configured'))
+  const showErrorMessage =
+    Boolean(error) &&
+    status === 'error' &&
+    !error?.message?.includes('API_KEY not configured')
+
+  const lastMessageId = messages[messages.length - 1]?.id
+
+  type ChatListItem =
+    | { key: string; kind: 'welcome' }
+    | { key: string; kind: 'message'; message: ChatMessage }
+    | { key: string; kind: 'thinking' }
+    | { key: string; kind: 'missing-api-key' }
+    | { key: string; kind: 'error' }
+
+  const listItems = useMemo<ChatListItem[]>(() => {
+    const items: ChatListItem[] = []
+
+    if (messages.length === 0 && welcomeMessage) {
+      items.push({ key: 'welcome', kind: 'welcome' })
+    }
+
+    for (const message of messages) {
+      items.push({ key: message.id, kind: 'message', message })
+    }
+
+    if (isThinking) {
+      items.push({ key: 'thinking', kind: 'thinking' })
+    }
+
+    if (showMissingApiKeyPrompt) {
+      items.push({ key: 'missing-api-key', kind: 'missing-api-key' })
+    }
+
+    if (showErrorMessage) {
+      items.push({ key: 'error', kind: 'error' })
+    }
+
+    return items
+  }, [
+    isThinking,
+    messages,
+    showErrorMessage,
+    showMissingApiKeyPrompt,
+    welcomeMessage,
+  ])
+
+  const renderVirtualItem = useCallback(
+    (item: ChatListItem): ReactElement => {
+      switch (item.kind) {
+        case 'welcome':
+          return (
+            <div className="px-2 pb-4">
+              {messages.length === 0 && welcomeMessage && (
+                <div className="bg-muted/50 text-muted-foreground mx-2 rounded-2xl p-4 text-sm">
+                  {welcomeMessage}
+                </div>
+              )}
+            </div>
+          )
+        case 'message': {
+          const checkpoint = checkpoints?.get(item.message.id)
+          return (
+            <div className="px-2 pb-4">
+              <MessageRow
+                message={item.message}
+                isLast={item.message.id === lastMessageId}
+                isStreaming={isStreaming}
+                checkpoint={checkpoint}
+                restoringMessageId={restoringMessageId}
+                onRestoreCheckpoint={onRestoreCheckpoint}
+              />
+            </div>
+          )
+        }
+        case 'thinking':
+          return (
+            <div className="px-2 pb-4">
+              <ThinkingMessage />
+            </div>
+          )
+        case 'missing-api-key':
+          return (
+            <div className="px-2 pb-4">
+              <div className="border-primary/30 bg-primary/5 mx-2 flex flex-col items-center gap-3 rounded-lg border p-4 text-center">
+                <div className="bg-primary/10 flex size-10 items-center justify-center rounded-full">
+                  <AlertCircle className="text-primary size-5" />
+                </div>
+                <div>
+                  <p className="text-foreground font-medium">
+                    API key required
+                  </p>
+                  <p className="text-muted-foreground mt-1 text-sm">
+                    Add an API key to start chatting with AI
+                  </p>
+                </div>
+                {onAddApiKey && (
+                  <Button
+                    onClick={onAddApiKey}
+                    size="sm"
+                    className="cursor-pointer"
+                  >
+                    Add API key
+                  </Button>
+                )}
+              </div>
+            </div>
+          )
+        case 'error':
+          return (
+            <div className="px-2 pb-4">
+              {error && (
+                <div className="border-destructive/30 bg-destructive/10 text-destructive mx-2 flex items-start gap-2 rounded-lg border p-3 text-sm">
+                  <AlertCircle className="mt-0.5 size-4 shrink-0" />
+                  <div className="min-w-0">
+                    <p className="font-medium">Request failed</p>
+                    <p className="text-destructive/80 mt-0.5 break-words">
+                      {error.message || 'An unknown error occurred'}
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          )
+      }
+    },
+    [
+      checkpoints,
+      error,
+      isStreaming,
+      lastMessageId,
+      messages.length,
+      onAddApiKey,
+      onRestoreCheckpoint,
+      restoringMessageId,
+      welcomeMessage,
+    ],
+  )
+
+  // Scroll to bottom on new messages if the user is already at bottom
+  useEffect(() => {
+    const previousMessageCount = prevMessageCountRef.current
+    const hasNewMessage = messages.length > previousMessageCount
+    prevMessageCountRef.current = messages.length
+
+    if (!isExpanded || !isAtBottom) {
+      return
+    }
+
+    const lastIndex = listItems.length - 1
+    if (lastIndex < 0) return
+
+    if (scrollRafRef.current !== null) {
+      cancelAnimationFrame(scrollRafRef.current)
+    }
+
+    scrollRafRef.current = requestAnimationFrame(() => {
+      virtualizerRef.current?.scrollToIndex(lastIndex, {
+        align: 'end',
+        smooth: hasNewMessage,
+      })
+      scrollRafRef.current = null
+    })
+
+    return () => {
+      if (scrollRafRef.current !== null) {
+        cancelAnimationFrame(scrollRafRef.current)
+        scrollRafRef.current = null
+      }
+    }
+  }, [isAtBottom, isExpanded, listItems.length, messages.length])
 
   return (
     <>
@@ -495,68 +692,32 @@ export function ChatPanel({
             </div>
 
             {/* Messages area */}
-            <ScrollArea ref={scrollAreaRef} className="min-w-0 flex-1 px-2">
-              <div className="min-w-0 max-w-full space-y-4 overflow-hidden py-4">
-                {messages.length === 0 && welcomeMessage && (
-                  <div className="bg-muted/50 text-muted-foreground mx-2 rounded-2xl p-4 text-sm">
-                    {welcomeMessage}
-                  </div>
-                )}
+            <ScrollArea
+              ref={scrollAreaRef}
+              className="min-h-0 min-w-0 flex-1 px-2"
+            >
+              <div className="min-w-0 max-w-full overflow-hidden py-4">
                 <ToolProgressProvider value={toolProgress}>
                   <ToolApprovalProvider
                     onApprovalResponse={onApprovalResponse ?? null}
                   >
-                    <Messages
-                      messages={messages}
-                      status={status}
-                      checkpoints={checkpoints}
-                      restoringMessageId={restoringMessageId}
-                      onRestoreCheckpoint={onRestoreCheckpoint}
-                    />
+                    {viewportVersion > 0 ? (
+                      <Virtualizer
+                        key={viewportVersion}
+                        ref={virtualizerRef}
+                        data={listItems}
+                        scrollRef={viewportRef}
+                        bufferSize={300}
+                      >
+                        {(item) => renderVirtualItem(item)}
+                      </Virtualizer>
+                    ) : (
+                      listItems.map((item) => (
+                        <div key={item.key}>{renderVirtualItem(item)}</div>
+                      ))
+                    )}
                   </ToolApprovalProvider>
                 </ToolProgressProvider>
-                {/* Missing API key prompt */}
-                {(missingApiKey ||
-                  (error &&
-                    error.message?.includes('API_KEY not configured'))) && (
-                  <div className="border-primary/30 bg-primary/5 mx-2 flex flex-col items-center gap-3 rounded-lg border p-4 text-center">
-                    <div className="bg-primary/10 flex size-10 items-center justify-center rounded-full">
-                      <AlertCircle className="text-primary size-5" />
-                    </div>
-                    <div>
-                      <p className="text-foreground font-medium">
-                        API key required
-                      </p>
-                      <p className="text-muted-foreground mt-1 text-sm">
-                        Add an API key to start chatting with AI
-                      </p>
-                    </div>
-                    {onAddApiKey && (
-                      <Button
-                        onClick={onAddApiKey}
-                        size="sm"
-                        className="cursor-pointer"
-                      >
-                        Add API key
-                      </Button>
-                    )}
-                  </div>
-                )}
-                {/* Error display - don't show for API key errors */}
-                {error &&
-                  status === 'error' &&
-                  !error.message?.includes('API_KEY not configured') && (
-                    <div className="border-destructive/30 bg-destructive/10 text-destructive mx-2 flex items-start gap-2 rounded-lg border p-3 text-sm">
-                      <AlertCircle className="mt-0.5 size-4 shrink-0" />
-                      <div className="min-w-0">
-                        <p className="font-medium">Request failed</p>
-                        <p className="text-destructive/80 mt-0.5 break-words">
-                          {error.message || 'An unknown error occurred'}
-                        </p>
-                      </div>
-                    </div>
-                  )}
-                <div ref={messagesEndRef} />
               </div>
             </ScrollArea>
           </motion.div>
