@@ -84,7 +84,7 @@ export function ChatInput({
                 onChange={onInputChange}
                 onKeyDown={handleKeyDown}
                 className={cn(
-                  'max-h-32 min-h-[24px] resize-none rounded-none border-0 bg-transparent p-0 text-sm shadow-none focus:outline-none focus-visible:ring-0 focus-visible:ring-offset-0',
+                  'max-h-32 min-h-[24px] resize-none rounded-none border-0 !bg-transparent p-0 text-sm shadow-none focus:outline-none focus-visible:ring-0 focus-visible:ring-offset-0 dark:!bg-transparent',
                   compact && 'max-h-6 min-h-6',
                 )}
               />
