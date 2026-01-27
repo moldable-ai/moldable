@@ -5,6 +5,13 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* Ensure Tailwind scans UI component class strings */
+@source "../dist/**/*.{js,jsx,ts,tsx}";
+@source "../components/**/*.{js,jsx,ts,tsx}";
+@source "../lib/**/*.{js,jsx,ts,tsx}";
+@source "../hooks/**/*.{js,jsx,ts,tsx}";
+@source "../index.{js,jsx,ts,tsx}";
+
 @theme inline {
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
