@@ -21,12 +21,12 @@
   },
   "devDependencies": {
     "@moldable-ai/typescript-config": "0.1.0",
-    "@tailwindcss/postcss": "^4",
+    "@tailwindcss/postcss": "^4.1.10",
     "@types/node": "^20.17.10",
     "@types/react": "^19.2.8",
     "@types/react-dom": "^19.0.4",
     "postcss": "^8.4.49",
-    "tailwindcss": "^4.0.0-alpha.30",
+    "tailwindcss": "^4.1.10",
     "typescript": "^5.7.2"
   }
 }
