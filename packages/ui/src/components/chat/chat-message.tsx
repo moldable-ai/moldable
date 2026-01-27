@@ -481,23 +481,12 @@ function PureMessage({
               }
 
               if (item.type === 'text' && item.textPart) {
-                if (message.role === 'user') {
-                  return (
-                    <div
-                      key={item.id}
-                      className="bg-secondary text-secondary-foreground w-full rounded-2xl px-4 py-2.5 pb-4"
-                    >
-                      <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">
-                        {item.textPart.text}
-                      </div>
-                    </div>
-                  )
-                }
-
                 return (
                   <div
                     key={item.id}
                     className={cn('flex min-w-0 flex-col gap-4', {
+                      'bg-secondary text-secondary-foreground w-full rounded-2xl px-4 py-2.5 pb-4':
+                        message.role === 'user',
                       'w-full': message.role === 'assistant',
                     })}
                   >
@@ -508,6 +497,8 @@ function PureMessage({
                         '[&_.prose]:leading-relaxed [&_.prose]:text-current',
                         '[&_.prose_pre]:bg-background/80 [&_.prose_code]:text-current',
                         '[&_.prose_p:last-child]:mb-0 [&_.prose_p]:mb-2',
+                        message.role === 'user' &&
+                          '[&_.prose_pre]:bg-secondary-foreground/20',
                       )}
                     />
                   </div>
