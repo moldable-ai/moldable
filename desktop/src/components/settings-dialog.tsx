@@ -18,7 +18,6 @@ import {
   useTheme,
 } from '@moldable-ai/ui'
 import type { GatewaySetupId } from '../lib/gateway-config'
-import type { Workspace } from '../lib/workspaces'
 import { type DangerousPattern } from '../hooks/use-workspace-config'
 import { SettingsApiKeys } from './settings-api-keys'
 import { SettingsDeveloper } from './settings-developer'
@@ -73,7 +72,6 @@ interface SettingsDialogProps {
   onHealthRefresh?: () => void
   /** AI server port (may be fallback port if default was unavailable) */
   aiServerPort?: number
-  workspaces: Workspace[]
   activeWorkspaceId?: string
   gatewayEnabled: boolean
   onGatewayEnabledChange: (value: boolean) => void
@@ -98,7 +96,6 @@ export function SettingsDialog({
   onOpenChange,
   onHealthRefresh,
   aiServerPort,
-  workspaces,
   activeWorkspaceId,
   gatewayEnabled,
   onGatewayEnabledChange,
@@ -116,7 +113,7 @@ export function SettingsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex h-[600px] max-h-[85vh] w-full max-w-4xl flex-col gap-0 overflow-hidden p-0">
+      <DialogContent className="flex h-[600px] max-h-[85vh] w-full min-w-[900px] max-w-5xl flex-col gap-0 overflow-hidden p-0">
         {/* Header */}
         <div className="border-border flex shrink-0 items-center gap-2 border-b px-6 py-4">
           <SettingsIcon className="size-5" />
@@ -146,8 +143,8 @@ export function SettingsDialog({
             </nav>
           </aside>
 
-          {/* Right content area */}
-          <main className="flex-1 overflow-y-auto p-6 [scrollbar-gutter:stable]">
+          {/* Right content area - use overflow-y-scroll to always reserve scrollbar space */}
+          <main className="flex-1 overflow-y-scroll p-6">
             <div className="mx-auto max-w-xl">
               {activeSection === 'general' && (
                 <SettingsGeneral
@@ -181,7 +178,6 @@ export function SettingsDialog({
               {activeSection === 'gateway' && (
                 <SettingsGateway
                   aiServerPort={aiServerPort ?? 39200}
-                  workspaces={workspaces}
                   activeWorkspaceId={activeWorkspaceId}
                   gatewayEnabled={gatewayEnabled}
                   onGatewayEnabledChange={onGatewayEnabledChange}

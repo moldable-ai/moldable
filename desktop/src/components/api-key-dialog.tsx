@@ -93,7 +93,7 @@ export function ApiKeyDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="min-w-[700px] max-w-3xl">
         <DialogHeader>
           <DialogTitle>Add API key</DialogTitle>
           <DialogDescription>

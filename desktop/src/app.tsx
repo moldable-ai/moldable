@@ -33,6 +33,7 @@ import { Canvas } from './components/canvas'
 import { ChatContainer } from './components/chat-container'
 import { GlobalCommandMenu } from './components/global-command-menu'
 import { Onboarding } from './components/onboarding'
+import { PairingModal } from './components/pairing-modal'
 import { SettingsDialog } from './components/settings-dialog'
 import { Sidebar } from './components/sidebar'
 import { UpdateNotification } from './components/update-notification'
@@ -759,13 +760,15 @@ export function App() {
       {/* Toast notifications */}
       <Toaster position="bottom-right" />
 
+      {/* Gateway pairing modal - shows when pairing requests arrive */}
+      <PairingModal />
+
       {/* Settings dialog */}
       <SettingsDialog
         open={isSettingsOpen}
         onOpenChange={setIsSettingsOpen}
         onHealthRefresh={checkHealth}
         aiServerPort={health.port}
-        workspaces={workspaces}
         activeWorkspaceId={activeWorkspace?.id}
         gatewayEnabled={gatewayEnabled}
         onGatewayEnabledChange={setGatewayEnabled}

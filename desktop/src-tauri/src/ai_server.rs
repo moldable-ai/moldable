@@ -105,27 +105,51 @@ fn cleanup_stale_ai_servers() {
 
     #[cfg(not(target_os = "windows"))]
     {
-        // Use pgrep to find processes with our tag in their environment/command
-        // Note: On macOS, pgrep -f searches command line. For env vars we use a different approach.
+        let our_pid = std::process::id();
+        // Include both bundled binary names and dev-mode command patterns.
+        // Dev processes may show up as `pnpm --filter @moldable-ai/ai-server dev`
+        // or `tsx src/index.ts` within the packages/ai-server directory.
+        let patterns: [(&str, &str); 4] = [
+            ("moldable-ai-server", "bundled sidecar binary"),
+            (
+                "@moldable-ai/ai-server dev",
+                "pnpm filtered dev script for ai-server",
+            ),
+            (
+                "packages/ai-server.*src/index\\.ts",
+                "direct ai-server src/index.ts execution",
+            ),
+            (
+                "pnpm.*--filter @moldable-ai/ai-server dev",
+                "pnpm filter invocation for ai-server dev",
+            ),
+        ];
 
-        // First, try to find node processes running moldable-ai-server
-        if let Ok(output) = Command::new("pgrep")
-            .args(["-f", "moldable-ai-server"])
-            .output()
-        {
-            if output.status.success() {
-                let pids = String::from_utf8_lossy(&output.stdout);
-                let our_pid = std::process::id();
+        for (pattern, label) in patterns {
+            let output = Command::new("pgrep").args(["-f", pattern]).output();
+            let Ok(output) = output else {
+                continue;
+            };
 
-                for line in pids.lines() {
-                    if let Ok(pid) = line.trim().parse::<u32>() {
-                        // Don't kill ourselves or our parent
-                        if pid != our_pid {
-                            info!("Killing stale AI server process (pid {})", pid);
-                            kill_process_tree(pid);
-                        }
-                    }
+            if !output.status.success() {
+                continue;
+            }
+
+            let pids = String::from_utf8_lossy(&output.stdout);
+            for line in pids.lines() {
+                let Ok(pid) = line.trim().parse::<u32>() else {
+                    continue;
+                };
+
+                if pid == our_pid {
+                    continue;
                 }
+
+                info!(
+                    "Killing stale AI server process (pid {}, match: {})",
+                    pid, label
+                );
+                kill_process_tree(pid);
             }
         }
     }

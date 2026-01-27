@@ -207,7 +207,7 @@ export function SettingsSecurity({
 
       {/* Add pattern dialog */}
       <Dialog open={isAddPatternOpen} onOpenChange={setIsAddPatternOpen}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="min-w-[700px] max-w-3xl">
           <DialogHeader>
             <DialogTitle>Add Dangerous Command Pattern</DialogTitle>
             <DialogDescription>

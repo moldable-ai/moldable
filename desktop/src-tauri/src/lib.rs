@@ -72,6 +72,9 @@ use ai_server::{start_ai_server, cleanup_ai_server};
 pub mod gateway;
 use gateway::{GatewayState, cleanup_gateway};
 
+// Gateway WebSocket event listener
+mod gateway_events;
+
 // HTTP API server for AI tools
 pub mod api_server;
 
@@ -280,6 +283,9 @@ pub fn run() {
                 ])
                 .max_file_size(5_000_000)
                 .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
+                // Suppress noisy TRACE logs from WebSocket libraries
+                .level_for("tungstenite", log::LevelFilter::Info)
+                .level_for("tokio_tungstenite", log::LevelFilter::Info)
                 .build(),
         )
         .plugin(tauri_plugin_shell::init())
@@ -368,9 +374,16 @@ pub fn run() {
             gateway::save_gateway_config,
             gateway::get_gateway_config_path,
             gateway::get_gateway_root_path,
+            gateway::is_gateway_running,
             gateway::start_gateway,
             gateway::stop_gateway,
             gateway::restart_gateway,
+            // Gateway pairing
+            gateway::list_pairing,
+            gateway::approve_pairing,
+            gateway::deny_pairing,
+            // Gateway config via WebSocket (preferred over direct file writes)
+            gateway::gateway_config_patch,
             // Runtime status (for diagnostics)
             check_dependencies,
             // Server ports (for frontend to connect)
@@ -551,6 +564,24 @@ pub fn run() {
 
             // Start watching config file for changes
             start_config_watcher(app.handle().clone());
+
+            // Start gateway sidecar (always runs, even when "disabled" - just locked down)
+            // The gateway watches its config and hot-reloads when channels are enabled
+            let gateway_handle = app.handle().clone();
+            let gateway_state_setup = app.state::<GatewayState>().0.clone();
+            let gateway_events_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                match gateway::start_gateway_with_state(&gateway_handle, gateway_state_setup) {
+                    Ok(_) => {
+                        info!("Gateway auto-started (Private mode)");
+                        // Start listening for gateway events (pairing requests, etc.)
+                        // Delay slightly to ensure gateway is fully ready
+                        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                        gateway_events::start_gateway_event_listener(gateway_events_handle);
+                    }
+                    Err(e) => warn!("Failed to auto-start gateway: {} (will retry when enabled)", e),
+                }
+            });
 
             // Clean up any orphaned processes from previous runs
             let app_state_for_cleanup = app.state::<AppState>();

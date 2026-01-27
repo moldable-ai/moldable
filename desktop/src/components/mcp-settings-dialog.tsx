@@ -482,7 +482,7 @@ export function McpSettingsDialog({
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="gap-0 overflow-hidden px-0 pb-4 pt-0 sm:max-w-lg">
+        <DialogContent className="min-w-[700px] max-w-3xl gap-0 overflow-hidden px-0 pb-4 pt-0">
           {/* Drag overlay */}
           {(isDragging || isInstalling) && (
             <div className="bg-background/95 border-primary z-60 absolute inset-0 flex flex-col items-center justify-center rounded-lg border-2 border-dashed">

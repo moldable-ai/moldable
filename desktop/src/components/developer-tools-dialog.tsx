@@ -86,7 +86,7 @@ export function DeveloperToolsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="min-w-[700px] max-w-3xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Terminal className="size-5" />

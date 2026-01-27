@@ -16,7 +16,7 @@ export function AgentSessionsDialog({
 }: AgentSessionsDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex h-[600px] max-h-[85vh] w-full max-w-4xl flex-col gap-0 overflow-hidden p-0">
+      <DialogContent className="flex h-[600px] max-h-[85vh] w-full min-w-[900px] max-w-5xl flex-col gap-0 overflow-hidden p-0">
         <AgentSessionsPanel
           aiServerPort={aiServerPort}
           workspaceId={workspaceId}

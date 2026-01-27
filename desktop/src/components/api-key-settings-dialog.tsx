@@ -209,7 +209,7 @@ export function ApiKeySettingsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="min-w-[700px] max-w-3xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Key className="size-5" />

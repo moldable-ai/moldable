@@ -2,12 +2,7 @@ export const DEFAULT_GATEWAY_PORT = 19789
 export const DEFAULT_HTTP_PORT = 19790
 export const DEFAULT_WEBHOOK_BIND = '127.0.0.1:8088'
 
-export type GatewaySetupId =
-  | 'just-me'
-  | 'same-wifi'
-  | 'travel'
-  | 'webhooks'
-  | 'telegram'
+export type GatewaySetupId = 'telegram'
 
 export const DEFAULT_GATEWAY_SETUP_ID: GatewaySetupId = 'telegram'
 
@@ -30,9 +25,8 @@ export interface GatewaySetup {
 export const GATEWAY_SETUPS: GatewaySetup[] = [
   {
     id: 'telegram',
-    title: 'Telegram bot',
-    description:
-      'Moldable polls Telegram for new messages and sends responses back. No public internet exposure. Recommended for most users who want a secure experience.',
+    title: 'Telegram',
+    description: 'Connect via Telegram bot. No public internet exposure.',
     bind: 'loopback',
     publicAccess: false,
     riskLevel: 'low',
@@ -43,59 +37,6 @@ export const GATEWAY_SETUPS: GatewaySetup[] = [
     ],
     notes: 'Recommended to keep require_mention on for group chats.',
   },
-  {
-    id: 'just-me',
-    title: 'Just me, on my laptop',
-    description:
-      'Local-only access for a single device. No public internet exposure.',
-    bind: 'loopback',
-    publicAccess: false,
-    riskLevel: 'low',
-    risks: [
-      'If this machine is compromised, the gateway is too.',
-      'Messages are stored locally in gateway session logs.',
-      'Command execution or nodes can access local files when approved.',
-    ],
-  },
-  {
-    id: 'same-wifi',
-    title: 'My phone + laptop on the same Wi-Fi',
-    description: 'Reachable from your local network only.',
-    bind: 'lan',
-    publicAccess: false,
-    riskLevel: 'medium',
-    risks: [
-      'Anyone on your LAN with the token can connect.',
-      'Shared or untrusted Wi-Fi increases exposure.',
-      '(Always use a VPN when connecting to untrusted networks.)',
-    ],
-  },
-  {
-    id: 'travel',
-    title: 'Access while traveling (tunnel)',
-    description: 'Use a tunnel without opening a public port.',
-    bind: 'loopback',
-    publicAccess: false,
-    riskLevel: 'medium',
-    risks: [
-      'Tunnel provider becomes part of your trust chain (choose a secure one).',
-      'Misconfigured tunnels can expose your gateway.',
-    ],
-    notes: 'Use SSH, Tailscale, or ngrok to expose port 19789.',
-  },
-  {
-    id: 'webhooks',
-    title: 'Webhooks (e.g. WhatsApp Cloud)',
-    description: 'Expose only a webhook port via a tunnel.',
-    bind: 'loopback',
-    publicAccess: false,
-    riskLevel: 'high',
-    risks: [
-      'Webhook URLs are public and can be probed or abused.',
-      'Protect verify tokens and watch rate limits.',
-    ],
-    notes: 'Tunnel only the webhook port (default 8088).',
-  },
 ]
 
 export const GATEWAY_FEATURE_FLAGS = {
@@ -103,9 +44,7 @@ export const GATEWAY_FEATURE_FLAGS = {
 }
 
 export function getVisibleGatewaySetups(): GatewaySetup[] {
-  return GATEWAY_SETUPS.filter(
-    (setup) => setup.id !== 'webhooks' || GATEWAY_FEATURE_FLAGS.whatsapp,
-  )
+  return GATEWAY_SETUPS
 }
 
 export interface GatewayConfig {
@@ -142,6 +81,8 @@ export interface GatewayConfig {
   pairing?: {
     dm_policy?: PairingPolicy
     group_policy?: GroupPolicy
+    human_friendly_messages?: boolean
+    app_name?: string
   }
   channels?: {
     telegram?: {
@@ -384,6 +325,9 @@ export function mergeGatewayConfig(
       ...base.pairing,
       dm_policy: state.pairingDmPolicy,
       group_policy: state.pairingGroupPolicy,
+      // Always use human-friendly messages for desktop app
+      human_friendly_messages: true,
+      app_name: 'Moldable',
     },
     channels: {
       ...base.channels,

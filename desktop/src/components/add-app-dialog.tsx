@@ -91,7 +91,7 @@ export function AddAppDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[85vh] flex-col overflow-hidden sm:max-w-[550px]">
+      <DialogContent className="flex max-h-[85vh] min-w-[700px] max-w-3xl flex-col overflow-hidden">
         <DialogHeader className="space-y-1">
           <DialogTitle>Add App</DialogTitle>
           <DialogDescription>

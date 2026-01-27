@@ -242,22 +242,47 @@ fn cleanup_stale_gateway_processes() {
     #[cfg(not(target_os = "windows"))]
     {
         let our_pid = std::process::id();
-        let patterns = ["moldable-gateway", "moldable gateway run"];
+        // Include both bundled/CLI process names and dev-mode command patterns.
+        // Dev processes may show up as `cargo run -- gateway run --config ...`
+        // and won't necessarily include "moldable-gateway" in their command line.
+        let patterns: [(&str, &str); 4] = [
+            ("moldable-gateway", "bundled sidecar binary"),
+            ("moldable gateway run", "moldable CLI gateway run"),
+            (
+                "gateway run --config .*\\.moldable/gateway",
+                "dev/CLI gateway run against Moldable config",
+            ),
+            (
+                "cargo run .*gateway run --config .*\\.moldable/gateway",
+                "cargo dev gateway run against Moldable config",
+            ),
+        ];
 
-        for pattern in patterns {
-            if let Ok(output) = Command::new("pgrep").args(["-f", pattern]).output() {
-                if output.status.success() {
-                    let pids = String::from_utf8_lossy(&output.stdout);
+        for (pattern, label) in patterns {
+            let output = Command::new("pgrep").args(["-f", pattern]).output();
+            let Ok(output) = output else {
+                continue;
+            };
 
-                    for line in pids.lines() {
-                        if let Ok(pid) = line.trim().parse::<u32>() {
-                            if pid != our_pid {
-                                info!("[Gateway] Killing stale gateway process (pid {})", pid);
-                                kill_process_tree(pid);
-                            }
-                        }
-                    }
+            if !output.status.success() {
+                continue;
+            }
+
+            let pids = String::from_utf8_lossy(&output.stdout);
+            for line in pids.lines() {
+                let Ok(pid) = line.trim().parse::<u32>() else {
+                    continue;
+                };
+
+                if pid == our_pid {
+                    continue;
                 }
+
+                info!(
+                    "[Gateway] Killing stale gateway process (pid {}, match: {})",
+                    pid, label
+                );
+                kill_process_tree(pid);
             }
         }
     }
@@ -294,7 +319,7 @@ fn wait_for_gateway_health(port: u16, timeout: Duration) -> bool {
 // LIFECYCLE
 // ============================================================================
 
-fn start_gateway_with_state(
+pub fn start_gateway_with_state(
     app: &AppHandle,
     state: Arc<Mutex<Option<CommandChild>>>,
 ) -> Result<bool, String> {
@@ -356,9 +381,12 @@ fn start_gateway_with_state(
                 }
             };
 
-            info!("[Gateway] command: gateway run --config {}", config_path_str);
+            info!(
+                "[Gateway] command: gateway run --config {} --auto-fix",
+                config_path_str
+            );
             command = command
-                .args(["gateway", "run", "--config", &config_path_str])
+                .args(["gateway", "run", "--config", &config_path_str, "--auto-fix"])
                 .env("MOLDABLE_GATEWAY", "1");
 
             command
@@ -394,6 +422,11 @@ fn stop_gateway_with_state(state: &Arc<Mutex<Option<CommandChild>>>) -> Result<b
 // ============================================================================
 // TAURI COMMANDS
 // ============================================================================
+
+#[tauri::command]
+pub fn is_gateway_running(state: State<'_, GatewayState>) -> bool {
+    is_sidecar_running(&state.0)
+}
 
 #[tauri::command]
 pub fn get_gateway_config() -> Result<Option<Value>, String> {
@@ -453,6 +486,521 @@ pub fn restart_gateway(app: AppHandle, state: State<'_, GatewayState>) -> Result
 pub fn cleanup_gateway(state: &Arc<Mutex<Option<CommandChild>>>) {
     let runtime = gateway_runtime();
     cleanup_sidecar(&runtime, state);
+}
+
+/// Approve a pairing request via the gateway WebSocket API
+#[tauri::command]
+pub async fn approve_pairing(channel: String, code: String) -> Result<(), String> {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+
+    let config = read_gateway_config_value()?;
+    let ws_port = resolve_gateway_port(&config);
+    let auth_token = config
+        .get("gateway")
+        .and_then(|g| g.get("auth"))
+        .and_then(|a| a.get("token"))
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string());
+
+    let url = format!("ws://127.0.0.1:{}", ws_port);
+    let (ws_stream, _) = connect_async(&url)
+        .await
+        .map_err(|e| format!("Failed to connect to gateway: {}", e))?;
+
+    let (mut write, mut read) = ws_stream.split();
+
+    // Send connect message with auth
+    let connect_msg = serde_json::json!({
+        "type": "req",
+        "id": "connect-1",
+        "method": "connect",
+        "params": {
+            "min_protocol": 1,
+            "max_protocol": 1,
+            "client": {
+                "id": "moldable-desktop",
+                "version": env!("CARGO_PKG_VERSION"),
+                "platform": std::env::consts::OS
+            },
+            "auth": auth_token.map(|t| serde_json::json!({ "token": t })),
+            "role": "operator"
+        }
+    });
+
+    write
+        .send(Message::Text(connect_msg.to_string().into()))
+        .await
+        .map_err(|e| format!("Failed to send connect: {}", e))?;
+
+    // Wait for connect response
+    let msg = read.next().await
+        .ok_or_else(|| "Connection closed".to_string())?
+        .map_err(|e| format!("WebSocket error: {}", e))?;
+
+    let response: Value = match msg {
+        Message::Text(text) => serde_json::from_str(&text)
+            .map_err(|e| format!("Failed to parse response: {}", e))?,
+        _ => return Err("Unexpected message type".to_string()),
+    };
+
+    if !response.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let error = response.get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            .unwrap_or("Unknown error");
+        return Err(format!("Connect failed: {}", error));
+    }
+
+    // Send pair.approve request
+    let approve_msg = serde_json::json!({
+        "type": "req",
+        "id": "approve-1",
+        "method": "pair.approve",
+        "params": {
+            "channel": channel,
+            "code": code
+        }
+    });
+
+    write
+        .send(Message::Text(approve_msg.to_string().into()))
+        .await
+        .map_err(|e| format!("Failed to send pair.approve: {}", e))?;
+
+    let msg = read.next().await
+        .ok_or_else(|| "Connection closed".to_string())?
+        .map_err(|e| format!("WebSocket error: {}", e))?;
+
+    let approve_response: Value = match msg {
+        Message::Text(text) => serde_json::from_str(&text)
+            .map_err(|e| format!("Failed to parse response: {}", e))?,
+        _ => return Err("Unexpected message type".to_string()),
+    };
+
+    if !approve_response.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let error = approve_response.get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            .unwrap_or("Unknown error");
+        return Err(format!("pair.approve failed: {}", error));
+    }
+
+    // Send proper close frame
+    let _ = write.send(Message::Close(None)).await;
+    let _ = write.flush().await;
+    info!("[Gateway] Pairing approved for {} code {}", channel, code);
+    Ok(())
+}
+
+/// List pairing requests via the gateway WebSocket API
+#[tauri::command]
+pub async fn list_pairing() -> Result<Value, String> {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+
+    // Read config to get auth token and port
+    let config = read_gateway_config_value()?;
+    let ws_port = resolve_gateway_port(&config);
+    let auth_token = config
+        .get("gateway")
+        .and_then(|g| g.get("auth"))
+        .and_then(|a| a.get("token"))
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string());
+
+    let url = format!("ws://127.0.0.1:{}", ws_port);
+    let (ws_stream, _) = connect_async(&url)
+        .await
+        .map_err(|e| format!("Failed to connect to gateway: {}", e))?;
+
+    let (mut write, mut read) = ws_stream.split();
+
+    // Send connect message with auth
+    let connect_msg = serde_json::json!({
+        "type": "req",
+        "id": "connect-1",
+        "method": "connect",
+        "params": {
+            "min_protocol": 1,
+            "max_protocol": 1,
+            "client": {
+                "id": "moldable-desktop",
+                "version": env!("CARGO_PKG_VERSION"),
+                "platform": std::env::consts::OS
+            },
+            "auth": auth_token.map(|t| serde_json::json!({ "token": t })),
+            "role": "operator"
+        }
+    });
+
+    write
+        .send(Message::Text(connect_msg.to_string().into()))
+        .await
+        .map_err(|e| format!("Failed to send connect: {}", e))?;
+
+    // Wait for connect response
+    let msg = read.next().await
+        .ok_or_else(|| "Connection closed".to_string())?
+        .map_err(|e| format!("WebSocket error: {}", e))?;
+
+    let response: Value = match msg {
+        Message::Text(text) => serde_json::from_str(&text)
+            .map_err(|e| format!("Failed to parse response: {}", e))?,
+        _ => return Err("Unexpected message type".to_string()),
+    };
+
+    if !response.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let error = response.get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            .unwrap_or("Unknown error");
+        return Err(format!("Connect failed: {}", error));
+    }
+
+    // Send pair.list request
+    let list_msg = serde_json::json!({
+        "type": "req",
+        "id": "list-1",
+        "method": "pair.list",
+        "params": {}
+    });
+
+    write
+        .send(Message::Text(list_msg.to_string().into()))
+        .await
+        .map_err(|e| format!("Failed to send pair.list: {}", e))?;
+
+    let msg = read.next().await
+        .ok_or_else(|| "Connection closed".to_string())?
+        .map_err(|e| format!("WebSocket error: {}", e))?;
+
+    let list_response: Value = match msg {
+        Message::Text(text) => serde_json::from_str(&text)
+            .map_err(|e| format!("Failed to parse response: {}", e))?,
+        _ => return Err("Unexpected message type".to_string()),
+    };
+
+    if !list_response.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let error = list_response.get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            .unwrap_or("Unknown error");
+        return Err(format!("pair.list failed: {}", error));
+    }
+
+    // Send proper close frame
+    let _ = write.send(Message::Close(None)).await;
+    let _ = write.flush().await;
+
+    Ok(list_response.get("payload").cloned().unwrap_or(Value::Null))
+}
+
+/// Deny a pairing request via the gateway WebSocket API
+#[tauri::command]
+pub async fn deny_pairing(channel: String, code: String) -> Result<(), String> {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+
+    let config = read_gateway_config_value()?;
+    let ws_port = resolve_gateway_port(&config);
+    let auth_token = config
+        .get("gateway")
+        .and_then(|g| g.get("auth"))
+        .and_then(|a| a.get("token"))
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string());
+
+    let url = format!("ws://127.0.0.1:{}", ws_port);
+    let (ws_stream, _) = connect_async(&url)
+        .await
+        .map_err(|e| format!("Failed to connect to gateway: {}", e))?;
+
+    let (mut write, mut read) = ws_stream.split();
+
+    // Send connect message with auth
+    let connect_msg = serde_json::json!({
+        "type": "req",
+        "id": "connect-1",
+        "method": "connect",
+        "params": {
+            "min_protocol": 1,
+            "max_protocol": 1,
+            "client": {
+                "id": "moldable-desktop",
+                "version": env!("CARGO_PKG_VERSION"),
+                "platform": std::env::consts::OS
+            },
+            "auth": auth_token.map(|t| serde_json::json!({ "token": t })),
+            "role": "operator"
+        }
+    });
+
+    write
+        .send(Message::Text(connect_msg.to_string().into()))
+        .await
+        .map_err(|e| format!("Failed to send connect: {}", e))?;
+
+    // Wait for connect response
+    let msg = read.next().await
+        .ok_or_else(|| "Connection closed".to_string())?
+        .map_err(|e| format!("WebSocket error: {}", e))?;
+
+    let response: Value = match msg {
+        Message::Text(text) => serde_json::from_str(&text)
+            .map_err(|e| format!("Failed to parse response: {}", e))?,
+        _ => return Err("Unexpected message type".to_string()),
+    };
+
+    if !response.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let error = response.get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            .unwrap_or("Unknown error");
+        return Err(format!("Connect failed: {}", error));
+    }
+
+    // Send pair.reject request
+    let reject_msg = serde_json::json!({
+        "type": "req",
+        "id": "reject-1",
+        "method": "pair.reject",
+        "params": {
+            "channel": channel,
+            "code": code
+        }
+    });
+
+    write
+        .send(Message::Text(reject_msg.to_string().into()))
+        .await
+        .map_err(|e| format!("Failed to send pair.reject: {}", e))?;
+
+    let msg = read.next().await
+        .ok_or_else(|| "Connection closed".to_string())?
+        .map_err(|e| format!("WebSocket error: {}", e))?;
+
+    let reject_response: Value = match msg {
+        Message::Text(text) => serde_json::from_str(&text)
+            .map_err(|e| format!("Failed to parse response: {}", e))?,
+        _ => return Err("Unexpected message type".to_string()),
+    };
+
+    if !reject_response.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let error = reject_response.get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            .unwrap_or("Unknown error");
+        return Err(format!("pair.reject failed: {}", error));
+    }
+
+    // Send proper close frame
+    let _ = write.send(Message::Close(None)).await;
+    let _ = write.flush().await;
+    info!("[Gateway] Pairing denied for {} code {}", channel, code);
+    Ok(())
+}
+
+/// Patch gateway config via authenticated WebSocket call.
+/// This ensures the gateway handles validation, token generation, and permissions.
+#[tauri::command]
+pub async fn gateway_config_patch(patch: Value) -> Result<Value, String> {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+
+    info!("[Gateway] config_patch starting with patch: {:?}", patch);
+
+    // Read config to get auth token and port
+    let config = read_gateway_config_value().map_err(|e| {
+        warn!("[Gateway] config_patch failed to read config: {}", e);
+        e
+    })?;
+    let ws_port = resolve_gateway_port(&config);
+    let auth_token = config
+        .get("gateway")
+        .and_then(|g| g.get("auth"))
+        .and_then(|a| a.get("token"))
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string());
+
+    let url = format!("ws://127.0.0.1:{}", ws_port);
+    info!("[Gateway] config_patch connecting to {}", url);
+
+    let (ws_stream, _) = connect_async(&url)
+        .await
+        .map_err(|e| {
+            warn!("[Gateway] config_patch failed to connect: {}", e);
+            format!("Failed to connect to gateway: {}", e)
+        })?;
+
+    let (mut write, mut read) = ws_stream.split();
+
+    // Send connect message with auth
+    let connect_msg = serde_json::json!({
+        "type": "req",
+        "id": "connect-1",
+        "method": "connect",
+        "params": {
+            "min_protocol": 1,
+            "max_protocol": 1,
+            "client": {
+                "id": "moldable-desktop",
+                "version": env!("CARGO_PKG_VERSION"),
+                "platform": std::env::consts::OS
+            },
+            "auth": auth_token.map(|t| serde_json::json!({ "token": t })),
+            "role": "operator"
+        }
+    });
+
+    write
+        .send(Message::Text(connect_msg.to_string().into()))
+        .await
+        .map_err(|e| {
+            warn!("[Gateway] config_patch failed to send connect: {}", e);
+            format!("Failed to send connect: {}", e)
+        })?;
+
+    // Wait for connect response
+    let msg = read.next().await
+        .ok_or_else(|| {
+            warn!("[Gateway] config_patch connection closed before connect response");
+            "Connection closed before connect response".to_string()
+        })?
+        .map_err(|e| {
+            warn!("[Gateway] config_patch WebSocket error during connect: {}", e);
+            format!("WebSocket error: {}", e)
+        })?;
+
+    let response: Value = match msg {
+        Message::Text(text) => {
+            info!("[Gateway] config_patch connect response: {}", text);
+            serde_json::from_str(&text)
+                .map_err(|e| format!("Failed to parse response: {}", e))?
+        }
+        other => {
+            warn!("[Gateway] config_patch unexpected message type: {:?}", other);
+            return Err("Unexpected message type".to_string());
+        }
+    };
+
+    if !response.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let error = response.get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            .unwrap_or("Unknown error");
+        warn!("[Gateway] config_patch connect failed: {}", error);
+        return Err(format!("Connect failed: {}", error));
+    }
+
+    info!("[Gateway] config_patch connected, getting config hash");
+
+    // Get config to obtain base_hash
+    let get_msg = serde_json::json!({
+        "type": "req",
+        "id": "get-1",
+        "method": "config.get",
+        "params": {}
+    });
+
+    write
+        .send(Message::Text(get_msg.to_string().into()))
+        .await
+        .map_err(|e| {
+            warn!("[Gateway] config_patch failed to send config.get: {}", e);
+            format!("Failed to send config.get: {}", e)
+        })?;
+
+    let msg = read.next().await
+        .ok_or_else(|| {
+            warn!("[Gateway] config_patch connection closed before config.get response");
+            "Connection closed".to_string()
+        })?
+        .map_err(|e| {
+            warn!("[Gateway] config_patch WebSocket error during config.get: {}", e);
+            format!("WebSocket error: {}", e)
+        })?;
+
+    let get_response: Value = match msg {
+        Message::Text(text) => serde_json::from_str(&text)
+            .map_err(|e| format!("Failed to parse response: {}", e))?,
+        _ => return Err("Unexpected message type".to_string()),
+    };
+
+    if !get_response.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let error = get_response.get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            .unwrap_or("Unknown error");
+        warn!("[Gateway] config_patch config.get failed: {}", error);
+        return Err(format!("config.get failed: {}", error));
+    }
+
+    let base_hash = get_response
+        .get("payload")
+        .and_then(|p| p.get("hash"))
+        .and_then(|h| h.as_str())
+        .ok_or_else(|| {
+            warn!("[Gateway] config_patch missing base_hash in response");
+            "Missing base_hash in config.get response".to_string()
+        })?;
+
+    info!("[Gateway] config_patch got base_hash: {}, sending patch", base_hash);
+
+    // Send config.patch with baseHash (camelCase as gateway expects)
+    let patch_msg = serde_json::json!({
+        "type": "req",
+        "id": "patch-1",
+        "method": "config.patch",
+        "params": {
+            "baseHash": base_hash,
+            "raw": serde_json::to_string(&patch).unwrap_or_default()
+        }
+    });
+
+    write
+        .send(Message::Text(patch_msg.to_string().into()))
+        .await
+        .map_err(|e| {
+            warn!("[Gateway] config_patch failed to send config.patch: {}", e);
+            format!("Failed to send config.patch: {}", e)
+        })?;
+
+    let msg = read.next().await
+        .ok_or_else(|| {
+            warn!("[Gateway] config_patch connection closed before config.patch response");
+            "Connection closed".to_string()
+        })?
+        .map_err(|e| {
+            warn!("[Gateway] config_patch WebSocket error during config.patch: {}", e);
+            format!("WebSocket error: {}", e)
+        })?;
+
+    let patch_response: Value = match msg {
+        Message::Text(text) => {
+            info!("[Gateway] config_patch response: {}", text);
+            serde_json::from_str(&text)
+                .map_err(|e| format!("Failed to parse response: {}", e))?
+        }
+        _ => return Err("Unexpected message type".to_string()),
+    };
+
+    if !patch_response.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let error = patch_response.get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            .unwrap_or("Unknown error");
+        warn!("[Gateway] config_patch config.patch failed: {}", error);
+        return Err(format!("config.patch failed: {}", error));
+    }
+
+    info!("[Gateway] config_patch success, closing connection");
+
+    // Send proper WebSocket close frame and flush
+    let _ = write.send(Message::Close(None)).await;
+    let _ = write.flush().await;
+
+    Ok(patch_response.get("payload").cloned().unwrap_or(Value::Null))
 }
 
 // ============================================================================

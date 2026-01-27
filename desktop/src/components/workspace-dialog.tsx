@@ -109,7 +109,7 @@ function CreateEditWorkspaceDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-[400px]">
+      <DialogContent className="min-w-[700px] max-w-3xl">
         <DialogHeader>
           <DialogTitle>
             {mode === 'create' ? 'New Workspace' : 'Edit Workspace'}
@@ -172,7 +172,7 @@ function ManageWorkspacesDialog({
 }: Extract<WorkspaceDialogProps, { mode: 'manage' }>) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[450px]">
+      <DialogContent className="min-w-[700px] max-w-3xl">
         <DialogHeader>
           <DialogTitle>Manage Workspaces</DialogTitle>
           <DialogDescription>

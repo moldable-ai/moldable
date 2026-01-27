@@ -59,7 +59,7 @@ export function DeleteWorkspaceDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-[450px]">
+      <DialogContent className="min-w-[700px] max-w-3xl">
         <DialogHeader>
           <div className="bg-destructive/10 mb-2 flex size-12 items-center justify-center rounded-full">
             <AlertTriangle className="text-destructive size-6" />
