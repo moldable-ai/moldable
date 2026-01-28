@@ -70,10 +70,7 @@ use ai_server::{start_ai_server, cleanup_ai_server};
 
 // Gateway sidecar
 pub mod gateway;
-use gateway::{GatewayState, cleanup_gateway};
-
-// Gateway WebSocket event listener
-mod gateway_events;
+use gateway::GatewayState;
 
 // HTTP API server for AI tools
 pub mod api_server;
@@ -208,7 +205,6 @@ fn run_shutdown_cleanup(
     cleanup_guard: &Arc<AtomicBool>,
     app_state: &Arc<Mutex<AppStateInner>>,
     ai_server_state: &Arc<Mutex<Option<CommandChild>>>,
-    gateway_state: &Arc<Mutex<Option<CommandChild>>>,
     audio_capture_state: &Arc<Mutex<Option<CommandChild>>>,
     reason: &str,
 ) {
@@ -226,9 +222,6 @@ fn run_shutdown_cleanup(
 
     info!("Stopping AI server...");
     cleanup_ai_server(ai_server_state);
-    
-    info!("Stopping gateway...");
-    cleanup_gateway(gateway_state);
 
     info!("Stopping audio capture...");
     audio::cleanup_audio_capture(audio_capture_state);
@@ -261,11 +254,9 @@ pub fn run() {
     // Clone for the exit handler
     let app_state_for_exit = app_state.0.clone();
     let ai_server_for_exit = ai_server_state.clone();
-    let gateway_for_exit = gateway_state.0.clone();
     let audio_capture_for_exit = audio_capture_state.0.clone();
     let app_state_for_run_event = app_state_for_exit.clone();
     let ai_server_for_run_event = ai_server_for_exit.clone();
-    let gateway_for_run_event = gateway_for_exit.clone();
     let audio_capture_for_run_event = audio_capture_for_exit.clone();
     let cleanup_guard = Arc::new(AtomicBool::new(false));
     let cleanup_guard_for_window = cleanup_guard.clone();
@@ -565,24 +556,6 @@ pub fn run() {
             // Start watching config file for changes
             start_config_watcher(app.handle().clone());
 
-            // Start gateway sidecar (always runs, even when "disabled" - just locked down)
-            // The gateway watches its config and hot-reloads when channels are enabled
-            let gateway_handle = app.handle().clone();
-            let gateway_state_setup = app.state::<GatewayState>().0.clone();
-            let gateway_events_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                match gateway::start_gateway_with_state(&gateway_handle, gateway_state_setup) {
-                    Ok(_) => {
-                        info!("Gateway auto-started (Private mode)");
-                        // Start listening for gateway events (pairing requests, etc.)
-                        // Delay slightly to ensure gateway is fully ready
-                        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-                        gateway_events::start_gateway_event_listener(gateway_events_handle);
-                    }
-                    Err(e) => warn!("Failed to auto-start gateway: {} (will retry when enabled)", e),
-                }
-            });
-
             // Clean up any orphaned processes from previous runs
             let app_state_for_cleanup = app.state::<AppState>();
             cleanup_all_orphaned_apps(get_registered_apps, app_state_for_cleanup.inner());
@@ -595,7 +568,6 @@ pub fn run() {
                     &cleanup_guard_for_window,
                     &app_state_for_exit,
                     &ai_server_for_exit,
-                    &gateway_for_exit,
                     &audio_capture_for_exit,
                     "window destroyed",
                 );
@@ -611,7 +583,6 @@ pub fn run() {
                     &cleanup_guard_for_run_event,
                     &app_state_for_run_event,
                     &ai_server_for_run_event,
-                    &gateway_for_run_event,
                     &audio_capture_for_run_event,
                     "exit requested",
                 );
@@ -621,7 +592,6 @@ pub fn run() {
                     &cleanup_guard_for_run_event,
                     &app_state_for_run_event,
                     &ai_server_for_run_event,
-                    &gateway_for_run_event,
                     &audio_capture_for_run_event,
                     "exit",
                 );

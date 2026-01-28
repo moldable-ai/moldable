@@ -26,8 +26,7 @@
     },
     "externalBin": [
       "binaries/moldable-ai-server",
-      "binaries/moldable-audio-capture",
-      "binaries/moldable-gateway"
+      "binaries/moldable-audio-capture"
     ],
     "macOS": {
       "entitlements": "entitlements.mac.plist",
